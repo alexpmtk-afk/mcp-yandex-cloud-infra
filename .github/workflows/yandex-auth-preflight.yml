@@ -10,80 +10,78 @@ on:
 
 permissions:
   contents: read
-  id-token: write
 
 jobs:
   yandex-auth-preflight:
     runs-on: ubuntu-latest
     steps:
-      - name: Get GitHub OIDC token
-        uses: actions/github-script@v7
-        id: oidc
-        with:
-          script: |
-            const token = await core.getIDToken()
-            core.setSecret(token)
-            core.setOutput('id_token', token)
-
-      - name: Show safe OIDC claims
+      - name: Install Yandex Cloud CLI
         shell: bash
-        env:
-          GITHUB_OIDC_TOKEN: ${{ steps.oidc.outputs.id_token }}
         run: |
           set -euo pipefail
-          PAYLOAD=$(cut -d'.' -f2 <<<"${GITHUB_OIDC_TOKEN}")
-          PAD=$(( (4 - ${#PAYLOAD} % 4) % 4 ))
-          PAYLOAD="${PAYLOAD}$(printf '=%.0s' $(seq 1 ${PAD:-0}) 2>/dev/null || true)"
-          CLAIMS=$(printf '%s' "${PAYLOAD}" | tr '_-' '/+' | base64 -d 2>/dev/null)
-          echo "iss=$(jq -r '.iss' <<<"${CLAIMS}")"
-          echo "aud=$(jq -r 'if (.aud|type)=="array" then (.aud|join(",")) else .aud end' <<<"${CLAIMS}")"
-          echo "sub=$(jq -r '.sub' <<<"${CLAIMS}")"
+          mkdir -p "${RUNNER_TEMP}/yc"
+          cd "${RUNNER_TEMP}/yc"
+          curl --fail --silent --show-error -O \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf yc_linux_amd64.tar.gz
+          chmod +x yc
+          echo "${RUNNER_TEMP}/yc" >> "${GITHUB_PATH}"
+          ./yc version
 
-      - name: Exchange OIDC token for Yandex IAM token
-        id: iam
+      - name: Authenticate with service account authorized key
+        id: auth
         shell: bash
         env:
-          SA_ID: ajecdjjrkdo1t3itp19k
-          GITHUB_OIDC_TOKEN: ${{ steps.oidc.outputs.id_token }}
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
         run: |
           set -euo pipefail
-          RESPONSE_FILE=$(mktemp)
-          HTTP_CODE=$(curl --silent --show-error \
-            -o "${RESPONSE_FILE}" \
-            -w '%{http_code}' \
-            -H "Content-Type: application/x-www-form-urlencoded" \
-            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
-            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
-            --data-urlencode "audience=${SA_ID}" \
-            --data-urlencode "subject_token=${GITHUB_OIDC_TOKEN}" \
-            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token" \
-            -X POST https://auth.yandex.cloud/oauth/token)
 
-          RESPONSE=$(cat "${RESPONSE_FILE}")
-          IAM_TOKEN=$(jq -r '.access_token // empty' <<<"${RESPONSE}" 2>/dev/null || true)
-          if [[ "${HTTP_CODE}" != "200" || -z "${IAM_TOKEN}" ]]; then
-            echo "FAIL: token exchange HTTP ${HTTP_CODE}."
-            jq -c 'del(.access_token)' <<<"${RESPONSE}" 2>/dev/null || printf '%s\n' "${RESPONSE}"
+          if [[ -z "${YC_SERVICE_ACCOUNT_KEY_JSON:-}" ]]; then
+            echo "FAIL: YC_SERVICE_ACCOUNT_KEY_JSON secret is empty or unavailable."
+            exit 1
+          fi
+
+          KEY_FILE="${RUNNER_TEMP}/yc-service-account-key.json"
+          printf '%s' "${YC_SERVICE_ACCOUNT_KEY_JSON}" > "${KEY_FILE}"
+          chmod 600 "${KEY_FILE}"
+
+          jq -e '.id and .service_account_id and .private_key' "${KEY_FILE}" >/dev/null
+
+          yc config profile create github-ci
+          yc config set service-account-key "${KEY_FILE}"
+
+          IAM_TOKEN=$(yc iam create-token)
+          if [[ -z "${IAM_TOKEN}" ]]; then
+            echo "FAIL: Yandex IAM token was not returned."
             exit 1
           fi
 
           echo "::add-mask::${IAM_TOKEN}"
-          echo "iam_token=${IAM_TOKEN}" >> "$GITHUB_OUTPUT"
-          echo "PASS: GitHub OIDC token exchanged for a Yandex IAM token."
+          echo "iam_token=${IAM_TOKEN}" >> "${GITHUB_OUTPUT}"
+          echo "PASS: authorized key produced a Yandex IAM token."
 
       - name: Verify access to target Yandex Cloud
         shell: bash
         env:
-          IAM_TOKEN: ${{ steps.iam.outputs.iam_token }}
+          IAM_TOKEN: ${{ steps.auth.outputs.iam_token }}
           YC_CLOUD_ID: b1gi4pr9msenirafh2c7
         run: |
           set -euo pipefail
+
           RESPONSE=$(curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer ${IAM_TOKEN}" \
             "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds/${YC_CLOUD_ID}")
+
           NAME=$(jq -r '.name // empty' <<<"${RESPONSE}")
           if [[ "${NAME}" != "cloud-alexpmtk" ]]; then
             echo "FAIL: authenticated, but target cloud verification did not match."
             exit 1
           fi
-          echo "PASS: authenticated GitHub workflow can read cloud-alexpmtk."
+
+          echo "PASS: GitHub Actions authenticated to cloud-alexpmtk."
+
+      - name: Cleanup key material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "${RUNNER_TEMP}/yc-service-account-key.json"
