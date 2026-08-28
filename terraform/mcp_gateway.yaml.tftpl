@@ -1,0 +1,32 @@
+openapi: "3.0.0"
+info:
+  title: Marketplaces MCP TEST
+  version: "1.0"
+paths:
+  /healthz:
+    get:
+      x-yc-apigateway-integration:
+        type: serverless_containers
+        container_id: ${container_id}
+        service_account_id: ${service_account_id}
+  /mcp:
+    post:
+      x-yc-apigateway-integration:
+        type: serverless_containers
+        container_id: ${container_id}
+        service_account_id: ${service_account_id}
+  /mcp/{proxy+}:
+    x-yc-apigateway-any-method:
+      x-yc-apigateway-integration:
+        type: serverless_containers
+        container_id: ${container_id}
+        service_account_id: ${service_account_id}
+      parameters:
+        - name: proxy
+          in: path
+          required: false
+          explode: false
+          style: simple
+          schema:
+            type: string
+            default: "-"
