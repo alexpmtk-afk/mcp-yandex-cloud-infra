@@ -28,6 +28,26 @@ MCP infrastructure
 
 Постоянные токены, OAuth-токены и service-account keys не должны храниться в репозитории.
 
+### Обязательный bootstrap-gate
+
+Пока `control/bootstrap.env` содержит `YC_OIDC_AUTH=PENDING`, любые облачные мутации должны оставаться `BLOCKED`.
+
+Главное правило проекта:
+
+```text
+нет подтверждённой GitHub → Yandex Cloud авторизации
+                 ↓
+не создаём обычные ресурсы вручную в обход автоматизации
+                 ↓
+сначала завершаем OIDC / Workload Identity Federation
+                 ↓
+проверяем preflight
+                 ↓
+только затем разрешаем Terraform apply
+```
+
+Это правило автоматически проверяется workflow `Bootstrap Safety Gate`.
+
 ## Структура
 
 ```text
@@ -35,8 +55,9 @@ MCP infrastructure
 docs/                     архитектура и правила
 environments/test/        конфигурация TEST-окружения
 terraform/                общий Terraform-каркас
+control/bootstrap.env     машинно-читаемый статус bootstrap
 ```
 
 ## Текущий этап
 
-`BOOTSTRAP`: создан безопасный каркас без облачных мутаций.
+`BOOTSTRAP_AUTH`: GitHub-репозиторий готов, Yandex Cloud OIDC-доверие ещё не подтверждено, облачные мутации заблокированы.

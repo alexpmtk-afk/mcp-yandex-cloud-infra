@@ -1,0 +1,76 @@
+name: Bootstrap Safety Gate
+
+on:
+  pull_request:
+    paths:
+      - "control/**"
+      - "docs/BOOTSTRAP_AUTH.md"
+      - ".github/workflows/bootstrap-gate.yml"
+      - ".github/workflows/**"
+      - "terraform/**"
+      - "environments/**"
+  push:
+    branches:
+      - main
+    paths:
+      - "control/**"
+      - "docs/BOOTSTRAP_AUTH.md"
+      - ".github/workflows/bootstrap-gate.yml"
+      - ".github/workflows/**"
+      - "terraform/**"
+      - "environments/**"
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap-safety-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Load bootstrap state
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f control/bootstrap.env
+          grep -Ev '^\s*(#|$)' control/bootstrap.env >> "$GITHUB_ENV"
+
+      - name: Enforce authentication-before-mutation invariant
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ "${YC_OIDC_AUTH}" != "PASS" && "${YC_CLOUD_MUTATIONS}" != "BLOCKED" ]]; then
+            echo "FAIL: Yandex Cloud mutations must stay BLOCKED until YC_OIDC_AUTH=PASS."
+            exit 1
+          fi
+
+          if [[ "${YC_OIDC_AUTH}" == "PASS" && "${YC_WIF}" != "PASS" ]]; then
+            echo "FAIL: YC_OIDC_AUTH cannot be PASS before YC_WIF=PASS."
+            exit 1
+          fi
+
+          if [[ "${YC_OIDC_AUTH}" == "PASS" && "${YC_SERVICE_ACCOUNT}" != "PASS" ]]; then
+            echo "FAIL: YC_OIDC_AUTH cannot be PASS before YC_SERVICE_ACCOUNT=PASS."
+            exit 1
+          fi
+
+          if [[ "${YC_OIDC_AUTH}" == "PASS" && "${YC_FEDERATED_CREDENTIAL}" != "PASS" ]]; then
+            echo "FAIL: YC_OIDC_AUTH cannot be PASS before YC_FEDERATED_CREDENTIAL=PASS."
+            exit 1
+          fi
+
+          echo "PASS: bootstrap state is internally consistent."
+
+      - name: Block accidental terraform apply during bootstrap
+        if: env.YC_CLOUD_MUTATIONS == 'BLOCKED'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RIn --exclude='bootstrap-gate.yml' --exclude='*.md' --exclude='bootstrap.env' -E 'terraform[[:space:]]+apply|terraform[[:space:]]+-chdir=[^ ]+[[:space:]]+apply' .github terraform environments; then
+            echo "FAIL: terraform apply was introduced while YC_CLOUD_MUTATIONS=BLOCKED."
+            exit 1
+          fi
+          echo "PASS: no terraform apply path is enabled during bootstrap."
