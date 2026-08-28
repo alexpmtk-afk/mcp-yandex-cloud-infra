@@ -1,0 +1,6 @@
+environment = "test"
+
+# Fill these only after the Yandex Cloud folder is created and identifiers are known.
+# yc_cloud_id  = "b1g..."
+# yc_folder_id = "b1g..."
+# yc_zone      = "ru-central1-a"
