@@ -1,0 +1,90 @@
+name: Yandex Write Proof
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  yandex-write-proof:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/yc"
+          cd "${RUNNER_TEMP}/yc"
+          curl --fail --silent --show-error -O https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf yc_linux_amd64.tar.gz
+          chmod +x yc
+          echo "${RUNNER_TEMP}/yc" >> "${GITHUB_PATH}"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="${RUNNER_TEMP}/yc-service-account-key.json"
+          printf '%s' "${YC_SERVICE_ACCOUNT_KEY_JSON}" > "${KEY_FILE}"
+          chmod 600 "${KEY_FILE}"
+          yc config profile create github-ci
+          yc config set service-account-key "${KEY_FILE}"
+          yc config set cloud-id b1gi4pr9msenirafh2c7
+
+      - name: Create temporary folder
+        id: create
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="github-write-proof-${GITHUB_RUN_ID}"
+          FOLDER_ID=$(yc resource-manager folder create --name "${NAME}" --format json | jq -r '.id')
+          test -n "${FOLDER_ID}"
+          echo "folder_id=${FOLDER_ID}" >> "$GITHUB_OUTPUT"
+          echo "folder_name=${NAME}" >> "$GITHUB_OUTPUT"
+          echo "PASS: created temporary folder ${NAME}."
+
+      - name: Verify temporary folder
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.create.outputs.folder_id }}
+          EXPECTED_NAME: ${{ steps.create.outputs.folder_name }}
+        run: |
+          set -euo pipefail
+          ACTUAL_NAME=$(yc resource-manager folder get "${FOLDER_ID}" --format json | jq -r '.name')
+          test "${ACTUAL_NAME}" = "${EXPECTED_NAME}"
+          echo "PASS: temporary folder is readable and matches expected name."
+
+      - name: Delete temporary folder
+        if: always() && steps.create.outputs.folder_id != ''
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.create.outputs.folder_id }}
+        run: |
+          set -euo pipefail
+          yc resource-manager folder delete "${FOLDER_ID}"
+          echo "PASS: temporary folder delete requested."
+
+      - name: Verify deletion
+        if: always() && steps.create.outputs.folder_id != ''
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.create.outputs.folder_id }}
+        run: |
+          set -euo pipefail
+          for i in {1..12}; do
+            if ! yc resource-manager folder get "${FOLDER_ID}" >/dev/null 2>&1; then
+              echo "PASS: temporary folder is no longer retrievable."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "FAIL: temporary folder still retrievable after delete wait window."
+          exit 1
+
+      - name: Cleanup key material
+        if: always()
+        shell: bash
+        run: rm -f "${RUNNER_TEMP}/yc-service-account-key.json"
