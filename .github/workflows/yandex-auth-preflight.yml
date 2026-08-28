@@ -1,0 +1,75 @@
+name: Yandex Auth Preflight
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/yandex-auth-preflight.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  yandex-auth-preflight:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get GitHub OIDC token
+        uses: actions/github-script@v7
+        id: oidc
+        with:
+          script: |
+            const token = await core.getIDToken()
+            core.setSecret(token)
+            core.setOutput('id_token', token)
+
+      - name: Exchange OIDC token for Yandex IAM token
+        id: iam
+        shell: bash
+        env:
+          SA_ID: ajecdjjrkdo1t3itp19k
+          GITHUB_OIDC_TOKEN: ${{ steps.oidc.outputs.id_token }}
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl --fail-with-body --silent --show-error \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
+            --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
+            --data-urlencode "audience=${SA_ID}" \
+            --data-urlencode "subject_token=${GITHUB_OIDC_TOKEN}" \
+            --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token" \
+            -X POST https://auth.yandex.cloud/oauth/token)
+
+          IAM_TOKEN=$(jq -r '.access_token // empty' <<<"${RESPONSE}")
+          if [[ -z "${IAM_TOKEN}" ]]; then
+            echo "FAIL: Yandex IAM token was not returned."
+            jq -c 'del(.access_token)' <<<"${RESPONSE}"
+            exit 1
+          fi
+
+          echo "::add-mask::${IAM_TOKEN}"
+          echo "iam_token=${IAM_TOKEN}" >> "$GITHUB_OUTPUT"
+          echo "PASS: GitHub OIDC token exchanged for a Yandex IAM token."
+
+      - name: Verify access to target Yandex Cloud
+        shell: bash
+        env:
+          IAM_TOKEN: ${{ steps.iam.outputs.iam_token }}
+          YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+        run: |
+          set -euo pipefail
+
+          RESPONSE=$(curl --fail-with-body --silent --show-error \
+            -H "Authorization: Bearer ${IAM_TOKEN}" \
+            "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds/${YC_CLOUD_ID}")
+
+          NAME=$(jq -r '.name // empty' <<<"${RESPONSE}")
+          if [[ "${NAME}" != "cloud-alexpmtk" ]]; then
+            echo "FAIL: authenticated, but target cloud verification did not match."
+            exit 1
+          fi
+
+          echo "PASS: authenticated GitHub workflow can read cloud-alexpmtk."
