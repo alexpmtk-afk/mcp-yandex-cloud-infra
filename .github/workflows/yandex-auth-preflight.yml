@@ -10,40 +10,12 @@ on:
 
 permissions:
   contents: read
-  actions: write
   id-token: write
 
 jobs:
   yandex-auth-preflight:
     runs-on: ubuntu-latest
     steps:
-      - name: Set repository OIDC subject to Yandex-compatible legacy format
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-          GH_REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          HTTP_CODE=$(curl --silent --show-error \
-            -o /tmp/oidc-setting-response \
-            -w '%{http_code}' \
-            -L \
-            -X PUT \
-            -H "Accept: application/vnd.github+json" \
-            -H "Authorization: Bearer ${GH_TOKEN}" \
-            -H "X-GitHub-Api-Version: 2026-03-10" \
-            "https://api.github.com/repos/${GH_REPOSITORY}/actions/oidc/customization/sub" \
-            -d '{"use_default":true,"use_immutable_subject":false}')
-
-          if [[ "${HTTP_CODE}" != "201" ]]; then
-            echo "FAIL: GitHub OIDC compatibility setting returned HTTP ${HTTP_CODE}."
-            cat /tmp/oidc-setting-response
-            exit 1
-          fi
-
-          echo "PASS: repository OIDC subject configured for legacy name-based format."
-          sleep 5
-
       - name: Get GitHub OIDC token
         uses: actions/github-script@v7
         id: oidc
@@ -75,7 +47,6 @@ jobs:
           GITHUB_OIDC_TOKEN: ${{ steps.oidc.outputs.id_token }}
         run: |
           set -euo pipefail
-
           RESPONSE_FILE=$(mktemp)
           HTTP_CODE=$(curl --silent --show-error \
             -o "${RESPONSE_FILE}" \
@@ -107,15 +78,12 @@ jobs:
           YC_CLOUD_ID: b1gi4pr9msenirafh2c7
         run: |
           set -euo pipefail
-
           RESPONSE=$(curl --fail-with-body --silent --show-error \
             -H "Authorization: Bearer ${IAM_TOKEN}" \
             "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds/${YC_CLOUD_ID}")
-
           NAME=$(jq -r '.name // empty' <<<"${RESPONSE}")
           if [[ "${NAME}" != "cloud-alexpmtk" ]]; then
             echo "FAIL: authenticated, but target cloud verification did not match."
             exit 1
           fi
-
           echo "PASS: authenticated GitHub workflow can read cloud-alexpmtk."
