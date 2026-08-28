@@ -40,11 +40,15 @@ jobs:
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
-      - name: Create TEST foundation
+      - name: Create or import TEST foundation
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform init -input=false
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id')"
+          if [[ -n "$FOLDER_ID" && "$FOLDER_ID" != "null" ]]; then
+            terraform -chdir=terraform import yandex_resourcemanager_folder.mcp_test "$FOLDER_ID" || true
+          fi
           terraform -chdir=terraform apply -auto-approve -input=false \
             -target=yandex_resourcemanager_folder.mcp_test \
             -target=yandex_container_registry.mcp \
