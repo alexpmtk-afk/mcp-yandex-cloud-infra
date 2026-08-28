@@ -42,8 +42,13 @@ jobs:
         run: |
           set -euo pipefail
 
-          if [[ "${YC_OIDC_AUTH}" != "PASS" && "${YC_CLOUD_MUTATIONS}" != "BLOCKED" ]]; then
-            echo "FAIL: Yandex Cloud mutations must stay BLOCKED until YC_OIDC_AUTH=PASS."
+          oidc_ready=false
+          authorized_key_ready=false
+          [[ "${YC_OIDC_AUTH}" == "PASS" ]] && oidc_ready=true
+          [[ "${YC_AUTHORIZED_KEY_AUTH}" == "PASS" && "${YC_GITHUB_TO_YANDEX_AUTH}" == "PASS" ]] && authorized_key_ready=true
+
+          if [[ "${oidc_ready}" != true && "${authorized_key_ready}" != true && "${YC_CLOUD_MUTATIONS}" != "BLOCKED" ]]; then
+            echo "FAIL: Yandex Cloud mutations must stay BLOCKED until OIDC or authorized-key authentication is verified."
             exit 1
           fi
 
