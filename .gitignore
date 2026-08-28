@@ -1,0 +1,21 @@
+# Terraform local state and caches
+.terraform/
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+
+# Local variable files may contain environment-specific values
+*.tfvars
+*.tfvars.json
+!*.tfvars.example
+
+# Terraform CLI config
+.terraformrc
+terraform.rc
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
