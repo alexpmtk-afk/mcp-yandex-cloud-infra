@@ -25,6 +25,20 @@ jobs:
             core.setSecret(token)
             core.setOutput('id_token', token)
 
+      - name: Show safe OIDC claims
+        shell: bash
+        env:
+          GITHUB_OIDC_TOKEN: ${{ steps.oidc.outputs.id_token }}
+        run: |
+          set -euo pipefail
+          PAYLOAD=$(cut -d'.' -f2 <<<"${GITHUB_OIDC_TOKEN}")
+          PAD=$(( (4 - ${#PAYLOAD} % 4) % 4 ))
+          PAYLOAD="${PAYLOAD}$(printf '=%.0s' $(seq 1 ${PAD:-0}) 2>/dev/null || true)"
+          CLAIMS=$(printf '%s' "${PAYLOAD}" | tr '_-' '/+' | base64 -d 2>/dev/null)
+          echo "iss=$(jq -r '.iss' <<<"${CLAIMS}")"
+          echo "aud=$(jq -r 'if (.aud|type)=="array" then (.aud|join(",")) else .aud end' <<<"${CLAIMS}")"
+          echo "sub=$(jq -r '.sub' <<<"${CLAIMS}")"
+
       - name: Exchange OIDC token for Yandex IAM token
         id: iam
         shell: bash
@@ -34,7 +48,10 @@ jobs:
         run: |
           set -euo pipefail
 
-          RESPONSE=$(curl --fail-with-body --silent --show-error \
+          RESPONSE_FILE=$(mktemp)
+          HTTP_CODE=$(curl --silent --show-error \
+            -o "${RESPONSE_FILE}" \
+            -w '%{http_code}' \
             -H "Content-Type: application/x-www-form-urlencoded" \
             --data-urlencode "grant_type=urn:ietf:params:oauth:grant-type:token-exchange" \
             --data-urlencode "requested_token_type=urn:ietf:params:oauth:token-type:access_token" \
@@ -43,10 +60,11 @@ jobs:
             --data-urlencode "subject_token_type=urn:ietf:params:oauth:token-type:id_token" \
             -X POST https://auth.yandex.cloud/oauth/token)
 
-          IAM_TOKEN=$(jq -r '.access_token // empty' <<<"${RESPONSE}")
-          if [[ -z "${IAM_TOKEN}" ]]; then
-            echo "FAIL: Yandex IAM token was not returned."
-            jq -c 'del(.access_token)' <<<"${RESPONSE}"
+          RESPONSE=$(cat "${RESPONSE_FILE}")
+          IAM_TOKEN=$(jq -r '.access_token // empty' <<<"${RESPONSE}" 2>/dev/null || true)
+          if [[ "${HTTP_CODE}" != "200" || -z "${IAM_TOKEN}" ]]; then
+            echo "FAIL: token exchange HTTP ${HTTP_CODE}."
+            jq -c 'del(.access_token)' <<<"${RESPONSE}" 2>/dev/null || printf '%s\n' "${RESPONSE}"
             exit 1
           fi
 
