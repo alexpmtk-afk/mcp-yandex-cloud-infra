@@ -49,6 +49,8 @@ jobs:
           if [[ -n "$FOLDER_ID" && "$FOLDER_ID" != "null" ]]; then
             terraform -chdir=terraform import yandex_resourcemanager_folder.mcp_test "$FOLDER_ID" || true
           fi
+          terraform -chdir=terraform import yandex_iam_service_account.runtime ajems6nusv4frv6f29vt || true
+          terraform -chdir=terraform import yandex_iam_service_account.gateway aje1rm15eom0se5ivo2o || true
           terraform -chdir=terraform apply -auto-approve -input=false \
             -target=yandex_resourcemanager_folder.mcp_test \
             -target=yandex_container_registry.mcp \
