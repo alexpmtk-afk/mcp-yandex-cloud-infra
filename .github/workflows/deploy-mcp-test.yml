@@ -65,7 +65,7 @@ jobs:
           set -euo pipefail
           REGISTRY_ID="$(terraform -chdir=terraform output -raw container_registry_id)"
           yc container registry configure-docker
-          git clone --depth 1 https://github.com/alexpmtk-afk/marketplaces-mcp-ru.git app
+          test -f app/Dockerfile
           docker build --tag "cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA" app
           docker push "cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA"
           echo "MCP_IMAGE_URL=cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA" >> "$GITHUB_ENV"

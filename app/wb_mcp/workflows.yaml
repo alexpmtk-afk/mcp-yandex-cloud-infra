@@ -1,0 +1,94 @@
+# Wildberries analytical workflows — curated recipes over the catalog.
+# WB endpoints live-verified 2026-06-23 (stats sales/stocks/orders, prices,
+# feedbacks, questions). Field names below are grounded in real responses.
+
+workflows:
+  - name: sales_pulse
+    category: analytics
+    when_to_use: See recent sales, orders and returns to gauge momentum.
+    steps:
+      - operation_id: wb_stats_orders
+        why: Orders since a date (incremental by lastChangeDate).
+      - operation_id: wb_stats_sales
+        why: Sales and returns since the same date.
+    interpret: >
+      Compare orders vs sales to spot a buyout gap. Statistics endpoints are
+      rate-limited to 1 req/min — use wb_fetch_all which paces the date cursor.
+    common_mistakes:
+      - Hammering the endpoint — 1 req/min limit, expect slow walks.
+      - Confusing order date with change date (the flag parameter controls it).
+
+  - name: stock_health
+    category: warehouse
+    when_to_use: Check current stock and warehouse remains to avoid stockouts.
+    steps:
+      - operation_id: wb_stats_stocks
+        why: Current stock snapshot (no history).
+      - operation_id: wb_analytics_warehouse_remains
+        why: Detailed warehouse-remains report (async — returns a task_id to poll).
+    interpret: >
+      wb_stats_stocks is a point-in-time snapshot; there is no history, so store
+      snapshots yourself for trends. The remains report is async: create it, poll
+      status, then download.
+    common_mistakes:
+      - Expecting stock history from the snapshot endpoint.
+
+  - name: price_audit
+    category: pricing
+    when_to_use: Review current prices and discounts across the catalog.
+    steps:
+      - operation_id: wb_prices_list
+        why: Products with current price and discount (offset pagination).
+    interpret: >
+      Check for products in price quarantine (a new price 3x below the old one
+      triggers it). Use wb_fetch_all for the full list.
+    common_mistakes:
+      - Setting a price 3x below the old one — it lands in quarantine, not live.
+
+  - name: reorder_planner
+    category: warehouse
+    when_to_use: Decide what to resupply — compute days-of-cover from sales velocity vs current stock.
+    steps:
+      - operation_id: wb_stats_sales
+        why: Sales over a window to compute average daily sales (ADS) per nmId.
+      - operation_id: wb_stats_stocks
+        why: Current available quantity per nmId (point-in-time snapshot).
+    interpret: >
+      Per nmId: ADS = (count of sale rows in window) / (days in window). Use the
+      `nmId` field to join sales to stock. Days-of-cover = stock `quantity`
+      (available for sale) / ADS. Flag SKUs where cover < your lead time + safety
+      buffer. `inWayToClient`/`inWayFromClient` are in transit — not yet sellable,
+      don't count them as cover. Both endpoints are 1 req/min — pace with wb_fetch_all.
+    common_mistakes:
+      - Counting quantityFull or in-transit units as available cover.
+      - Using too short a sales window — ADS gets noisy under ~14 days.
+
+  - name: abc_analysis
+    category: analytics
+    when_to_use: Rank products A/B/C by revenue contribution to focus attention.
+    steps:
+      - operation_id: wb_stats_sales
+        why: Sale rows with revenue fields per nmId over the period.
+    interpret: >
+      Sum `finishedPrice` (buyer-paid, all discounts except WB Wallet) per nmId for
+      gross revenue, or `forPay` for net-to-seller. Sort descending, take cumulative
+      share: A = top SKUs up to 80% of revenue, B = next 15%, C = last 5%. A-items
+      deserve stock priority and ad spend; C-items are candidates to delist.
+    common_mistakes:
+      - Mixing forPay (net) and finishedPrice (gross) in the same ranking.
+      - Ranking by unit count instead of revenue.
+
+  - name: reviews_pulse
+    category: communications
+    when_to_use: Triage customer feedback and unanswered questions.
+    steps:
+      - operation_id: wb_get_api_feedbacks
+        why: Feedbacks; filter isAnswered=false to find what needs a reply.
+      - operation_id: wb_get_api_questions
+        why: Buyer questions; unanswered ones hurt conversion if left hanging.
+    interpret: >
+      Both take isAnswered (bool), take (<=5000) and skip for paging. Prioritise
+      unanswered + low-star feedbacks. Cluster recurring complaints by nmId — a
+      repeated theme on one card is a product/content fix, not a one-off reply.
+    common_mistakes:
+      - Forgetting take/skip — the endpoints page, default window is small.
