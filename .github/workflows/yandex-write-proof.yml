@@ -2,6 +2,11 @@ name: Yandex Write Proof
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - test/yandex-write-proof
+    paths:
+      - ".github/workflows/yandex-write-proof.yml"
 
 permissions:
   contents: read
