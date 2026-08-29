@@ -1,0 +1,256 @@
+name: Yandex Cloud read-only audit
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cloud-audit-readonly.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+      YC_FOLDER_ID: b1gnd0dqoq3ljod88i8t
+      CONTAINER_ID: bba6lj5ggejtop0jl5k8
+      GATEWAY_ID: d5deoa6cl4irtmkp5ad6
+      REGISTRY_ID: crpnhk1hs1gsai91b164
+      HEALTH_URL: https://d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net/healthz
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate without exposing credentials
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create cloud-audit || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Collect read-only inventory and weekly metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p audit_raw audits
+          FROM="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          TO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          echo "$FROM" > audit_raw/from.txt
+          echo "$TO" > audit_raw/to.txt
+
+          # Resource metadata only. No Lockbox payload reads.
+          yc serverless container get "$CONTAINER_ID" --format json > audit_raw/container.json 2>audit_raw/container.err || true
+          yc serverless container revision list --container-id "$CONTAINER_ID" --format json > audit_raw/revisions.json 2>audit_raw/revisions.err || true
+          yc serverless api-gateway get "$GATEWAY_ID" --format json > audit_raw/gateway.json 2>audit_raw/gateway.err || true
+          yc container registry get "$REGISTRY_ID" --format json > audit_raw/registry.json 2>audit_raw/registry.err || true
+          yc container image list --registry-id "$REGISTRY_ID" --format json > audit_raw/images.json 2>audit_raw/images.err || true
+          yc lockbox secret list --folder-id "$YC_FOLDER_ID" --format json > audit_raw/lockbox_metadata.json 2>audit_raw/lockbox.err || true
+
+          HEALTH_CODE="$(curl -sS -o audit_raw/health_body.txt -w '%{http_code}' --max-time 30 "$HEALTH_URL" || true)"
+          printf '%s' "$HEALTH_CODE" > audit_raw/health_code.txt
+
+          IAM_TOKEN="$(yc iam create-token)"
+          metric_read() {
+            local name="$1"
+            local query="$2"
+            local payload
+            payload="$(jq -nc --arg q "$query" --arg f "$FROM" --arg t "$TO" '{query:$q,fromTime:$f,toTime:$t,downsampling:{maxPoints:"1000",gridAggregation:"AVG",gapFilling:"NONE"}}')"
+            curl -sS -X POST "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=$YC_FOLDER_ID" \
+              -H "Authorization: Bearer $IAM_TOKEN" \
+              -H 'Content-Type: application/json' \
+              --data "$payload" > "audit_raw/${name}.json" || true
+          }
+
+          metric_read container_count '"serverless.containers.execution_time_milliseconds_count"{service="serverless-containers", container="bba6lj5ggejtop0jl5k8"}'
+          metric_read container_time '"serverless.containers.execution_time_milliseconds_sum"{service="serverless-containers", container="bba6lj5ggejtop0jl5k8"}'
+          metric_read container_errors '"serverless.containers.errors_per_second"{service="serverless-containers", container="bba6lj5ggejtop0jl5k8"}'
+          metric_read gateway_requests '"api_gateway.requests_count_per_second"{service="serverless-apigateway", gateway="d5deoa6cl4irtmkp5ad6"}'
+          metric_read gateway_errors '"api_gateway.errors_count_per_second"{service="serverless-apigateway", gateway="d5deoa6cl4irtmkp5ad6"}'
+          metric_read registry_size '"registry.size_bytes"{service="container-registry", registry="crpnhk1hs1gsai91b164"}'
+          metric_read registry_images '"registry.images_count"{service="container-registry", registry="crpnhk1hs1gsai91b164"}'
+
+          # Billing account visibility check only; no billing mutations.
+          curl -sS -w '\n%{http_code}' \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts?pageSize=100' \
+            > audit_raw/billing_accounts_with_status.txt || true
+
+          python - <<'PY'
+          import json, math
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          raw = Path('audit_raw')
+          out = Path('audits')
+
+          def load(name, default=None):
+              try:
+                  return json.loads((raw/name).read_text())
+              except Exception:
+                  return default
+
+          def values(metric):
+              ts = metric.get('timeseries') or {}
+              vals = ts.get('doubleValues')
+              if vals is None or len(vals)==0:
+                  vals = ts.get('int64Values') or []
+              return [float(v) for v in vals]
+
+          def timestamps(metric):
+              return [float(v)/1000.0 for v in ((metric.get('timeseries') or {}).get('timestamps') or [])]
+
+          def counter_delta(doc):
+              total = 0.0
+              series = (doc or {}).get('metrics') or []
+              for m in series:
+                  vs = values(m)
+                  if len(vs) < 2:
+                      continue
+                  prev = vs[0]
+                  for cur in vs[1:]:
+                      if cur >= prev:
+                          total += cur-prev
+                      else:
+                          total += max(cur,0)
+                      prev = cur
+              return total
+
+          def integrate_rate(doc):
+              total = 0.0
+              for m in ((doc or {}).get('metrics') or []):
+                  vs = values(m); ts = timestamps(m)
+                  n = min(len(vs), len(ts))
+                  if n < 2:
+                      continue
+                  for i in range(1,n):
+                      dt = max(0.0, ts[i]-ts[i-1])
+                      total += (vs[i-1]+vs[i])*0.5*dt
+              return total
+
+          def last_value(doc):
+              candidates=[]
+              for m in ((doc or {}).get('metrics') or []):
+                  vs=values(m); ts=timestamps(m)
+                  if vs:
+                      candidates.append((ts[-1] if ts else 0, vs[-1]))
+              return max(candidates)[1] if candidates else None
+
+          images = load('images.json', []) or []
+          compressed_total = 0
+          for image in images if isinstance(images,list) else []:
+              for key in ('compressed_size','compressedSize','size'):
+                  val=image.get(key)
+                  if val is not None:
+                      try: compressed_total += int(val)
+                      except: pass
+                      break
+
+          lockbox = load('lockbox_metadata.json', []) or []
+          lockbox_meta=[]
+          if isinstance(lockbox,list):
+              for s in lockbox:
+                  lockbox_meta.append({k:s.get(k) for k in ('id','name','status','created_at','createdAt') if k in s})
+
+          billing_text=(raw/'billing_accounts_with_status.txt').read_text(errors='replace') if (raw/'billing_accounts_with_status.txt').exists() else ''
+          billing_lines=billing_text.rstrip().splitlines()
+          billing_http=billing_lines[-1] if billing_lines and billing_lines[-1].isdigit() else None
+          billing_body='\n'.join(billing_lines[:-1]) if billing_http else billing_text
+          billing=None
+          if billing_http=='200':
+              try:
+                  b=json.loads(billing_body)
+                  billing={'http_status':200,'accounts':[{'id':x.get('id'),'name':x.get('name'),'currency':x.get('currency'),'active':x.get('active'),'balance':x.get('balance')} for x in b.get('billingAccounts',[])]}
+              except Exception as e:
+                  billing={'http_status':200,'parse_error':str(e)}
+          else:
+              billing={'http_status':int(billing_http) if billing_http else None,'available':False}
+
+          calls=counter_delta(load('container_count.json',{}))
+          exec_ms=counter_delta(load('container_time.json',{}))
+          gw_requests=integrate_rate(load('gateway_requests.json',{}))
+          gw_errors=integrate_rate(load('gateway_errors.json',{}))
+          c_errors=integrate_rate(load('container_errors.json',{}))
+          reg_size=last_value(load('registry_size.json',{}))
+          reg_images=last_value(load('registry_images.json',{}))
+
+          report={
+              'generated_at':datetime.now(timezone.utc).isoformat(),
+              'period':{'from':(raw/'from.txt').read_text().strip(),'to':(raw/'to.txt').read_text().strip(),'days':7},
+              'scope':{'cloud_id':'b1gi4pr9msenirafh2c7','folder_id':'b1gnd0dqoq3ljod88i8t','container_id':'bba6lj5ggejtop0jl5k8','gateway_id':'d5deoa6cl4irtmkp5ad6','registry_id':'crpnhk1hs1gsai91b164'},
+              'health':{'http_status':(raw/'health_code.txt').read_text().strip(),'body':(raw/'health_body.txt').read_text(errors='replace')[:500] if (raw/'health_body.txt').exists() else None},
+              'weekly_metrics':{
+                  'container_invocations_counter_delta':round(calls,3),
+                  'container_execution_time_ms_counter_delta':round(exec_ms,3),
+                  'container_execution_time_hours':round(exec_ms/3600000,6),
+                  'container_errors_integrated_estimate':round(c_errors,3),
+                  'gateway_requests_integrated_estimate':round(gw_requests,3),
+                  'gateway_errors_integrated_estimate':round(gw_errors,3),
+              },
+              'registry':{
+                  'metric_size_bytes_latest':reg_size,
+                  'metric_size_mb_latest':round(reg_size/1024/1024,3) if reg_size is not None else None,
+                  'metric_images_count_latest':reg_images,
+                  'cli_images_count':len(images) if isinstance(images,list) else None,
+                  'cli_reported_compressed_bytes_sum':compressed_total,
+              },
+              'lockbox_metadata_only':lockbox_meta,
+              'billing_visibility':billing,
+              'resource_metadata':{
+                  'container':load('container.json',{}),
+                  'revisions':load('revisions.json',[]),
+                  'gateway':load('gateway.json',{}),
+                  'registry':load('registry.json',{}),
+              },
+              'notes':[
+                  'Cloud audit is read-only; Lockbox payload was not requested.',
+                  'Gateway request/error totals are estimates obtained by integrating requests-per-second metrics.',
+                  'Container invocation and execution totals use counter deltas over the selected period.',
+                  'Billing detailed usage requires billing.accounts.viewer; this workflow only checks account visibility/balance via BillingAccount API.'
+              ]
+          }
+          (out/'yandex-cloud-latest.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          wm=report['weekly_metrics']; rg=report['registry']; h=report['health']
+          md=f'''# Yandex Cloud read-only audit\n\nGenerated: {report['generated_at']}\nPeriod: {report['period']['from']} — {report['period']['to']}\n\n## Health\n- HTTP: {h['http_status']}\n- Body: `{h['body']}`\n\n## Last 7 days\n- Container invocations: {wm['container_invocations_counter_delta']}\n- Container execution time: {wm['container_execution_time_hours']} h ({wm['container_execution_time_ms_counter_delta']} ms)\n- Container errors (integrated estimate): {wm['container_errors_integrated_estimate']}\n- API Gateway requests (integrated estimate): {wm['gateway_requests_integrated_estimate']}\n- API Gateway errors (integrated estimate): {wm['gateway_errors_integrated_estimate']}\n\n## Container Registry\n- Latest size metric: {rg['metric_size_mb_latest']} MB\n- Latest images-count metric: {rg['metric_images_count_latest']}\n- CLI images count: {rg['cli_images_count']}\n\n## Billing visibility\n```json\n{json.dumps(report['billing_visibility'],ensure_ascii=False,indent=2)}\n```\n'''
+          (out/'yandex-cloud-latest.md').write_text(md)
+          PY
+
+      - name: Persist sanitized audit report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add audits/yandex-cloud-latest.json audits/yandex-cloud-latest.md
+          if git diff --cached --quiet; then
+            echo 'No report changes.'
+          else
+            git commit -m 'chore(audit): update Yandex Cloud read-only report'
+            git push
+          fi
+
+      - name: Remove ephemeral CI key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
