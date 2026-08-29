@@ -1,0 +1,156 @@
+{
+  "generated_at": "2026-08-29T08:59:19.775972+00:00",
+  "period": {
+    "from": "2026-08-22T08:58:40Z",
+    "to": "2026-08-29T08:58:40Z",
+    "days": 7
+  },
+  "scope": {
+    "cloud_id": "b1gi4pr9msenirafh2c7",
+    "folder_id": "b1gnd0dqoq3ljod88i8t",
+    "container_id": "bba6lj5ggejtop0jl5k8",
+    "gateway_id": "d5deoa6cl4irtmkp5ad6",
+    "registry_id": "crpnhk1hs1gsai91b164"
+  },
+  "health": {
+    "http_status": "200",
+    "body": "{\"status\":\"ok\"}"
+  },
+  "weekly_metrics": {
+    "container_invocations_counter_delta": 0.0,
+    "container_execution_time_ms_counter_delta": 0.0,
+    "container_execution_time_hours": 0.0,
+    "container_errors_integrated_estimate": 0.0,
+    "gateway_requests_integrated_estimate": 0.0,
+    "gateway_errors_integrated_estimate": 0.0
+  },
+  "registry": {
+    "metric_size_bytes_latest": null,
+    "metric_size_mb_latest": null,
+    "metric_images_count_latest": null,
+    "cli_images_count": 1,
+    "cli_reported_compressed_bytes_sum": 58944762
+  },
+  "lockbox_metadata_only": [
+    {
+      "id": "e6q9fa3db4ck3cqf7tq1",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:41:09.347Z"
+    },
+    {
+      "id": "e6q9iv54h4mmqbsce7ik",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:45:38.769Z"
+    },
+    {
+      "id": "e6qb8b3u57e71731j1os",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:55:21.593Z"
+    },
+    {
+      "id": "e6qicoq39uu3bqdv6gl5",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:52:18.136Z"
+    },
+    {
+      "id": "e6qt3a0c2iudedartehg",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:38:41.317Z"
+    },
+    {
+      "id": "e6qtq490pkmfneh13pp9",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:35:50.640Z"
+    }
+  ],
+  "billing_visibility": {
+    "http_status": 200,
+    "accounts": []
+  },
+  "resource_metadata": {
+    "container": {
+      "id": "bba6lj5ggejtop0jl5k8",
+      "folder_id": "b1gnd0dqoq3ljod88i8t",
+      "created_at": "2026-08-28T22:56:14.743Z",
+      "name": "marketplaces-mcp-test",
+      "description": "Private Streamable HTTP MCP service",
+      "labels": {
+        "environment": "test",
+        "managed_by": "terraform",
+        "project": "marketplaces-mcp"
+      },
+      "url": "https://bba6lj5ggejtop0jl5k8.containers.yandexcloud.net/",
+      "status": "ACTIVE"
+    },
+    "revisions": [
+      {
+        "id": "bba3uj4idcl7221g11m4",
+        "container_id": "bba6lj5ggejtop0jl5k8",
+        "created_at": "2026-08-28T22:56:15.820Z",
+        "image": {
+          "image_url": "cr.yandex/crpnhk1hs1gsai91b164/marketplaces-mcp:test-2d1731ee1da23e5458f5746719cfefd1810af274",
+          "image_digest": "sha256:9e388d80fdb7857e015e0b82393880ee0fe6f8402d61fee5d924f66bddd9498a"
+        },
+        "resources": {
+          "memory": "536870912",
+          "cores": "1",
+          "core_fraction": "100"
+        },
+        "execution_timeout": "60s",
+        "concurrency": "1",
+        "service_account_id": "ajems6nusv4frv6f29vt",
+        "status": "ACTIVE",
+        "log_options": {
+          "folder_id": "b1gnd0dqoq3ljod88i8t"
+        },
+        "runtime": {
+          "http": {}
+        },
+        "metadata_options": {}
+      }
+    ],
+    "gateway": {
+      "id": "d5deoa6cl4irtmkp5ad6",
+      "folder_id": "b1gnd0dqoq3ljod88i8t",
+      "created_at": "2026-08-28T22:56:24.887Z",
+      "name": "marketplaces-mcp-test",
+      "description": "TEST gateway for the private MCP container",
+      "labels": {
+        "environment": "test",
+        "managed_by": "terraform",
+        "project": "marketplaces-mcp"
+      },
+      "status": "ACTIVE",
+      "domain": "d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net",
+      "connectivity": {},
+      "log_options": {
+        "folder_id": "b1gnd0dqoq3ljod88i8t"
+      },
+      "execution_timeout": "60s"
+    },
+    "registry": {
+      "id": "crpnhk1hs1gsai91b164",
+      "folder_id": "b1gnd0dqoq3ljod88i8t",
+      "name": "marketplaces-mcp",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:55:21.671Z",
+      "labels": {
+        "environment": "test",
+        "managed_by": "terraform",
+        "project": "marketplaces-mcp"
+      }
+    }
+  },
+  "notes": [
+    "Cloud audit is read-only; Lockbox payload was not requested.",
+    "Gateway request/error totals are estimates obtained by integrating requests-per-second metrics.",
+    "Container invocation and execution totals use counter deltas over the selected period.",
+    "Billing detailed usage requires billing.accounts.viewer; this workflow only checks account visibility/balance via BillingAccount API."
+  ]
+}
