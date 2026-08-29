@@ -89,7 +89,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          APP_SHA="1d79daf76ec50e1fb87564a6e9f06a1d55821245"
+          APP_SHA="19013a837db2d55e779e8854b5b18e5743d8da3b"
           PLAN_ONLY_IMAGE="cr.yandex/planonly0000000000000/birzha-mcp-forecast:git-$APP_SHA"
           terraform -chdir=terraform/birzha_test plan \
             -lock=false \
