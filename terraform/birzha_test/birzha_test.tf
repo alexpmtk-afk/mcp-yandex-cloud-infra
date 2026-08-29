@@ -23,10 +23,25 @@ resource "yandex_iam_service_account" "gateway" {
   description = "Identity used by API Gateway to invoke the private BIRZHA MCP container"
 }
 
+resource "yandex_iam_service_account" "publisher" {
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  name        = "birzha-mcp-forecast-publisher"
+  description = "Dedicated CI identity allowed only to publish BIRZHA MCP Forecast images"
+}
+
 resource "yandex_resourcemanager_folder_iam_member" "runtime_registry_pull" {
   folder_id = yandex_resourcemanager_folder.birzha_test.id
   role      = "container-registry.images.puller"
   member    = "serviceAccount:${yandex_iam_service_account.runtime.id}"
+}
+
+resource "yandex_container_registry_iam_binding" "publisher_push" {
+  registry_id = yandex_container_registry.birzha.id
+  role        = "container-registry.images.pusher"
+
+  members = [
+    "serviceAccount:${yandex_iam_service_account.publisher.id}",
+  ]
 }
 
 resource "yandex_serverless_container" "mcp" {
