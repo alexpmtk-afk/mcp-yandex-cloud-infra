@@ -1,0 +1,191 @@
+name: Yandex Cloud metrics read-only v2
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - '.github/workflows/cloud-metrics-readonly-v2.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+      YC_FOLDER_ID: b1gnd0dqoq3ljod88i8t
+      CONTAINER_ID: bba6lj5ggejtop0jl5k8
+      GATEWAY_ID: d5deoa6cl4irtmkp5ad6
+      REGISTRY_ID: crpnhk1hs1gsai91b164
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yc
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create cloud-metrics-v2 || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Read last 7 days
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p metrics_raw audits
+          FROM="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          TO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          printf '%s' "$FROM" > metrics_raw/from.txt
+          printf '%s' "$TO" > metrics_raw/to.txt
+          TOKEN="$(yc iam create-token)"
+
+          read_metric() {
+            local file="$1" query="$2"
+            jq -nc --arg q "$query" --arg f "$FROM" --arg t "$TO" \
+              '{query:$q,fromTime:$f,toTime:$t,downsampling:{maxPoints:"1000",gridAggregation:"AVG",gapFilling:"NONE"}}' > metrics_raw/body.json
+            code="$(curl -sS -o "metrics_raw/${file}.json" -w '%{http_code}' \
+              -X POST "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=$YC_FOLDER_ID" \
+              -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
+              --data @metrics_raw/body.json)"
+            printf '%s' "$code" > "metrics_raw/${file}.status"
+          }
+
+          read_metric container_started 'serverless.containers.started_per_second{service="serverless-containers",container="bba6lj5ggejtop0jl5k8"}'
+          read_metric container_exec_sum 'serverless.containers.execution_time_milliseconds_sum{service="serverless-containers",container="bba6lj5ggejtop0jl5k8"}'
+          read_metric container_errors 'serverless.containers.errors_per_second{service="serverless-containers",container="bba6lj5ggejtop0jl5k8"}'
+          read_metric gateway_requests 'api_gateway.requests_count_per_second{service="serverless-apigateway",gateway="d5deoa6cl4irtmkp5ad6"}'
+          read_metric gateway_errors 'api_gateway.errors_count_per_second{service="serverless-apigateway",gateway="d5deoa6cl4irtmkp5ad6"}'
+          read_metric registry_size 'registry.size_bytes{service="container-registry",registry="crpnhk1hs1gsai91b164"}'
+          read_metric registry_images 'registry.images_count{service="container-registry",registry="crpnhk1hs1gsai91b164"}'
+
+          yc serverless container get "$CONTAINER_ID" --format json > metrics_raw/container.json
+          yc container image list --registry-id "$REGISTRY_ID" --format json > metrics_raw/images.json
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+
+          p=Path('metrics_raw')
+          def j(name):
+              try:return json.loads((p/f'{name}.json').read_text())
+              except:return {}
+          def vals(m):
+              t=m.get('timeseries') or {}
+              v=t.get('doubleValues')
+              if not v: v=t.get('int64Values') or []
+              return [float(x) for x in v]
+          def ts(m):
+              return [float(x)/1000 for x in ((m.get('timeseries') or {}).get('timestamps') or [])]
+          def integrate(doc):
+              total=0.0
+              for m in doc.get('metrics',[]):
+                  v=vals(m); t=ts(m); n=min(len(v),len(t))
+                  if n==1: continue
+                  for i in range(1,n):
+                      total += (v[i-1]+v[i])/2 * max(0,t[i]-t[i-1])
+              return total
+          def last(doc):
+              c=[]
+              for m in doc.get('metrics',[]):
+                  v=vals(m); t=ts(m)
+                  if v:c.append((t[-1] if t else 0,v[-1]))
+              return max(c)[1] if c else None
+          def first(doc):
+              c=[]
+              for m in doc.get('metrics',[]):
+                  v=vals(m); t=ts(m)
+                  if v:c.append((t[0] if t else 0,v[0]))
+              return min(c)[1] if c else None
+          def counter_delta_or_last(doc, resource_created_inside_window=True):
+              a=first(doc); b=last(doc)
+              if b is None:return None
+              if resource_created_inside_window:return b
+              if a is None:return b
+              return max(0,b-a)
+
+          container=json.loads((p/'container.json').read_text())
+          created=container.get('created_at') or container.get('createdAt')
+          from_s=(p/'from.txt').read_text().strip()
+          created_inside=True
+          if created:
+              try: created_inside=datetime.fromisoformat(created.replace('Z','+00:00')) >= datetime.fromisoformat(from_s.replace('Z','+00:00'))
+              except: pass
+
+          started=integrate(j('container_started'))
+          exec_ms=counter_delta_or_last(j('container_exec_sum'),created_inside)
+          c_errors=integrate(j('container_errors'))
+          gw_req=integrate(j('gateway_requests'))
+          gw_err=integrate(j('gateway_errors'))
+          reg_size=last(j('registry_size'))
+          reg_count=last(j('registry_images'))
+          images=json.loads((p/'images.json').read_text())
+          cli_bytes=sum(int(x.get('compressed_size') or x.get('compressedSize') or x.get('size') or 0) for x in images)
+          exec_h=(exec_ms or 0)/3600000
+
+          status={n:(p/f'{n}.status').read_text().strip() for n in ['container_started','container_exec_sum','container_errors','gateway_requests','gateway_errors','registry_size','registry_images']}
+          report={
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'period':{'from':from_s,'to':(p/'to.txt').read_text().strip()},
+            'http_statuses':status,
+            'metrics':{
+              'container_invocations_estimate':round(started,3),
+              'container_execution_ms':None if exec_ms is None else round(exec_ms,3),
+              'container_execution_hours':round(exec_h,8),
+              'estimated_vcpu_hours_1vcpu':round(exec_h,8),
+              'estimated_memory_gb_hours_0_5gb':round(exec_h*0.5,8),
+              'container_errors_estimate':round(c_errors,3),
+              'gateway_requests_estimate':round(gw_req,3),
+              'gateway_errors_estimate':round(gw_err,3),
+              'registry_size_bytes':reg_size,
+              'registry_size_mib':None if reg_size is None else round(reg_size/1024/1024,3),
+              'registry_images_count_metric':reg_count,
+              'registry_images_count_cli':len(images),
+              'registry_cli_compressed_bytes':cli_bytes,
+              'registry_cli_compressed_mib':round(cli_bytes/1024/1024,3),
+            },
+            'free_tier_reference':{
+              'serverless_invocations_per_month':1000000,
+              'serverless_vcpu_hours_per_month':5,
+              'serverless_memory_gb_hours_per_month':10,
+              'api_gateway_requests_per_month':100000
+            },
+            'notes':['Cloud resources were read only; no Lockbox payload or secret value was requested.','Invocation/Gateway totals integrate per-second Monitoring series and can be slightly approximate because of downsampling.']
+          }
+          Path('audits/yandex-cloud-metrics-v2.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          m=report['metrics']
+          Path('audits/yandex-cloud-metrics-v2.md').write_text(f'''# Yandex Cloud weekly metrics v2\n\nPeriod: {report['period']['from']} — {report['period']['to']}\n\n- Container invocations: {m['container_invocations_estimate']}\n- Execution time: {m['container_execution_hours']} h\n- Estimated vCPU: {m['estimated_vcpu_hours_1vcpu']} vCPU×h\n- Estimated memory: {m['estimated_memory_gb_hours_0_5gb']} GB×h\n- Container errors: {m['container_errors_estimate']}\n- API Gateway requests: {m['gateway_requests_estimate']}\n- API Gateway errors: {m['gateway_errors_estimate']}\n- Registry size (Monitoring): {m['registry_size_mib']} MiB\n- Registry size (CLI compressed sum): {m['registry_cli_compressed_mib']} MiB\n- Registry images: {m['registry_images_count_cli']}\n- Monitoring HTTP statuses: {status}\n''')
+          PY
+
+      - name: Persist sanitized report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add audits/yandex-cloud-metrics-v2.json audits/yandex-cloud-metrics-v2.md
+          git commit -m 'chore(audit): update Yandex Cloud weekly metrics v2' || exit 0
+          git push
+
+      - name: Remove ephemeral key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
