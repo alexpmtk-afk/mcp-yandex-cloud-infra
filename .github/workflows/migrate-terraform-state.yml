@@ -94,7 +94,6 @@ jobs:
             fi
           }
 
-          import_if_absent yandex_resourcemanager_folder.mcp_test "$FOLDER_ID"
           import_if_absent yandex_container_registry.mcp "$REGISTRY_ID"
           import_if_absent yandex_iam_service_account.runtime "$RUNTIME_SA_ID"
           import_if_absent yandex_iam_service_account.gateway "$GATEWAY_SA_ID"
