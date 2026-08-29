@@ -48,3 +48,9 @@ variable "mcp_image_url" {
   default     = null
   nullable    = true
 }
+
+variable "mcp_api_gateway_id" {
+  description = "Existing TEST API Gateway ID; read-only because the provider cannot import it."
+  type        = string
+  default     = "d5deoa6cl4irtmkp5ad6"
+}
