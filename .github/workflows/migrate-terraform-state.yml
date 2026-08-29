@@ -78,7 +78,7 @@ jobs:
           REVISION_ID="$(yc serverless container get --id "$CONTAINER_ID" --format json | jq -r '.latest_revision_id')"
           test -n "$REVISION_ID"
           test "$REVISION_ID" != "null"
-          MCP_IMAGE_URL="$(yc serverless container revision get --id "$REVISION_ID" --format json | jq -r '.container_image.image_url // .image.url // .image_url // empty')"
+          MCP_IMAGE_URL="$(yc serverless container revision get --id "$REVISION_ID" --format json | jq -r '.image.image_url // .container_image.image_url // .image.url // .image_url // empty')"
           test -n "$MCP_IMAGE_URL"
 
           import_if_absent() {
@@ -109,7 +109,7 @@ jobs:
           set -euo pipefail
           CONTAINER_ID="bba6lj5ggejtop0jl5k8"
           REVISION_ID="$(yc serverless container get --id "$CONTAINER_ID" --format json | jq -r '.latest_revision_id')"
-          MCP_IMAGE_URL="$(yc serverless container revision get --id "$REVISION_ID" --format json | jq -r '.container_image.image_url // .image.url // .image_url // empty')"
+          MCP_IMAGE_URL="$(yc serverless container revision get --id "$REVISION_ID" --format json | jq -r '.image.image_url // .container_image.image_url // .image.url // .image_url // empty')"
           test -n "$MCP_IMAGE_URL"
 
           set +e
