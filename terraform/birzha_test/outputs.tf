@@ -23,6 +23,16 @@ output "publisher_service_account_id" {
   value       = yandex_iam_service_account.publisher.id
 }
 
+output "publisher_oidc_federation_id" {
+  description = "GitHub Actions OIDC workload identity federation ID for image publishing."
+  value       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
+}
+
+output "publisher_federated_credential_id" {
+  description = "Federated credential ID binding GitHub main to the publisher service account."
+  value       = yandex_iam_workload_identity_federated_credential.github_image_publisher.id
+}
+
 output "serverless_container_id" {
   description = "BIRZHA Forecast TEST Serverless Container ID, once an image is configured."
   value       = try(yandex_serverless_container.mcp[0].id, null)
