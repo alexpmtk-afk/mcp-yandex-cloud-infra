@@ -1,0 +1,21 @@
+{
+  "generated_at": "2026-08-29T10:42:22.777558+00:00",
+  "lockbox_count": 1,
+  "lockboxes": [
+    {
+      "id": "e6qb8b3u57e71731j1os",
+      "name": "marketplaces-mcp-api-credentials",
+      "status": "ACTIVE",
+      "created_at": "2026-08-28T22:55:21.593Z"
+    }
+  ],
+  "ci_folder_roles": [],
+  "monitoring_http": "200",
+  "monitoring_has_metrics": true,
+  "monitoring_error": null,
+  "billing_http": "200",
+  "billing_accounts_count": 0,
+  "health_http": "200",
+  "health_body": "{\"status\":\"ok\"}",
+  "registry_images_count": 1
+}
