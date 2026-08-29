@@ -46,8 +46,8 @@ resource "yandex_serverless_container" "mcp" {
   image {
     url = var.mcp_image_url
     environment = {
-      MCP_ALLOWED_HOSTS   = var.mcp_allowed_hosts
-      MCP_ALLOWED_ORIGINS = var.mcp_allowed_origins
+      MCP_ALLOWED_HOSTS    = var.mcp_allowed_hosts
+      MCP_ALLOWED_ORIGINS  = var.mcp_allowed_origins
       BIRZHA_SOURCE_COMMIT = var.source_commit_sha
     }
   }
