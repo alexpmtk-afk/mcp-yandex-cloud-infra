@@ -25,12 +25,14 @@ variable "test_folder_name" {
 }
 
 variable "mcp_image_url" {
-  description = "Immutable BIRZHA MCP image URL. For plan-only CI a non-deployable placeholder is allowed; apply must use a pushed image pinned to source commit/digest."
+  description = "Immutable BIRZHA MCP image URL. Leave null for foundation-only bootstrap; apply with a container requires a pushed image pinned to source commit/digest."
   type        = string
+  default     = null
+  nullable    = true
 }
 
 variable "mcp_allowed_hosts" {
-  description = "Comma-separated exact Host values accepted by MCP transport security. Phase 1 uses a fail-closed placeholder; phase 2 must use the real API Gateway domain."
+  description = "Comma-separated exact Host values accepted by MCP transport security. Initial remote deployment uses a fail-closed placeholder; the next revision must use the real API Gateway domain."
   type        = string
   default     = "__remote_host_not_configured__.invalid"
 }
@@ -44,6 +46,7 @@ variable "mcp_allowed_origins" {
 variable "source_commit_sha" {
   description = "Exact birzha-mcp-forecast source commit represented by the container image."
   type        = string
+  default     = "0000000000000000000000000000000000000000"
 
   validation {
     condition     = can(regex("^[0-9a-f]{40}$", var.source_commit_sha))
