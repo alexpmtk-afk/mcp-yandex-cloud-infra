@@ -76,46 +76,79 @@ jobs:
           ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
           ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
 
-      - name: Build exact subject replacement bootstrap plan
+      - name: Build exact temporary-IAM bootstrap plan only
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform/birzha_test plan \
             -input=false -no-color \
-            -out=subject-update.tfplan \
+            -target='yandex_resourcemanager_folder_iam_member.federated_credential_update_user[0]' \
+            -target='yandex_iam_service_account_iam_member.federated_credential_update_editor[0]' \
+            -out=subject-bootstrap.tfplan \
             -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
             -var="federated_credential_update_deployer_service_account_id=${DEPLOYER_SA_ID}"
-          terraform -chdir=terraform/birzha_test show -json subject-update.tfplan > "$RUNNER_TEMP/subject-update-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color subject-update.tfplan > "$RUNNER_TEMP/subject-update-plan.txt"
+          terraform -chdir=terraform/birzha_test show -json subject-bootstrap.tfplan > "$RUNNER_TEMP/subject-bootstrap-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color subject-bootstrap.tfplan > "$RUNNER_TEMP/subject-bootstrap-plan.txt"
 
-      - name: Assert exact bootstrap and credential replacement delta
+      - name: Assert exact two-resource bootstrap delta
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json, os
           from pathlib import Path
-          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('subject-update-plan.json').read_text())
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('subject-bootstrap-plan.json').read_text())
           actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
           expected={
             'yandex_resourcemanager_folder_iam_member.federated_credential_update_user[0]':['create'],
             'yandex_iam_service_account_iam_member.federated_credential_update_editor[0]':['create'],
-            'yandex_iam_workload_identity_federated_credential.github_image_publisher':['delete','create'],
           }
           if actual != expected:
-            raise SystemExit(f'Unexpected subject update plan delta: {actual!r}')
+            raise SystemExit(f'Unexpected temporary IAM bootstrap delta: {actual!r}')
+          print('OIDC_TEMP_IAM_EXACT_2_ADD_PASS')
+          PY
+          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/subject-bootstrap-plan.txt"
+
+      - name: Apply exact saved temporary-IAM bootstrap plan
+        shell: bash
+        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color subject-bootstrap.tfplan
+
+      - name: Build exact credential replacement plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -out=subject-replace.tfplan \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
+            -var="federated_credential_update_deployer_service_account_id=${DEPLOYER_SA_ID}"
+          terraform -chdir=terraform/birzha_test show -json subject-replace.tfplan > "$RUNNER_TEMP/subject-replace-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color subject-replace.tfplan > "$RUNNER_TEMP/subject-replace-plan.txt"
+
+      - name: Assert only federated credential replacement remains
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('subject-replace-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={'yandex_iam_workload_identity_federated_credential.github_image_publisher':['delete','create']}
+          if actual != expected:
+            raise SystemExit(f'Unexpected credential replacement delta: {actual!r}')
           after=[x for x in plan['resource_changes'] if x['address']=='yandex_iam_workload_identity_federated_credential.github_image_publisher'][0]['change']['after']
           expected_subject='repo:alexpmtk-afk@309119594/birzha-mcp-forecast@1350648480:ref:refs/heads/main'
           if after.get('external_subject_id') != expected_subject:
             raise SystemExit('Incorrect replacement subject')
-          print('OIDC_SUBJECT_BOOTSTRAP_EXACT_PASS')
+          print('OIDC_CREDENTIAL_REPLACEMENT_EXACT_PASS')
           PY
-          grep -Fq 'Plan: 3 to add, 0 to change, 1 to destroy.' "$RUNNER_TEMP/subject-update-plan.txt"
-          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/subject-update-plan.txt"
+          grep -Fq 'Plan: 1 to add, 0 to change, 1 to destroy.' "$RUNNER_TEMP/subject-replace-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/subject-replace-plan.txt"
 
-      - name: Apply exact saved subject update plan
+      - name: Apply exact saved credential replacement plan
         shell: bash
-        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color subject-update.tfplan
+        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color subject-replace.tfplan
 
       - name: Capture new federated credential ID
         shell: bash
@@ -129,7 +162,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          unset TF_VAR_federated_credential_update_deployer_service_account_id
           terraform -chdir=terraform/birzha_test plan \
             -input=false -no-color \
             -out=subject-cleanup.tfplan \
@@ -155,7 +187,6 @@ jobs:
           print('OIDC_SUBJECT_CLEANUP_EXACT_2_DESTROY_PASS')
           PY
           grep -Fq 'Plan: 0 to add, 0 to change, 2 to destroy.' "$RUNNER_TEMP/subject-cleanup-plan.txt"
-          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/subject-cleanup-plan.txt"
 
       - name: Apply exact saved cleanup plan
         shell: bash
@@ -202,7 +233,8 @@ jobs:
         with:
           name: birzha-oidc-subject-correction-evidence
           path: |
-            ${{ runner.temp }}/subject-update-plan.txt
+            ${{ runner.temp }}/subject-bootstrap-plan.txt
+            ${{ runner.temp }}/subject-replace-plan.txt
             ${{ runner.temp }}/subject-cleanup-plan.txt
             ${{ runner.temp }}/state-final.txt
             ${{ runner.temp }}/post-subject-plan.txt
