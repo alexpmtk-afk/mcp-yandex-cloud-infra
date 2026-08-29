@@ -1,0 +1,215 @@
+name: Apply BIRZHA Publisher OIDC Subject Correction
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-oidc-subject-apply.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-mcp-forecast-publisher-wif
+  cancel-in-progress: false
+
+jobs:
+  apply-subject-correction:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral provider key and derive deployer identity
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          DEPLOYER_SA_ID="$(python - "$KEY_FILE" <<'PY'
+          import json, sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text()).get('service_account_id', ''))
+          PY
+          )"
+          [[ "$DEPLOYER_SA_ID" == "ajecdjjrkdo1t3itpl9k" ]] || { echo "Unexpected infra deployer identity" >&2; exit 1; }
+          echo "::add-mask::$DEPLOYER_SA_ID"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "DEPLOYER_SA_ID=$DEPLOYER_SA_ID" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Assert pre-apply boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'federated_credential_update_' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
+
+      - name: Build exact subject replacement bootstrap plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -out=subject-update.tfplan \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
+            -var="federated_credential_update_deployer_service_account_id=${DEPLOYER_SA_ID}"
+          terraform -chdir=terraform/birzha_test show -json subject-update.tfplan > "$RUNNER_TEMP/subject-update-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color subject-update.tfplan > "$RUNNER_TEMP/subject-update-plan.txt"
+
+      - name: Assert exact bootstrap and credential replacement delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('subject-update-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={
+            'yandex_resourcemanager_folder_iam_member.federated_credential_update_user[0]':['create'],
+            'yandex_iam_service_account_iam_member.federated_credential_update_editor[0]':['create'],
+            'yandex_iam_workload_identity_federated_credential.github_image_publisher':['delete','create'],
+          }
+          if actual != expected:
+            raise SystemExit(f'Unexpected subject update plan delta: {actual!r}')
+          after=[x for x in plan['resource_changes'] if x['address']=='yandex_iam_workload_identity_federated_credential.github_image_publisher'][0]['change']['after']
+          expected_subject='repo:alexpmtk-afk@309119594/birzha-mcp-forecast@1350648480:ref:refs/heads/main'
+          if after.get('external_subject_id') != expected_subject:
+            raise SystemExit('Incorrect replacement subject')
+          print('OIDC_SUBJECT_BOOTSTRAP_EXACT_PASS')
+          PY
+          grep -Fq 'Plan: 3 to add, 0 to change, 1 to destroy.' "$RUNNER_TEMP/subject-update-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/subject-update-plan.txt"
+
+      - name: Apply exact saved subject update plan
+        shell: bash
+        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color subject-update.tfplan
+
+      - name: Capture new federated credential ID
+        shell: bash
+        run: |
+          set -euo pipefail
+          NEW_CREDENTIAL_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_federated_credential_id)"
+          [[ "$NEW_CREDENTIAL_ID" =~ ^aje[a-z0-9]+$ ]] || { echo "Invalid new credential ID" >&2; exit 1; }
+          echo "NEW_CREDENTIAL_ID=$NEW_CREDENTIAL_ID" >> "$GITHUB_ENV"
+
+      - name: Build exact temporary-IAM cleanup plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset TF_VAR_federated_credential_update_deployer_service_account_id
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -out=subject-cleanup.tfplan \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          terraform -chdir=terraform/birzha_test show -json subject-cleanup.tfplan > "$RUNNER_TEMP/subject-cleanup-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color subject-cleanup.tfplan > "$RUNNER_TEMP/subject-cleanup-plan.txt"
+
+      - name: Assert exact two-resource cleanup delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('subject-cleanup-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={
+            'yandex_resourcemanager_folder_iam_member.federated_credential_update_user[0]':['delete'],
+            'yandex_iam_service_account_iam_member.federated_credential_update_editor[0]':['delete'],
+          }
+          if actual != expected:
+            raise SystemExit(f'Unexpected subject cleanup delta: {actual!r}')
+          print('OIDC_SUBJECT_CLEANUP_EXACT_2_DESTROY_PASS')
+          PY
+          grep -Fq 'Plan: 0 to add, 0 to change, 2 to destroy.' "$RUNNER_TEMP/subject-cleanup-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/subject-cleanup-plan.txt"
+
+      - name: Apply exact saved cleanup plan
+        shell: bash
+        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color subject-cleanup.tfplan
+
+      - name: Verify final state and zero drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-final.txt"
+          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-final.txt"
+          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'federated_credential_update_' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-final.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-final.txt"
+          rc=0
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color -detailed-exitcode \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
+            > "$RUNNER_TEMP/post-subject-plan.txt" || rc=$?
+          test "$rc" -eq 0
+          grep -Fq 'No changes. Your infrastructure matches the configuration.' "$RUNNER_TEMP/post-subject-plan.txt"
+
+      - name: Write non-secret correction evidence
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/oidc-subject-control-report.txt" <<EOF
+          infra_main_sha=${GITHUB_SHA}
+          publisher_service_account_id=ajessiopotr4eq1g2c2v
+          federation_id=ajeccljd5pi9ive0i18u
+          federated_credential_id=${NEW_CREDENTIAL_ID}
+          external_subject_id=repo:alexpmtk-afk@309119594/birzha-mcp-forecast@1350648480:ref:refs/heads/main
+          temporary_update_privileges_present=false
+          serverless_container=ABSENT
+          api_gateway=ABSENT
+          lockbox=ABSENT
+          post_apply_drift=NO_CHANGES
+          EOF
+
+      - name: Upload correction evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-oidc-subject-correction-evidence
+          path: |
+            ${{ runner.temp }}/subject-update-plan.txt
+            ${{ runner.temp }}/subject-cleanup-plan.txt
+            ${{ runner.temp }}/state-final.txt
+            ${{ runner.temp }}/post-subject-plan.txt
+            ${{ runner.temp }}/oidc-subject-control-report.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
