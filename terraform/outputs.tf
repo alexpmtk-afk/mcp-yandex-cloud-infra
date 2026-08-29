@@ -12,5 +12,5 @@ output "lockbox_secret_id" {
 }
 
 output "mcp_gateway_url" {
-  value = var.mcp_image_url == null ? null : "https://${yandex_api_gateway.mcp[0].domain}"
+  value = var.mcp_image_url == null ? null : "https://${data.yandex_api_gateway.mcp_existing.domain}"
 }
