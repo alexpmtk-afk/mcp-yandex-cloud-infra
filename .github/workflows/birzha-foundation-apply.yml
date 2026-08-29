@@ -1,0 +1,195 @@
+name: Apply BIRZHA Foundation
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/birzha-foundation-apply.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-mcp-forecast-foundation
+  cancel-in-progress: false
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@v4
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA state with committed lockfile
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/birzha_test init \
+            -reconfigure \
+            -input=false \
+            -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build exact Foundation plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false \
+            -no-color \
+            -out=foundation.tfplan
+          terraform -chdir=terraform/birzha_test show -json foundation.tfplan > "$RUNNER_TEMP/foundation-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color foundation.tfplan > "$RUNNER_TEMP/foundation-plan.txt"
+
+      - name: Assert approved five-resource plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          expected = {
+              "yandex_resourcemanager_folder.birzha_test",
+              "yandex_container_registry.birzha",
+              "yandex_iam_service_account.runtime",
+              "yandex_iam_service_account.gateway",
+              "yandex_resourcemanager_folder_iam_member.runtime_registry_pull",
+          }
+          plan = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("foundation-plan.json").read_text())
+          changed = {}
+          for item in plan.get("resource_changes", []):
+              actions = item.get("change", {}).get("actions", [])
+              if actions != ["no-op"]:
+                  changed[item["address"]] = actions
+
+          if set(changed) != expected:
+              raise SystemExit(f"Unexpected Foundation resource set: {changed}")
+          bad = {address: actions for address, actions in changed.items() if actions != ["create"]}
+          if bad:
+              raise SystemExit(f"Foundation contains non-create actions: {bad}")
+          print("FOUNDATION_PLAN_GATE_PASS: 5 add / 0 change / 0 destroy")
+          PY
+
+      - name: Apply the reviewed saved Foundation plan only
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test apply \
+            -input=false \
+            -auto-approve \
+            foundation.tfplan
+
+      - name: Capture Foundation identities and verify state boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/foundation-outputs.json"
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/foundation-state.txt"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path(os.environ["RUNNER_TEMP"])
+          outputs = json.loads((root / "foundation-outputs.json").read_text())
+          state = set((root / "foundation-state.txt").read_text().splitlines())
+          expected = {
+              "yandex_resourcemanager_folder.birzha_test",
+              "yandex_container_registry.birzha",
+              "yandex_iam_service_account.runtime",
+              "yandex_iam_service_account.gateway",
+              "yandex_resourcemanager_folder_iam_member.runtime_registry_pull",
+          }
+          if state != expected:
+              raise SystemExit(f"Unexpected post-apply state: {sorted(state)}")
+          forbidden = ("serverless_container", "api_gateway", "lockbox")
+          if any(any(token in address for token in forbidden) for address in state):
+              raise SystemExit(f"Forbidden runtime resource found in Foundation state: {sorted(state)}")
+
+          required_outputs = (
+              "test_folder_id",
+              "container_registry_id",
+              "runtime_service_account_id",
+              "gateway_service_account_id",
+          )
+          ids = {name: outputs[name]["value"] for name in required_outputs}
+          report = [
+              f"infra_main_sha={os.environ['GITHUB_SHA']}",
+              f"folder_id={ids['test_folder_id']}",
+              f"registry_id={ids['container_registry_id']}",
+              f"runtime_sa_id={ids['runtime_service_account_id']}",
+              f"gateway_sa_id={ids['gateway_service_account_id']}",
+              "runtime_registry_pull_binding=CONFIRMED_IN_TERRAFORM_STATE",
+              "serverless_container=ABSENT",
+              "api_gateway=ABSENT",
+              "lockbox=ABSENT",
+          ]
+          (root / "foundation-control-report.txt").write_text("\n".join(report) + "\n")
+          print("\n".join(report))
+          PY
+
+      - name: Verify zero drift after Foundation apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          terraform -chdir=terraform/birzha_test plan \
+            -detailed-exitcode \
+            -input=false \
+            -no-color > "$RUNNER_TEMP/foundation-post-apply-plan.txt"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then
+            cat "$RUNNER_TEMP/foundation-post-apply-plan.txt"
+            if [ "$RC" -eq 2 ]; then
+              echo "Unexpected Foundation drift detected" >&2
+            fi
+            exit "$RC"
+          fi
+          echo "POST_APPLY_FOUNDATION_DRIFT=NONE"
+
+      - name: Upload Foundation control evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: birzha-foundation-apply-evidence
+          path: |
+            ${{ runner.temp }}/foundation-plan.txt
+            ${{ runner.temp }}/foundation-control-report.txt
+            ${{ runner.temp }}/foundation-state.txt
+            ${{ runner.temp }}/foundation-post-apply-plan.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
