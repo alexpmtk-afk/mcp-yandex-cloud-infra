@@ -18,6 +18,11 @@ output "gateway_service_account_id" {
   value       = yandex_iam_service_account.gateway.id
 }
 
+output "publisher_service_account_id" {
+  description = "Dedicated BIRZHA Forecast image publisher service account ID."
+  value       = yandex_iam_service_account.publisher.id
+}
+
 output "serverless_container_id" {
   description = "BIRZHA Forecast TEST Serverless Container ID, once an image is configured."
   value       = try(yandex_serverless_container.mcp[0].id, null)
