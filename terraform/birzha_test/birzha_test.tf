@@ -105,7 +105,7 @@ resource "yandex_iam_workload_identity_oidc_federation" "github_image_publisher"
 resource "yandex_iam_workload_identity_federated_credential" "github_image_publisher" {
   service_account_id  = yandex_iam_service_account.publisher.id
   federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
-  external_subject_id = "repo:alexpmtk-afk/birzha-mcp-forecast:ref:refs/heads/main"
+  external_subject_id = "repo:alexpmtk-afk@309119594/birzha-mcp-forecast@1350648480:ref:refs/heads/main"
 
   depends_on = [
     yandex_resourcemanager_folder_iam_member.wif_bootstrap_user,
