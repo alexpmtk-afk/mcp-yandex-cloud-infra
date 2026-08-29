@@ -33,8 +33,87 @@ jobs:
       - name: Terraform fmt check
         run: terraform -chdir=terraform fmt -check -recursive
 
-      - name: Terraform init without backend
+      - name: Marketplace Terraform init without backend
         run: terraform -chdir=terraform init -backend=false
 
-      - name: Terraform validate
+      - name: Marketplace Terraform validate
         run: terraform -chdir=terraform validate
+
+      - name: BIRZHA Terraform init without backend
+        run: terraform -chdir=terraform/birzha_test init -backend=false
+
+      - name: BIRZHA Terraform validate
+        run: terraform -chdir=terraform/birzha_test validate
+
+  birzha-plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build BIRZHA TEST plan only
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_SHA="1d79daf76ec50e1fb87564a6e9f06a1d55821245"
+          PLAN_ONLY_IMAGE="cr.yandex/planonly0000000000000/birzha-mcp-forecast:git-$APP_SHA"
+          terraform -chdir=terraform/birzha_test plan \
+            -lock=false \
+            -input=false \
+            -no-color \
+            -out=tfplan \
+            -var="source_commit_sha=$APP_SHA" \
+            -var="mcp_image_url=$PLAN_ONLY_IMAGE"
+          terraform -chdir=terraform/birzha_test show -no-color tfplan > "$RUNNER_TEMP/birzha-plan.txt"
+          sed -i "s#${RUNNER_TEMP}#<RUNNER_TEMP>#g" "$RUNNER_TEMP/birzha-plan.txt"
+          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/birzha-plan.txt"; then
+            echo "Refusing to publish plan: secret-like material detected" >&2
+            exit 1
+          fi
+
+      - name: Upload sanitized BIRZHA plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: birzha-test-terraform-plan
+          path: ${{ runner.temp }}/birzha-plan.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove ephemeral provider key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
