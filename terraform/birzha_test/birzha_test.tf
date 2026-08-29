@@ -47,18 +47,18 @@ resource "yandex_container_registry_iam_binding" "publisher_push" {
 resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_editor" {
   count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
 
-  folder_id = yandex_resourcemanager_folder.birzha_test.id
-  role      = "iam.workloadIdentityFederations.editor"
-  member    = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "iam.workloadIdentityFederations.editor"
+  member      = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
   sleep_after = 5
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_user" {
   count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
 
-  folder_id = yandex_resourcemanager_folder.birzha_test.id
-  role      = "iam.workloadIdentityFederations.user"
-  member    = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "iam.workloadIdentityFederations.user"
+  member      = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
   sleep_after = 5
 }
 
