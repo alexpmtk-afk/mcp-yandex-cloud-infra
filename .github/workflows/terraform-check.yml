@@ -91,6 +91,7 @@ jobs:
           name: birzha-test-terraform-lockfile
           path: terraform/birzha_test/.terraform.lock.hcl
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 7
 
       - name: Build BIRZHA TEST plan only
