@@ -1,0 +1,167 @@
+name: Apply BIRZHA Publisher WIF
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-publisher-wif-apply.yml"
+
+permissions:
+  contents: read
+
+environment: test
+concurrency:
+  group: birzha-mcp-forecast-publisher-wif
+  cancel-in-progress: false
+
+jobs:
+  publisher-wif:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA state with committed lockfile
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Assert pre-apply state boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
+          for address in \
+            yandex_container_registry.birzha \
+            yandex_container_registry_iam_binding.publisher_push \
+            yandex_iam_service_account.gateway \
+            yandex_iam_service_account.publisher \
+            yandex_iam_service_account.runtime \
+            yandex_resourcemanager_folder.birzha_test \
+            yandex_resourcemanager_folder_iam_member.runtime_registry_pull; do
+            grep -Fxq "$address" "$RUNNER_TEMP/state-before.txt"
+          done
+          ! grep -q 'workload_identity' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
+
+      - name: Build exact publisher WIF plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -out=publisher-wif.tfplan \
+            -var="source_commit_sha=$APP_SHA"
+          terraform -chdir=terraform/birzha_test show -json publisher-wif.tfplan > "$RUNNER_TEMP/publisher-wif-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color publisher-wif.tfplan > "$RUNNER_TEMP/publisher-wif-plan.txt"
+
+      - name: Assert approved two-resource WIF plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('publisher-wif-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={
+            'yandex_iam_workload_identity_oidc_federation.github_image_publisher':['create'],
+            'yandex_iam_workload_identity_federated_credential.github_image_publisher':['create'],
+          }
+          if actual != expected:
+            raise SystemExit(f'Unexpected WIF plan delta: {actual!r}')
+          print('WIF_EXACT_2_ADD_PASS')
+          PY
+          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/publisher-wif-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/publisher-wif-plan.txt"
+
+      - name: Apply reviewed saved WIF plan only
+        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color publisher-wif.tfplan
+
+      - name: Capture WIF identities and state boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-after.txt"
+          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-after.txt"
+          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-after.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-after.txt"
+          FEDERATION_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_oidc_federation_id)"
+          CREDENTIAL_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_federated_credential_id)"
+          PUBLISHER_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_service_account_id)"
+          REGISTRY_ID="$(terraform -chdir=terraform/birzha_test output -raw container_registry_id)"
+          cat > "$RUNNER_TEMP/wif-control-report.txt" <<EOF
+          infra_main_sha=${GITHUB_SHA}
+          federation_id=${FEDERATION_ID}
+          federated_credential_id=${CREDENTIAL_ID}
+          publisher_service_account_id=${PUBLISHER_ID}
+          registry_id=${REGISTRY_ID}
+          subject=repo:alexpmtk-afk/birzha-mcp-forecast:ref:refs/heads/main
+          audience=https://github.com/alexpmtk-afk
+          authorized_key_created=false
+          github_secret_created=false
+          serverless_container=ABSENT
+          api_gateway=ABSENT
+          lockbox=ABSENT
+          EOF
+
+      - name: Verify zero drift after WIF apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color -detailed-exitcode \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
+            > "$RUNNER_TEMP/post-apply-plan.txt" || rc=$?
+          rc=${rc:-0}
+          test "$rc" -eq 0
+          grep -Fq 'No changes. Your infrastructure matches the configuration.' "$RUNNER_TEMP/post-apply-plan.txt"
+
+      - name: Upload WIF control evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-publisher-wif-apply-evidence
+          path: |
+            ${{ runner.temp }}/publisher-wif-plan.txt
+            ${{ runner.temp }}/wif-control-report.txt
+            ${{ runner.temp }}/state-after.txt
+            ${{ runner.temp }}/post-apply-plan.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
