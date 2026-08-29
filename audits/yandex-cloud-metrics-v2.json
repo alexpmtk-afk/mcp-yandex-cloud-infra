@@ -1,0 +1,42 @@
+{
+  "generated_at": "2026-08-29T09:01:05.208629+00:00",
+  "period": {
+    "from": "2026-08-22T09:00:50Z",
+    "to": "2026-08-29T09:00:50Z"
+  },
+  "http_statuses": {
+    "container_started": "403",
+    "container_exec_sum": "403",
+    "container_errors": "403",
+    "gateway_requests": "403",
+    "gateway_errors": "403",
+    "registry_size": "403",
+    "registry_images": "403"
+  },
+  "metrics": {
+    "container_invocations_estimate": 0.0,
+    "container_execution_ms": null,
+    "container_execution_hours": 0.0,
+    "estimated_vcpu_hours_1vcpu": 0.0,
+    "estimated_memory_gb_hours_0_5gb": 0.0,
+    "container_errors_estimate": 0.0,
+    "gateway_requests_estimate": 0.0,
+    "gateway_errors_estimate": 0.0,
+    "registry_size_bytes": null,
+    "registry_size_mib": null,
+    "registry_images_count_metric": null,
+    "registry_images_count_cli": 1,
+    "registry_cli_compressed_bytes": 58944762,
+    "registry_cli_compressed_mib": 56.214
+  },
+  "free_tier_reference": {
+    "serverless_invocations_per_month": 1000000,
+    "serverless_vcpu_hours_per_month": 5,
+    "serverless_memory_gb_hours_per_month": 10,
+    "api_gateway_requests_per_month": 100000
+  },
+  "notes": [
+    "Cloud resources were read only; no Lockbox payload or secret value was requested.",
+    "Invocation/Gateway totals integrate per-second Monitoring series and can be slightly approximate because of downsampling."
+  ]
+}
