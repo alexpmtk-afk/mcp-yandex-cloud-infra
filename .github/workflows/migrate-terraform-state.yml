@@ -82,6 +82,7 @@ jobs:
           test -n "$MCP_IMAGE_URL"
 
           FAILED_IMPORTS=()
+          FAILED_IMPORT_COUNT=0
 
           import_if_absent() {
             local address="$1"
@@ -91,6 +92,7 @@ jobs:
             elif ! terraform -chdir=terraform import -input=false \
               -var="mcp_image_url=$MCP_IMAGE_URL" "$address" "$resource_id"; then
               FAILED_IMPORTS+=("$address")
+              ((FAILED_IMPORT_COUNT += 1))
             fi
           }
 
@@ -105,7 +107,7 @@ jobs:
           import_if_absent 'yandex_serverless_container_iam_member.gateway_invoker[0]' "$CONTAINER_ID,serverless-containers.containerInvoker,serviceAccount:$GATEWAY_SA_ID"
           import_if_absent 'yandex_api_gateway.mcp[0]' "$GATEWAY_ID"
 
-          if (( ${#FAILED_IMPORTS[@]} > 0 )); then
+          if (( FAILED_IMPORT_COUNT > 0 )); then
             {
               echo "## Terraform state migration needs attention"
               echo
