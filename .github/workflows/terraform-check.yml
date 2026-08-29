@@ -85,11 +85,19 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
+      - name: Upload generated BIRZHA lockfile
+        uses: actions/upload-artifact@v4
+        with:
+          name: birzha-test-terraform-lockfile
+          path: terraform/birzha_test/.terraform.lock.hcl
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Build BIRZHA TEST plan only
         shell: bash
         run: |
           set -euo pipefail
-          APP_SHA="19013a837db2d55e779e8854b5b18e5743d8da3b"
+          APP_SHA="bffba3ff73e47cb9df2e2a63dcf3eda329bcc896"
           PLAN_ONLY_IMAGE="cr.yandex/planonly0000000000000/birzha-mcp-forecast:git-$APP_SHA"
           terraform -chdir=terraform/birzha_test plan \
             -lock=false \
