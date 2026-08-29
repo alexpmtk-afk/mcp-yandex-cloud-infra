@@ -9,7 +9,6 @@ on:
 permissions:
   contents: read
 
-environment: test
 concurrency:
   group: birzha-mcp-forecast-publisher-wif
   cancel-in-progress: false
@@ -17,6 +16,7 @@ concurrency:
 jobs:
   publisher-wif:
     runs-on: ubuntu-latest
+    environment: test
     timeout-minutes: 15
 
     steps:
@@ -142,11 +142,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          rc=0
           terraform -chdir=terraform/birzha_test plan \
             -input=false -no-color -detailed-exitcode \
             -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
             > "$RUNNER_TEMP/post-apply-plan.txt" || rc=$?
-          rc=${rc:-0}
           test "$rc" -eq 0
           grep -Fq 'No changes. Your infrastructure matches the configuration.' "$RUNNER_TEMP/post-apply-plan.txt"
 
