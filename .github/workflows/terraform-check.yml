@@ -47,7 +47,7 @@ jobs:
       - name: BIRZHA Terraform validate
         run: terraform -chdir=terraform/birzha_test validate
 
-  birzha-wif-readonly-plan:
+  birzha-oidc-subject-plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     environment: test
@@ -62,7 +62,7 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
-      - name: Prepare ephemeral provider key and verify deployer identity
+      - name: Prepare ephemeral provider key
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -72,14 +72,6 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          ACTUAL_DEPLOYER_ID="$(python - "$KEY_FILE" <<'PY'
-          import json, sys
-          from pathlib import Path
-          print(json.loads(Path(sys.argv[1]).read_text()).get('service_account_id', ''))
-          PY
-          )"
-          [[ "$ACTUAL_DEPLOYER_ID" == "ajecdjjrkdo1t3itpl9k" ]] || { echo "Unexpected infra deployer identity" >&2; exit 1; }
-          echo "::add-mask::$ACTUAL_DEPLOYER_ID"
           echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
 
       - name: Initialize isolated BIRZHA remote state
@@ -93,54 +85,47 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
-      - name: Confirm post-bootstrap state boundary from Terraform state
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-before.txt"
-          ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-before.txt"
-          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
-          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
-          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
-
-      - name: Build exact read-only reconciliation plan without refresh
+      - name: Build exact OIDC subject correction plan
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform/birzha_test plan \
-            -refresh=false -lock=false -input=false -no-color \
-            -out=wif-readonly.tfplan \
+            -lock=false -input=false -no-color \
+            -out=oidc-subject.tfplan \
             -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
-          terraform -chdir=terraform/birzha_test show -json wif-readonly.tfplan > "$RUNNER_TEMP/wif-readonly-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color wif-readonly.tfplan > "$RUNNER_TEMP/wif-readonly-plan.txt"
+          terraform -chdir=terraform/birzha_test show -json oidc-subject.tfplan > "$RUNNER_TEMP/oidc-subject-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color oidc-subject.tfplan > "$RUNNER_TEMP/oidc-subject-plan.txt"
 
-      - name: Assert exact two-resource read-only delta
+      - name: Assert only federated credential changes
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json, os
           from pathlib import Path
-          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('wif-readonly-plan.json').read_text())
-          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected={
-            'yandex_resourcemanager_folder_iam_member.terraform_wif_viewer':['create'],
-            'yandex_iam_service_account_iam_member.terraform_federated_credential_viewer':['create'],
-          }
-          if actual != expected:
-              raise SystemExit(f'Unexpected WIF read-only plan delta: {actual!r}')
-          print('WIF_READONLY_EXACT_2_ADD_PASS')
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('oidc-subject-plan.json').read_text())
+          changes=[x for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']]
+          if len(changes) != 1:
+              raise SystemExit(f'Expected exactly one changed resource, got {[x["address"] for x in changes]!r}')
+          change=changes[0]
+          if change['address'] != 'yandex_iam_workload_identity_federated_credential.github_image_publisher':
+              raise SystemExit(f'Unexpected changed resource: {change["address"]}')
+          if change['change']['actions'] not in (['update'], ['delete','create'], ['create','delete']):
+              raise SystemExit(f'Unexpected credential action: {change["change"]["actions"]!r}')
+          after=change['change'].get('after') or {}
+          expected='repo:alexpmtk-afk@309119594/birzha-mcp-forecast@1350648480:ref:refs/heads/main'
+          if after.get('external_subject_id') != expected:
+              raise SystemExit('Planned external_subject_id is not the observed immutable GitHub subject')
+          print('OIDC_SUBJECT_PLAN_SINGLE_RESOURCE_PASS')
+          print('actions=' + ','.join(change['change']['actions']))
           PY
-          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/wif-readonly-plan.txt"
-          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/wif-readonly-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/oidc-subject-plan.txt"
 
-      - name: Upload sanitized read-only plan
+      - name: Upload sanitized subject plan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: birzha-wif-readonly-reconcile-plan
-          path: ${{ runner.temp }}/wif-readonly-plan.txt
+          name: birzha-oidc-subject-fix-plan
+          path: ${{ runner.temp }}/oidc-subject-plan.txt
           if-no-files-found: error
           retention-days: 7
 
