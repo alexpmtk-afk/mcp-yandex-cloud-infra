@@ -10,6 +10,7 @@ It manages only the BIRZHA Forecast MCP TEST environment.
 - The Serverless Container remains private; only the dedicated gateway service account can invoke it.
 - External ChatGPT-to-MCP authentication is not invented here. The first public TEST gateway exposes only the harmless `system.version` surface from the application.
 - MCP DNS-rebinding protection stays enabled.
+- The Yandex Terraform provider is pinned and the generated `.terraform.lock.hcl` is committed.
 
 ## Remote state
 
@@ -36,27 +37,35 @@ No Lockbox resource is part of this configuration.
 
 ## Deployment phases after review
 
-M1.3 PREP stops before all applies. If the plan is approved, deployment is intentionally phased:
+M1.3 PREP stops before all applies. Deployment is intentionally split into two approval boundaries because a Yandex Registry digest cannot exist before the dedicated BIRZHA registry itself exists.
 
-1. **Foundation**: apply with `mcp_image_url = null` to create only folder, registry and service accounts/IAM needed for the runtime foundation.
-2. **Immutable image**: build the exact approved `birzha-mcp-forecast` commit, tag it with the full Git SHA, push it to the BIRZHA registry, and record the registry digest.
-3. **Remote bootstrap**: apply with the pushed immutable image and the fail-closed placeholder host. This creates the private container and API Gateway but does not yet authorize remote MCP Host traffic.
-4. **Gateway host binding**: read the real `api_gateway_domain` output, then apply again with `mcp_allowed_hosts` set to that exact domain. Yandex Serverless Containers create a new revision when environment variables change.
-5. **Remote acceptance**: verify `/healthz`, MCP discovery, `tools/list`, `system.version`, client/SDK identity and the actually negotiated MCP protocol version.
+1. **Foundation apply**: create only the folder, registry, service accounts and foundation IAM with `mcp_image_url = null`.
+2. **Immutable image**: the `birzha-mcp-forecast` application workflow builds the exact approved `main` commit, tags it with the full Git SHA, pushes it to the newly created BIRZHA registry and records the registry digest.
+3. **Runtime plan**: update Terraform with the exact source SHA and immutable image digest, then produce a new plan for the private container, gateway invoker binding and API Gateway. This plan requires a second pre-apply check.
+4. **Remote bootstrap apply**: apply the approved runtime plan initially with the fail-closed placeholder host. The Gateway exists but MCP Host traffic is not yet accepted.
+5. **Gateway host binding**: read the real `api_gateway_domain`, then apply a new container revision with exactly:
 
-Yandex API Gateway forwards the caller-facing Gateway Host header to the container, so the exact Gateway domain is the intended MCP `allowed_hosts` value.
+```text
+<gateway-domain>,<gateway-domain>:*
+```
+
+The `:*` form is a wildcard for the port only and does not authorize other Yandex API Gateway domains.
+6. **Remote acceptance**: verify `/healthz`, MCP discovery, `tools/list`, `system.version`, client/SDK identity and the actually negotiated MCP protocol version.
+
+Yandex API Gateway forwards the caller-facing Gateway Host header to the container, so the real Gateway domain and the same domain with wildcard port are the intended MCP `allowed_hosts` values.
 
 ## Source commit -> image rule
 
 Deployment must never refer only to `latest` or a mutable branch name. Required evidence chain:
 
 ```text
-approved application commit SHA
--> Docker build from that exact SHA
+approved application main commit SHA
+-> Docker build in birzha-mcp-forecast CI from that exact SHA
 -> image tag git-<40-char-sha>
--> pushed registry digest sha256:...
--> Terraform mcp_image_url pinned to that pushed image/digest
--> source_commit_sha stored in container metadata/environment
+-> push to the dedicated Yandex BIRZHA registry
+-> immutable registry digest sha256:...
+-> infra receives only source SHA + immutable image reference/digest
+-> Terraform source_commit_sha records the same source SHA
 ```
 
-The final cross-private-repository checkout mechanism is a deployment ADR. Preferred direction is a narrowly scoped read-only mechanism (for example a repository-specific deploy key), not a broad PAT.
+The infra repository does not need read access to the private application repository. The application repository owns source checkout/build/push; the infrastructure repository owns Yandex resource deployment. See the source-to-image ADR in `docs/`.
