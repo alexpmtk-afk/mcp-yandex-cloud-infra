@@ -123,18 +123,10 @@ jobs:
           # Import verification only: no plan is applied from this workflow.
           MCP_IMAGE_URL="state-migration-placeholder"
 
-          set +e
-          terraform -chdir=terraform plan -detailed-exitcode -input=false -var="mcp_image_url=$MCP_IMAGE_URL"
-          PLAN_EXIT_CODE=$?
-          set -e
-
-          if [[ "$PLAN_EXIT_CODE" -eq 0 ]]; then
-            echo "Remote state import is complete; the plan is empty."
-          elif [[ "$PLAN_EXIT_CODE" -eq 2 ]]; then
-            echo "Remote state import is complete. Terraform detected drift; no infrastructure changes were applied."
-          else
-            exit "$PLAN_EXIT_CODE"
-          fi
+          # The placeholder image is only for the count-based import address.
+          # This plan is diagnostic and is deliberately never applied.
+          terraform -chdir=terraform plan -input=false -var="mcp_image_url=$MCP_IMAGE_URL"
+          echo "Remote state import is complete. The diagnostic plan was not applied."
 
       - name: Remove ephemeral CI key
         if: always()
