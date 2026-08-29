@@ -35,6 +35,18 @@ variable "wif_bootstrap_deployer_service_account_id" {
   }
 }
 
+variable "federated_credential_update_deployer_service_account_id" {
+  description = "Temporary infra deployer SA ID used only while replacing the publisher federated credential subject. Null means no update bootstrap bindings remain."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.federated_credential_update_deployer_service_account_id == null || can(regex("^aje[a-z0-9]+$", var.federated_credential_update_deployer_service_account_id))
+    error_message = "federated_credential_update_deployer_service_account_id must be a Yandex service account ID or null."
+  }
+}
+
 variable "yc_zone" {
   description = "Default Yandex Cloud availability zone."
   type        = string
