@@ -6,6 +6,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: marketplaces-mcp-test-terraform
+  cancel-in-progress: false
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
@@ -42,9 +46,16 @@ jobs:
           terraform_version: "1.9.8"
       - name: Create or import TEST foundation
         shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
         run: |
           set -euo pipefail
-          terraform -chdir=terraform init -input=false
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform init -reconfigure -input=false \\
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \\
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
           FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id')"
           if [[ -n "$FOLDER_ID" && "$FOLDER_ID" != "null" ]]; then
             terraform -chdir=terraform import yandex_resourcemanager_folder.mcp_test "$FOLDER_ID" || true
