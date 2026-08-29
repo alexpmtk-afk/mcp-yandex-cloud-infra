@@ -112,6 +112,9 @@ jobs:
               echo "The following existing resources could not be imported:"
               printf '%s\\n' "${FAILED_IMPORTS[@]}" | sed 's/^/- `/' | sed 's/$/`/'
             } >> "$GITHUB_STEP_SUMMARY"
+            for address in "${FAILED_IMPORTS[@]}"; do
+              echo "::error title=Terraform state import failed::$address"
+            done
             exit 1
           fi
 
