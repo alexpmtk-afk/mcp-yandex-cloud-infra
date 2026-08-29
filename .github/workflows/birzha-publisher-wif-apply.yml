@@ -17,7 +17,7 @@ jobs:
   publisher-wif:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 15
+    timeout-minutes: 20
 
     steps:
       - name: Checkout exact main commit
@@ -31,7 +31,7 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
-      - name: Prepare ephemeral Yandex provider key
+      - name: Prepare ephemeral provider key and bootstrap identity
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -41,7 +41,16 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          DEPLOYER_SA_ID="$(python - "$KEY_FILE" <<'PY'
+          import json, sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text()).get('service_account_id', ''))
+          PY
+          )"
+          [[ "$DEPLOYER_SA_ID" =~ ^aje[a-z0-9]+$ ]]
+          echo "::add-mask::$DEPLOYER_SA_ID"
           echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "TF_VAR_wif_bootstrap_deployer_service_account_id=$DEPLOYER_SA_ID" >> "$GITHUB_ENV"
 
       - name: Initialize isolated BIRZHA state with committed lockfile
         shell: bash
@@ -59,66 +68,112 @@ jobs:
         run: |
           set -euo pipefail
           terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
-          for address in \
-            yandex_container_registry.birzha \
-            yandex_container_registry_iam_binding.publisher_push \
-            yandex_iam_service_account.gateway \
-            yandex_iam_service_account.publisher \
-            yandex_iam_service_account.runtime \
-            yandex_resourcemanager_folder.birzha_test \
-            yandex_resourcemanager_folder_iam_member.runtime_registry_pull; do
-            grep -Fxq "$address" "$RUNNER_TEMP/state-before.txt"
-          done
           ! grep -q 'workload_identity' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-before.txt"
           ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
           ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
           ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
 
-      - name: Build exact publisher WIF plan
+      - name: Build exact bootstrap plus WIF plan
         shell: bash
         run: |
           set -euo pipefail
-          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
           terraform -chdir=terraform/birzha_test plan \
             -input=false -no-color \
-            -out=publisher-wif.tfplan \
-            -var="source_commit_sha=$APP_SHA"
-          terraform -chdir=terraform/birzha_test show -json publisher-wif.tfplan > "$RUNNER_TEMP/publisher-wif-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color publisher-wif.tfplan > "$RUNNER_TEMP/publisher-wif-plan.txt"
+            -out=wif-bootstrap.tfplan \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          terraform -chdir=terraform/birzha_test show -json wif-bootstrap.tfplan > "$RUNNER_TEMP/wif-bootstrap-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color wif-bootstrap.tfplan > "$RUNNER_TEMP/wif-bootstrap-plan.txt"
 
-      - name: Assert approved two-resource WIF plan
+      - name: Assert exact five-resource bootstrap plan
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json, os
           from pathlib import Path
-          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('publisher-wif-plan.json').read_text())
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('wif-bootstrap-plan.json').read_text())
           actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
           expected={
+            'yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor[0]':['create'],
+            'yandex_resourcemanager_folder_iam_member.wif_bootstrap_user[0]':['create'],
+            'yandex_iam_service_account_iam_member.wif_bootstrap_federated_credential_editor[0]':['create'],
             'yandex_iam_workload_identity_oidc_federation.github_image_publisher':['create'],
             'yandex_iam_workload_identity_federated_credential.github_image_publisher':['create'],
           }
           if actual != expected:
-            raise SystemExit(f'Unexpected WIF plan delta: {actual!r}')
-          print('WIF_EXACT_2_ADD_PASS')
+            raise SystemExit(f'Unexpected WIF bootstrap delta: {actual!r}')
+          print('WIF_BOOTSTRAP_EXACT_5_ADD_PASS')
           PY
-          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/publisher-wif-plan.txt"
-          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/publisher-wif-plan.txt"
+          grep -Fq 'Plan: 5 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/wif-bootstrap-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/wif-bootstrap-plan.txt"
 
-      - name: Apply reviewed saved WIF plan only
-        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color publisher-wif.tfplan
+      - name: Apply exact bootstrap plus WIF plan
+        run: terraform -chdir=terraform/birzha_test apply -input=false -no-color wif-bootstrap.tfplan
 
-      - name: Capture WIF identities and state boundary
+      - name: Assert WIF exists before privilege cleanup
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-after.txt"
-          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-after.txt"
-          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-after.txt"
-          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-after.txt"
-          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-after.txt"
-          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-after.txt"
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-with-bootstrap.txt"
+          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-with-bootstrap.txt"
+          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-with-bootstrap.txt"
+          grep -Fxq 'yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor[0]' "$RUNNER_TEMP/state-with-bootstrap.txt"
+          grep -Fxq 'yandex_resourcemanager_folder_iam_member.wif_bootstrap_user[0]' "$RUNNER_TEMP/state-with-bootstrap.txt"
+          grep -Fxq 'yandex_iam_service_account_iam_member.wif_bootstrap_federated_credential_editor[0]' "$RUNNER_TEMP/state-with-bootstrap.txt"
+
+      - name: Build exact bootstrap privilege cleanup plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset TF_VAR_wif_bootstrap_deployer_service_account_id
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -out=wif-cleanup.tfplan \
+            -var="wif_bootstrap_deployer_service_account_id=null" \
+            -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          terraform -chdir=terraform/birzha_test show -json wif-cleanup.tfplan > "$RUNNER_TEMP/wif-cleanup-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color wif-cleanup.tfplan > "$RUNNER_TEMP/wif-cleanup-plan.txt"
+
+      - name: Assert exact three-resource cleanup plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('wif-cleanup-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={
+            'yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor[0]':['delete'],
+            'yandex_resourcemanager_folder_iam_member.wif_bootstrap_user[0]':['delete'],
+            'yandex_iam_service_account_iam_member.wif_bootstrap_federated_credential_editor[0]':['delete'],
+          }
+          if actual != expected:
+            raise SystemExit(f'Unexpected WIF cleanup delta: {actual!r}')
+          print('WIF_BOOTSTRAP_CLEANUP_EXACT_3_DESTROY_PASS')
+          PY
+          grep -Fq 'Plan: 0 to add, 0 to change, 3 to destroy.' "$RUNNER_TEMP/wif-cleanup-plan.txt"
+
+      - name: Apply exact bootstrap privilege cleanup plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset TF_VAR_wif_bootstrap_deployer_service_account_id
+          terraform -chdir=terraform/birzha_test apply -input=false -no-color wif-cleanup.tfplan
+
+      - name: Capture final WIF identities and state boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          unset TF_VAR_wif_bootstrap_deployer_service_account_id
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-final.txt"
+          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-final.txt"
+          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-final.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-final.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-final.txt"
           FEDERATION_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_oidc_federation_id)"
           CREDENTIAL_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_federated_credential_id)"
           PUBLISHER_ID="$(terraform -chdir=terraform/birzha_test output -raw publisher_service_account_id)"
@@ -131,33 +186,44 @@ jobs:
           registry_id=${REGISTRY_ID}
           subject=repo:alexpmtk-afk/birzha-mcp-forecast:ref:refs/heads/main
           audience=https://github.com/alexpmtk-afk
+          authentication=OIDC_WIF
           authorized_key_created=false
           github_secret_created=false
+          bootstrap_privileges_present=false
           serverless_container=ABSENT
           api_gateway=ABSENT
           lockbox=ABSENT
           EOF
 
-      - name: Verify zero drift after WIF apply
+      - name: Verify final zero drift
         shell: bash
         run: |
           set -euo pipefail
+          unset TF_VAR_wif_bootstrap_deployer_service_account_id
           rc=0
           terraform -chdir=terraform/birzha_test plan \
             -input=false -no-color -detailed-exitcode \
+            -var="wif_bootstrap_deployer_service_account_id=null" \
             -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021" \
             > "$RUNNER_TEMP/post-apply-plan.txt" || rc=$?
           test "$rc" -eq 0
           grep -Fq 'No changes. Your infrastructure matches the configuration.' "$RUNNER_TEMP/post-apply-plan.txt"
+
+      - name: Sanitize evidence plans
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i -E 's/serviceAccount:aje[a-z0-9]+/serviceAccount:<REDACTED_OR_KNOWN_SA_ID>/g' "$RUNNER_TEMP/wif-bootstrap-plan.txt" "$RUNNER_TEMP/wif-cleanup-plan.txt"
 
       - name: Upload WIF control evidence
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: birzha-publisher-wif-apply-evidence
           path: |
-            ${{ runner.temp }}/publisher-wif-plan.txt
+            ${{ runner.temp }}/wif-bootstrap-plan.txt
+            ${{ runner.temp }}/wif-cleanup-plan.txt
             ${{ runner.temp }}/wif-control-report.txt
-            ${{ runner.temp }}/state-after.txt
+            ${{ runner.temp }}/state-final.txt
             ${{ runner.temp }}/post-apply-plan.txt
           if-no-files-found: error
           retention-days: 30
