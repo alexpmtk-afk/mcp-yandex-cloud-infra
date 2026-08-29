@@ -44,6 +44,33 @@ resource "yandex_container_registry_iam_binding" "publisher_push" {
   ]
 }
 
+resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_editor" {
+  count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
+
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "iam.workloadIdentityFederations.editor"
+  member      = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
+  sleep_after = 5
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_user" {
+  count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
+
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "iam.workloadIdentityFederations.user"
+  member      = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
+  sleep_after = 5
+}
+
+resource "yandex_iam_service_account_iam_member" "wif_bootstrap_federated_credential_editor" {
+  count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
+
+  service_account_id = yandex_iam_service_account.publisher.id
+  role               = "iam.serviceAccounts.federatedCredentialEditor"
+  member             = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
+  sleep_after        = 5
+}
+
 resource "yandex_iam_workload_identity_oidc_federation" "github_image_publisher" {
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
   name        = "birzha-mcp-forecast-github-publisher"
@@ -57,12 +84,21 @@ resource "yandex_iam_workload_identity_oidc_federation" "github_image_publisher"
   jwks_url = "https://token.actions.githubusercontent.com/.well-known/jwks"
 
   labels = local.labels
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor,
+  ]
 }
 
 resource "yandex_iam_workload_identity_federated_credential" "github_image_publisher" {
   service_account_id  = yandex_iam_service_account.publisher.id
   federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
   external_subject_id = "repo:alexpmtk-afk/birzha-mcp-forecast:ref:refs/heads/main"
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.wif_bootstrap_user,
+    yandex_iam_service_account_iam_member.wif_bootstrap_federated_credential_editor,
+  ]
 }
 
 resource "yandex_serverless_container" "mcp" {

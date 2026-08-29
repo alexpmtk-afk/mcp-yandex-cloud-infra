@@ -12,6 +12,18 @@ variable "yc_service_account_key_file" {
   sensitive   = true
 }
 
+variable "wif_bootstrap_deployer_service_account_id" {
+  description = "Temporary infra deployer SA ID used only to bootstrap publisher WIF permissions. Null means no bootstrap bindings remain."
+  type        = string
+  default     = null
+  nullable    = true
+
+  validation {
+    condition     = var.wif_bootstrap_deployer_service_account_id == null || can(regex("^aje[a-z0-9]+$", var.wif_bootstrap_deployer_service_account_id))
+    error_message = "wif_bootstrap_deployer_service_account_id must be a Yandex service account ID or null."
+  }
+}
+
 variable "yc_zone" {
   description = "Default Yandex Cloud availability zone."
   type        = string
