@@ -74,15 +74,9 @@ resource "yandex_serverless_container_iam_member" "gateway_invoker" {
   member       = "serviceAccount:${yandex_iam_service_account.gateway.id}"
 }
 
-resource "yandex_api_gateway" "mcp" {
-  count             = var.mcp_image_url == null ? 0 : 1
-  folder_id         = yandex_resourcemanager_folder.mcp_test.id
-  name              = "marketplaces-mcp-test"
-  description       = "TEST gateway for the private MCP container"
-  execution_timeout = "60"
-  labels            = local.labels
-  spec = templatefile("${path.module}/mcp_gateway.yaml.tftpl", {
-    container_id       = yandex_serverless_container.mcp[0].id
-    service_account_id = yandex_iam_service_account.gateway.id
-  })
+# The TEST gateway predates the persistent Terraform state and the provider
+# does not implement import for yandex_api_gateway. Keep it read-only here:
+# its integration targets the stable container ID, not a mutable revision ID.
+data "yandex_api_gateway" "mcp_existing" {
+  api_gateway_id = var.mcp_api_gateway_id
 }
