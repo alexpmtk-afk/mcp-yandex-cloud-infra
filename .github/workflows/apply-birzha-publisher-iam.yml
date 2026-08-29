@@ -1,0 +1,171 @@
+name: Apply BIRZHA Image Publisher IAM
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/apply-birzha-publisher-iam.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  publisher-iam:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA state with committed lockfile
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Confirm Foundation state boundary before publisher apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_container_registry.birzha' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_service_account.runtime' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_service_account.gateway' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_resourcemanager_folder.birzha_test' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_resourcemanager_folder_iam_member.runtime_registry_pull' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'lockbox' "$RUNNER_TEMP/state-before.txt"
+
+      - name: Build exact publisher IAM plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          terraform -chdir=terraform/birzha_test plan \
+            -lock=false \
+            -input=false \
+            -no-color \
+            -out=publisher.tfplan \
+            -var="source_commit_sha=$APP_SHA"
+          terraform -chdir=terraform/birzha_test show -json publisher.tfplan > "$RUNNER_TEMP/publisher-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color publisher.tfplan > "$RUNNER_TEMP/publisher-plan.txt"
+
+      - name: Assert approved two-resource plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          plan = json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('publisher-plan.json').read_text())
+          actual = {
+              item['address']: item['change']['actions']
+              for item in plan.get('resource_changes', [])
+              if item['change']['actions'] != ['no-op']
+          }
+          expected = {
+              'yandex_iam_service_account.publisher': ['create'],
+              'yandex_container_registry_iam_binding.publisher_push': ['create'],
+          }
+          if actual != expected:
+              raise SystemExit(f'Unexpected publisher apply delta: {actual!r}')
+          print('PUBLISHER_APPLY_EXACT_2_ADD_PASS')
+          PY
+          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/publisher-plan.txt"
+          grep -Fq 'registry_id = "crpk5qvf4p7kcqil2u3v"' "$RUNNER_TEMP/publisher-plan.txt"
+          grep -Fq 'role        = "container-registry.images.pusher"' "$RUNNER_TEMP/publisher-plan.txt"
+          if grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/publisher-plan.txt"; then
+            echo "Forbidden runtime/Lockbox resource present in publisher plan" >&2
+            exit 1
+          fi
+
+      - name: Apply reviewed saved publisher plan only
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test apply -input=false -no-color publisher.tfplan | tee "$RUNNER_TEMP/publisher-apply.txt"
+
+      - name: Capture publisher identities and verify state boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -raw publisher_service_account_id > "$RUNNER_TEMP/publisher-sa-id.txt"
+          terraform -chdir=terraform/birzha_test output -raw container_registry_id > "$RUNNER_TEMP/registry-id.txt"
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-after.txt"
+          grep -Fxq 'yandex_iam_service_account.publisher' "$RUNNER_TEMP/state-after.txt"
+          grep -Fxq 'yandex_container_registry_iam_binding.publisher_push' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q 'lockbox' "$RUNNER_TEMP/state-after.txt"
+          terraform -chdir=terraform/birzha_test state show yandex_container_registry_iam_binding.publisher_push > "$RUNNER_TEMP/publisher-binding.txt"
+          grep -Fq 'registry_id = "crpk5qvf4p7kcqil2u3v"' "$RUNNER_TEMP/publisher-binding.txt"
+          grep -Fq 'role        = "container-registry.images.pusher"' "$RUNNER_TEMP/publisher-binding.txt"
+
+      - name: Verify zero drift after publisher IAM apply
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          set +e
+          terraform -chdir=terraform/birzha_test plan \
+            -lock=false \
+            -input=false \
+            -no-color \
+            -detailed-exitcode \
+            -var="source_commit_sha=$APP_SHA" > "$RUNNER_TEMP/post-apply-plan.txt" 2>&1
+          RC=$?
+          set -e
+          cat "$RUNNER_TEMP/post-apply-plan.txt"
+          test "$RC" -eq 0
+          grep -Fq 'No changes. Your infrastructure matches the configuration.' "$RUNNER_TEMP/post-apply-plan.txt"
+
+      - name: Upload publisher IAM control evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: birzha-publisher-iam-apply-evidence
+          path: |
+            ${{ runner.temp }}/publisher-plan.txt
+            ${{ runner.temp }}/publisher-apply.txt
+            ${{ runner.temp }}/publisher-sa-id.txt
+            ${{ runner.temp }}/registry-id.txt
+            ${{ runner.temp }}/publisher-binding.txt
+            ${{ runner.temp }}/state-after.txt
+            ${{ runner.temp }}/post-apply-plan.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
