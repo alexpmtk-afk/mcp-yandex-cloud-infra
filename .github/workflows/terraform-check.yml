@@ -33,8 +33,108 @@ jobs:
       - name: Terraform fmt check
         run: terraform -chdir=terraform fmt -check -recursive
 
-      - name: Terraform init without backend
+      - name: Marketplace Terraform init without backend
         run: terraform -chdir=terraform init -backend=false
 
-      - name: Terraform validate
+      - name: Marketplace Terraform validate
         run: terraform -chdir=terraform validate
+
+      - name: BIRZHA Terraform init without backend using committed lockfile
+        run: terraform -chdir=terraform/birzha_test init -backend=false -lockfile=readonly
+
+      - name: BIRZHA Terraform validate
+        run: terraform -chdir=terraform/birzha_test validate
+
+  birzha-plan:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA remote state using committed lockfile
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build BIRZHA foundation plan only
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          terraform -chdir=terraform/birzha_test plan \
+            -lock=false \
+            -input=false \
+            -no-color \
+            -out=foundation.tfplan \
+            -var="source_commit_sha=$APP_SHA"
+          terraform -chdir=terraform/birzha_test show -no-color foundation.tfplan > "$RUNNER_TEMP/birzha-foundation-plan.txt"
+
+      - name: Build BIRZHA runtime preview plan only
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
+          PLAN_ONLY_IMAGE="cr.yandex/planonly0000000000000/birzha-mcp-forecast:git-$APP_SHA"
+          terraform -chdir=terraform/birzha_test plan \
+            -lock=false \
+            -input=false \
+            -no-color \
+            -out=runtime-preview.tfplan \
+            -var="source_commit_sha=$APP_SHA" \
+            -var="mcp_image_url=$PLAN_ONLY_IMAGE"
+          terraform -chdir=terraform/birzha_test show -no-color runtime-preview.tfplan > "$RUNNER_TEMP/birzha-runtime-preview-plan.txt"
+          sed -i "s#${RUNNER_TEMP}#<RUNNER_TEMP>#g" "$RUNNER_TEMP/birzha-runtime-preview-plan.txt"
+          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/birzha-runtime-preview-plan.txt"; then
+            echo "Refusing to publish plan: secret-like material detected" >&2
+            exit 1
+          fi
+
+      - name: Upload sanitized BIRZHA foundation plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: birzha-test-terraform-foundation-plan
+          path: ${{ runner.temp }}/birzha-foundation-plan.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload sanitized BIRZHA runtime preview plan
+        uses: actions/upload-artifact@v4
+        with:
+          name: birzha-test-terraform-runtime-preview-plan
+          path: ${{ runner.temp }}/birzha-runtime-preview-plan.txt
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Remove ephemeral provider key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
