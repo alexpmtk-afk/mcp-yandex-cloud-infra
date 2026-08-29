@@ -75,11 +75,9 @@ jobs:
           CONTAINER_ID="bba6lj5ggejtop0jl5k8"
           GATEWAY_ID="d5deoa6cl4irtmkp5ad6"
 
-          REVISION_ID="$(yc serverless container get --id "$CONTAINER_ID" --format json | jq -r '.latest_revision_id')"
-          test -n "$REVISION_ID"
-          test "$REVISION_ID" != "null"
-          MCP_IMAGE_URL="$(yc serverless container revision get --id "$REVISION_ID" --format json | jq -r '.image.image_url // .container_image.image_url // .image.url // .image_url // empty')"
-          test -n "$MCP_IMAGE_URL"
+          # This value only enables count-based addresses during import.
+          # It is never applied; the deploy workflow supplies the real image URL.
+          MCP_IMAGE_URL="state-migration-placeholder"
 
           FAILED_IMPORTS=()
           FAILED_IMPORT_COUNT=0
@@ -124,10 +122,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          CONTAINER_ID="bba6lj5ggejtop0jl5k8"
-          REVISION_ID="$(yc serverless container get --id "$CONTAINER_ID" --format json | jq -r '.latest_revision_id')"
-          MCP_IMAGE_URL="$(yc serverless container revision get --id "$REVISION_ID" --format json | jq -r '.image.image_url // .container_image.image_url // .image.url // .image_url // empty')"
-          test -n "$MCP_IMAGE_URL"
+          # Import verification only: no plan is applied from this workflow.
+          MCP_IMAGE_URL="state-migration-placeholder"
 
           set +e
           terraform -chdir=terraform plan -detailed-exitcode -input=false -var="mcp_image_url=$MCP_IMAGE_URL"
