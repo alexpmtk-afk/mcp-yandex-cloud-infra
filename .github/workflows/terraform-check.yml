@@ -47,7 +47,7 @@ jobs:
       - name: BIRZHA Terraform validate
         run: terraform -chdir=terraform/birzha_test validate
 
-  birzha-publisher-wif-bootstrap-plan:
+  birzha-wif-readonly-plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     environment: test
@@ -62,7 +62,7 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
-      - name: Prepare ephemeral provider key and derive deployer identity
+      - name: Prepare ephemeral provider key and verify deployer identity
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -72,18 +72,17 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          DEPLOYER_SA_ID="$(python - "$KEY_FILE" <<'PY'
+          ACTUAL_DEPLOYER_ID="$(python - "$KEY_FILE" <<'PY'
           import json, sys
           from pathlib import Path
           print(json.loads(Path(sys.argv[1]).read_text()).get('service_account_id', ''))
           PY
           )"
-          [[ "$DEPLOYER_SA_ID" =~ ^aje[a-z0-9]+$ ]]
-          echo "::add-mask::$DEPLOYER_SA_ID"
+          [[ "$ACTUAL_DEPLOYER_ID" == "ajecdjjrkdo1t3itpl9k" ]] || { echo "Unexpected infra deployer identity" >&2; exit 1; }
+          echo "::add-mask::$ACTUAL_DEPLOYER_ID"
           echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
-          echo "TF_VAR_wif_bootstrap_deployer_service_account_id=$DEPLOYER_SA_ID" >> "$GITHUB_ENV"
 
-      - name: Initialize isolated BIRZHA remote state using committed lockfile
+      - name: Initialize isolated BIRZHA remote state
         shell: bash
         env:
           YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
@@ -94,65 +93,54 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
-      - name: Confirm current state boundary
+      - name: Confirm post-bootstrap state boundary from Terraform state
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
-          ! grep -q 'workload_identity' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_workload_identity_oidc_federation.github_image_publisher' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_image_publisher' "$RUNNER_TEMP/state-before.txt"
           ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-before.txt"
           ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
           ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
           ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
 
-      - name: Build WIF bootstrap plan only
+      - name: Build exact read-only reconciliation plan without refresh
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform/birzha_test plan \
-            -lock=false -input=false -no-color \
-            -out=wif-bootstrap.tfplan \
+            -refresh=false -lock=false -input=false -no-color \
+            -out=wif-readonly.tfplan \
             -var="source_commit_sha=e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
-          terraform -chdir=terraform/birzha_test show -json wif-bootstrap.tfplan > "$RUNNER_TEMP/wif-bootstrap-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color wif-bootstrap.tfplan > "$RUNNER_TEMP/wif-bootstrap-plan.txt"
+          terraform -chdir=terraform/birzha_test show -json wif-readonly.tfplan > "$RUNNER_TEMP/wif-readonly-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color wif-readonly.tfplan > "$RUNNER_TEMP/wif-readonly-plan.txt"
 
-      - name: Assert exact five-resource bootstrap delta
+      - name: Assert exact two-resource read-only delta
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import json, os
           from pathlib import Path
-          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('wif-bootstrap-plan.json').read_text())
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('wif-readonly-plan.json').read_text())
           actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
           expected={
-            'yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor[0]':['create'],
-            'yandex_resourcemanager_folder_iam_member.wif_bootstrap_user[0]':['create'],
-            'yandex_iam_service_account_iam_member.wif_bootstrap_federated_credential_editor[0]':['create'],
-            'yandex_iam_workload_identity_oidc_federation.github_image_publisher':['create'],
-            'yandex_iam_workload_identity_federated_credential.github_image_publisher':['create'],
+            'yandex_resourcemanager_folder_iam_member.terraform_wif_viewer':['create'],
+            'yandex_iam_service_account_iam_member.terraform_federated_credential_viewer':['create'],
           }
           if actual != expected:
-            raise SystemExit(f'Unexpected WIF bootstrap plan delta: {actual!r}')
-          print('WIF_BOOTSTRAP_EXACT_5_ADD_PASS')
+              raise SystemExit(f'Unexpected WIF read-only plan delta: {actual!r}')
+          print('WIF_READONLY_EXACT_2_ADD_PASS')
           PY
-          grep -Fq 'Plan: 5 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/wif-bootstrap-plan.txt"
-          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/wif-bootstrap-plan.txt"
+          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/wif-readonly-plan.txt"
+          ! grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp|lockbox' "$RUNNER_TEMP/wif-readonly-plan.txt"
 
-      - name: Sanitize bootstrap plan
-        shell: bash
-        run: |
-          set -euo pipefail
-          sed -i -E 's/serviceAccount:aje[a-z0-9]+/serviceAccount:<INFRA_DEPLOYER_SA_ID>/g' "$RUNNER_TEMP/wif-bootstrap-plan.txt"
-          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/wif-bootstrap-plan.txt"; then
-            exit 1
-          fi
-
-      - name: Upload sanitized bootstrap plan
+      - name: Upload sanitized read-only plan
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: birzha-image-publisher-wif-bootstrap-plan
-          path: ${{ runner.temp }}/wif-bootstrap-plan.txt
+          name: birzha-wif-readonly-reconcile-plan
+          path: ${{ runner.temp }}/wif-readonly-plan.txt
           if-no-files-found: error
           retention-days: 7
 

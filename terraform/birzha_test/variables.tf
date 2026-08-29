@@ -12,6 +12,17 @@ variable "yc_service_account_key_file" {
   sensitive   = true
 }
 
+variable "terraform_deployer_service_account_id" {
+  description = "Existing central infra deployer SA ID, used only for narrow read-only WIF reconciliation grants in the BIRZHA TEST scope."
+  type        = string
+  default     = "ajecdjjrkdo1t3itpl9k"
+
+  validation {
+    condition     = can(regex("^aje[a-z0-9]+$", var.terraform_deployer_service_account_id))
+    error_message = "terraform_deployer_service_account_id must be a Yandex service account ID."
+  }
+}
+
 variable "wif_bootstrap_deployer_service_account_id" {
   description = "Temporary infra deployer SA ID used only to bootstrap publisher WIF permissions. Null means no bootstrap bindings remain."
   type        = string
