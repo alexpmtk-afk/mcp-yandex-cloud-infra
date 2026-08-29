@@ -5,6 +5,7 @@ on:
     paths:
       - "terraform/**"
       - "environments/**"
+      - "docs/**"
       - ".github/workflows/terraform-check.yml"
   push:
     branches:
@@ -12,6 +13,7 @@ on:
     paths:
       - "terraform/**"
       - "environments/**"
+      - "docs/**"
       - ".github/workflows/terraform-check.yml"
 
 permissions:
@@ -45,7 +47,7 @@ jobs:
       - name: BIRZHA Terraform validate
         run: terraform -chdir=terraform/birzha_test validate
 
-  birzha-plan:
+  birzha-publisher-plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     environment: test
@@ -85,52 +87,77 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
-      - name: Build BIRZHA foundation plan only
+      - name: Confirm Foundation state boundary before publisher plan
         shell: bash
         run: |
           set -euo pipefail
-          APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
-          terraform -chdir=terraform/birzha_test plan \
-            -lock=false \
-            -input=false \
-            -no-color \
-            -out=foundation.tfplan \
-            -var="source_commit_sha=$APP_SHA"
-          terraform -chdir=terraform/birzha_test show -no-color foundation.tfplan > "$RUNNER_TEMP/birzha-foundation-plan.txt"
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_container_registry.birzha' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_service_account.runtime' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_iam_service_account.gateway' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_resourcemanager_folder.birzha_test' "$RUNNER_TEMP/state-before.txt"
+          grep -Fxq 'yandex_resourcemanager_folder_iam_member.runtime_registry_pull' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
 
-      - name: Build BIRZHA runtime preview plan only
+      - name: Build image publisher IAM plan only
         shell: bash
         run: |
           set -euo pipefail
           APP_SHA="e8463b8a034b2a7ed92ac06894ce960d9fa3a021"
-          PLAN_ONLY_IMAGE="cr.yandex/planonly0000000000000/birzha-mcp-forecast:git-$APP_SHA"
           terraform -chdir=terraform/birzha_test plan \
             -lock=false \
             -input=false \
             -no-color \
-            -out=runtime-preview.tfplan \
-            -var="source_commit_sha=$APP_SHA" \
-            -var="mcp_image_url=$PLAN_ONLY_IMAGE"
-          terraform -chdir=terraform/birzha_test show -no-color runtime-preview.tfplan > "$RUNNER_TEMP/birzha-runtime-preview-plan.txt"
-          sed -i "s#${RUNNER_TEMP}#<RUNNER_TEMP>#g" "$RUNNER_TEMP/birzha-runtime-preview-plan.txt"
-          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/birzha-runtime-preview-plan.txt"; then
+            -out=publisher.tfplan \
+            -var="source_commit_sha=$APP_SHA"
+          terraform -chdir=terraform/birzha_test show -json publisher.tfplan > "$RUNNER_TEMP/publisher-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color publisher.tfplan > "$RUNNER_TEMP/publisher-plan.txt"
+
+      - name: Assert exact two-resource publisher delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          plan = json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('publisher-plan.json').read_text())
+          changes = plan.get('resource_changes', [])
+          actual = {
+              item['address']: item['change']['actions']
+              for item in changes
+              if item['change']['actions'] != ['no-op']
+          }
+          expected = {
+              'yandex_iam_service_account.publisher': ['create'],
+              'yandex_container_registry_iam_binding.publisher_push': ['create'],
+          }
+          if actual != expected:
+              raise SystemExit(f'Unexpected publisher plan delta: {actual!r}')
+          print('PUBLISHER_PLAN_EXACT_2_ADD_PASS')
+          PY
+          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/publisher-plan.txt"
+          if grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/publisher-plan.txt"; then
+            echo "Runtime resource unexpectedly present in publisher plan" >&2
+            exit 1
+          fi
+
+      - name: Sanitize publisher plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          sed -i "s#${RUNNER_TEMP}#<RUNNER_TEMP>#g" "$RUNNER_TEMP/publisher-plan.txt"
+          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/publisher-plan.txt"; then
             echo "Refusing to publish plan: secret-like material detected" >&2
             exit 1
           fi
 
-      - name: Upload sanitized BIRZHA foundation plan
+      - name: Upload sanitized publisher plan
         uses: actions/upload-artifact@v4
         with:
-          name: birzha-test-terraform-foundation-plan
-          path: ${{ runner.temp }}/birzha-foundation-plan.txt
-          if-no-files-found: error
-          retention-days: 7
-
-      - name: Upload sanitized BIRZHA runtime preview plan
-        uses: actions/upload-artifact@v4
-        with:
-          name: birzha-test-terraform-runtime-preview-plan
-          path: ${{ runner.temp }}/birzha-runtime-preview-plan.txt
+          name: birzha-image-publisher-iam-plan
+          path: ${{ runner.temp }}/publisher-plan.txt
           if-no-files-found: error
           retention-days: 7
 
