@@ -44,6 +44,27 @@ resource "yandex_container_registry_iam_binding" "publisher_push" {
   ]
 }
 
+resource "yandex_iam_workload_identity_oidc_federation" "github_image_publisher" {
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  name        = "birzha-mcp-forecast-github-publisher"
+  description = "GitHub Actions OIDC federation for BIRZHA TEST image publishing"
+  disabled    = false
+
+  audiences = [
+    "https://github.com/alexpmtk-afk",
+  ]
+  issuer   = "https://token.actions.githubusercontent.com"
+  jwks_url = "https://token.actions.githubusercontent.com/.well-known/jwks"
+
+  labels = local.labels
+}
+
+resource "yandex_iam_workload_identity_federated_credential" "github_image_publisher" {
+  service_account_id  = yandex_iam_service_account.publisher.id
+  federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
+  external_subject_id = "repo:alexpmtk-afk/birzha-mcp-forecast:ref:refs/heads/main"
+}
+
 resource "yandex_serverless_container" "mcp" {
   count              = var.mcp_image_url == null ? 0 : 1
   folder_id          = yandex_resourcemanager_folder.birzha_test.id
