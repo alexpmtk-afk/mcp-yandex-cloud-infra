@@ -1,0 +1,164 @@
+name: BIRZHA Runtime Deployment Plan
+
+on:
+  pull_request:
+    paths:
+      - "terraform/birzha_test/**"
+      - ".github/workflows/birzha-runtime-plan.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  runtime-plan:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+
+    env:
+      SOURCE_SHA: e8463b8a034b2a7ed92ac06894ce960d9fa3a021
+      IMAGE_TAG: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast:git-e8463b8a034b2a7ed92ac06894ce960d9fa3a021
+      IMAGE_DIGEST: sha256:758612c55fa0d9d633044cec68594dce6a92e8375ea7a020bd3508e29cb049f9
+      IMAGE_URL: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:758612c55fa0d9d633044cec68594dce6a92e8375ea7a020bd3508e29cb049f9
+
+    steps:
+      - name: Checkout reviewed PR
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize isolated BIRZHA state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Confirm pre-runtime boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'wif_bootstrap' "$RUNNER_TEMP/state-before.txt"
+          ! grep -q 'federated_credential_update_' "$RUNNER_TEMP/state-before.txt"
+
+      - name: Assert immutable image coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" == "e8463b8a034b2a7ed92ac06894ce960d9fa3a021" ]]
+          [[ "$IMAGE_DIGEST" == "sha256:758612c55fa0d9d633044cec68594dce6a92e8375ea7a020bd3508e29cb049f9" ]]
+          [[ "$IMAGE_URL" == "cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@${IMAGE_DIGEST}" ]]
+          [[ "$IMAGE_TAG" == "cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast:git-${SOURCE_SHA}" ]]
+
+      - name: Build fresh executable Runtime plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -out=runtime.tfplan \
+            -var="source_commit_sha=${SOURCE_SHA}" \
+            -var="mcp_image_url=${IMAGE_URL}"
+          terraform -chdir=terraform/birzha_test show -json runtime.tfplan > "$RUNNER_TEMP/runtime-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color runtime.tfplan > "$RUNNER_TEMP/runtime-plan.txt"
+
+      - name: Assert exact Runtime-only delta
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('runtime-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={
+            'yandex_serverless_container.mcp[0]':['create'],
+            'yandex_serverless_container_iam_member.gateway_invoker[0]':['create'],
+            'yandex_api_gateway.mcp[0]':['create'],
+          }
+          if actual != expected:
+            raise SystemExit(f'Unexpected Runtime plan delta: {actual!r}')
+          container=[x for x in plan['resource_changes'] if x['address']=='yandex_serverless_container.mcp[0]'][0]['change']['after']
+          image=container['image'][0]
+          expected_url=os.environ['IMAGE_URL']
+          if image.get('url') != expected_url:
+            raise SystemExit(f'Runtime image URL is not immutable digest URL: {image.get("url")!r}')
+          env=image.get('environment') or {}
+          if env.get('BIRZHA_SOURCE_COMMIT') != os.environ['SOURCE_SHA']:
+            raise SystemExit('Runtime source SHA environment mismatch')
+          if env.get('MCP_ALLOWED_HOSTS') != '__remote_host_not_configured__.invalid':
+            raise SystemExit('Initial Runtime Host binding is not fail-closed')
+          if env.get('MCP_ALLOWED_ORIGINS') != '':
+            raise SystemExit('Initial Runtime origins must be empty')
+          print('RUNTIME_PLAN_EXACT_3_ADD_PASS')
+          PY
+          grep -Fq 'Plan: 3 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/runtime-plan.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/runtime-plan.txt"
+
+      - name: Write Runtime control report
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/runtime-control-report.txt" <<EOF
+          source_commit_sha=${SOURCE_SHA}
+          image_tag=${IMAGE_TAG}
+          yandex_image_digest=${IMAGE_DIGEST}
+          runtime_image_url=${IMAGE_URL}
+          registry_id=crpk5qvf4p7kcqil2u3v
+          initial_mcp_allowed_hosts=__remote_host_not_configured__.invalid
+          initial_mcp_allowed_origins=<empty>
+          planned_serverless_container=CREATE
+          planned_gateway_invoker_binding=CREATE
+          planned_api_gateway=CREATE
+          lockbox=ABSENT
+          apply_executed=false
+          EOF
+
+      - name: Sanitize plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/runtime-plan.txt"; then
+            echo "Secret-like material found in plan" >&2
+            exit 1
+          fi
+
+      - name: Upload Runtime plan evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-runtime-deployment-plan
+          path: |
+            ${{ runner.temp }}/runtime-plan.txt
+            ${{ runner.temp }}/runtime-control-report.txt
+            ${{ runner.temp }}/state-before.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
