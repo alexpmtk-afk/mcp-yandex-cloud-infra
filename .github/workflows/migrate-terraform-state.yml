@@ -103,7 +103,6 @@ jobs:
           import_if_absent yandex_lockbox_secret.marketplace_credentials "$LOCKBOX_ID"
           import_if_absent 'yandex_serverless_container.mcp[0]' "$CONTAINER_ID"
           import_if_absent 'yandex_serverless_container_iam_member.gateway_invoker[0]' "$CONTAINER_ID,serverless-containers.containerInvoker,serviceAccount:$GATEWAY_SA_ID"
-          import_if_absent 'yandex_api_gateway.mcp[0]' "$GATEWAY_ID"
 
           if (( FAILED_IMPORT_COUNT > 0 )); then
             {
