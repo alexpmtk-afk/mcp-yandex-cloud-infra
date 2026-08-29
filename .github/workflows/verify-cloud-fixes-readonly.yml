@@ -1,0 +1,124 @@
+name: Verify Yandex Cloud fixes read-only
+
+on:
+  push:
+    paths:
+      - '.github/workflows/verify-cloud-fixes-readonly.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+      YC_FOLDER_ID: b1gnd0dqoq3ljod88i8t
+      CI_SA_ID: ajecdjjrkdo1t3itpl9k
+      CONTAINER_ID: bba6lj5ggejtop0jl5k8
+      GATEWAY_ID: d5deoa6cl4irtmkp5ad6
+      REGISTRY_ID: crpnhk1hs1gsai91b164
+      HEALTH_URL: https://d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net/healthz
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install yc
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate safely
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create verify-fixes || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id "$YC_CLOUD_ID"
+          yc config set folder-id "$YC_FOLDER_ID"
+
+      - name: Read current cloud state only
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p verify_raw audits
+          yc lockbox secret list --folder-id "$YC_FOLDER_ID" --format json > verify_raw/lockbox.json 2>verify_raw/lockbox.err || true
+          yc resource-manager folder list-access-bindings "$YC_FOLDER_ID" --format json > verify_raw/folder_bindings.json 2>verify_raw/folder_bindings.err || true
+          yc serverless container get "$CONTAINER_ID" --format json > verify_raw/container.json 2>verify_raw/container.err || true
+          yc serverless api-gateway get "$GATEWAY_ID" --format json > verify_raw/gateway.json 2>verify_raw/gateway.err || true
+          yc container image list --registry-id "$REGISTRY_ID" --format json > verify_raw/images.json 2>verify_raw/images.err || true
+          curl -sS -o verify_raw/health.txt -w '%{http_code}' --max-time 30 "$HEALTH_URL" > verify_raw/health_code.txt || true
+
+          TOKEN="$(yc iam create-token)"
+          FROM="$(date -u -d '7 days ago' +%Y-%m-%dT%H:%M:%SZ)"
+          TO="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+          jq -nc --arg q 'serverless.containers.execution_time_milliseconds_count{service="serverless-containers",container="bba6lj5ggejtop0jl5k8"}' --arg f "$FROM" --arg t "$TO" '{query:$q,fromTime:$f,toTime:$t,downsampling:{maxPoints:"100",gridAggregation:"MAX",gapFilling:"NONE"}}' > verify_raw/monitoring_payload.json
+          curl -sS -o verify_raw/monitoring.json -w '%{http_code}' -X POST "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=$YC_FOLDER_ID" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data @verify_raw/monitoring_payload.json > verify_raw/monitoring_code.txt || true
+          curl -sS -o verify_raw/billing.json -w '%{http_code}' -H "Authorization: Bearer $TOKEN" 'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts?pageSize=100' > verify_raw/billing_code.txt || true
+
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          from datetime import datetime, timezone
+          p=Path('verify_raw')
+          def j(name, default):
+              try:return json.loads((p/name).read_text())
+              except:return default
+          locks=j('lockbox.json',[])
+          bindings=j('folder_bindings.json',{})
+          images=j('images.json',[])
+          sa='ajecdjjrkdo1t3itpl9k'
+          relevant=[]
+          for b in bindings.get('access_bindings', bindings.get('accessBindings', [])) if isinstance(bindings,dict) else []:
+              subj=b.get('subject',{})
+              sid=subj.get('id') or subj.get('subject_id') or subj.get('subjectId')
+              if sid==sa:
+                  relevant.append({'role_id':b.get('role_id') or b.get('roleId'),'subject':subj})
+          billing=j('billing.json',{})
+          mon=j('monitoring.json',{})
+          report={
+            'generated_at':datetime.now(timezone.utc).isoformat(),
+            'lockbox_count':len(locks) if isinstance(locks,list) else None,
+            'lockboxes':[{'id':x.get('id'),'name':x.get('name'),'status':x.get('status'),'created_at':x.get('created_at') or x.get('createdAt')} for x in locks] if isinstance(locks,list) else [],
+            'ci_folder_roles':relevant,
+            'monitoring_http':(p/'monitoring_code.txt').read_text().strip() if (p/'monitoring_code.txt').exists() else None,
+            'monitoring_has_metrics':bool(mon.get('metrics')) if isinstance(mon,dict) else False,
+            'monitoring_error':mon.get('message') if isinstance(mon,dict) else None,
+            'billing_http':(p/'billing_code.txt').read_text().strip() if (p/'billing_code.txt').exists() else None,
+            'billing_accounts_count':len(billing.get('billingAccounts',[])) if isinstance(billing,dict) else None,
+            'health_http':(p/'health_code.txt').read_text().strip() if (p/'health_code.txt').exists() else None,
+            'health_body':(p/'health.txt').read_text(errors='replace')[:200] if (p/'health.txt').exists() else None,
+            'registry_images_count':len(images) if isinstance(images,list) else None,
+          }
+          Path('audits/yandex-cloud-fixes-verification.json').write_text(json.dumps(report,ensure_ascii=False,indent=2))
+          roles=', '.join(sorted({x['role_id'] for x in relevant if x.get('role_id')})) or '(none visible)'
+          md=f'''# Yandex Cloud fixes verification\n\nGenerated: {report['generated_at']}\n\n- Lockbox secrets: **{report['lockbox_count']}**\n- CI folder roles: `{roles}`\n- Monitoring API: **HTTP {report['monitoring_http']}**\n- Billing API: **HTTP {report['billing_http']}**, accounts visible: **{report['billing_accounts_count']}**\n- Health: **HTTP {report['health_http']}** `{report['health_body']}`\n- Registry images: **{report['registry_images_count']}**\n'''
+          Path('audits/yandex-cloud-fixes-verification.md').write_text(md)
+          PY
+
+      - name: Persist sanitized result
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add audits/yandex-cloud-fixes-verification.json audits/yandex-cloud-fixes-verification.md
+          git commit -m 'chore(audit): record Yandex Cloud fixes verification' || exit 0
+          git push
+
+      - name: Remove ephemeral key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
