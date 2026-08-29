@@ -25,10 +25,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
         with:
           terraform_version: "1.9.8"
 
@@ -47,7 +47,7 @@ jobs:
       - name: BIRZHA Terraform validate
         run: terraform -chdir=terraform/birzha_test validate
 
-  birzha-publisher-plan:
+  birzha-publisher-wif-plan:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     environment: test
@@ -55,10 +55,10 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Setup Terraform
-        uses: hashicorp/setup-terraform@v3
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
         with:
           terraform_version: "1.9.8"
 
@@ -87,20 +87,26 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
-      - name: Confirm Foundation state boundary before publisher plan
+      - name: Confirm current state boundary before WIF plan
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_container_registry.birzha' "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_iam_service_account.runtime' "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_iam_service_account.gateway' "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_resourcemanager_folder.birzha_test' "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_resourcemanager_folder_iam_member.runtime_registry_pull' "$RUNNER_TEMP/state-before.txt"
+          for address in \
+            yandex_container_registry.birzha \
+            yandex_container_registry_iam_binding.publisher_push \
+            yandex_iam_service_account.gateway \
+            yandex_iam_service_account.publisher \
+            yandex_iam_service_account.runtime \
+            yandex_resourcemanager_folder.birzha_test \
+            yandex_resourcemanager_folder_iam_member.runtime_registry_pull; do
+            grep -Fxq "$address" "$RUNNER_TEMP/state-before.txt"
+          done
           ! grep -q 'yandex_serverless_container.mcp' "$RUNNER_TEMP/state-before.txt"
           ! grep -q 'yandex_api_gateway.mcp' "$RUNNER_TEMP/state-before.txt"
+          ! grep -qi 'lockbox' "$RUNNER_TEMP/state-before.txt"
 
-      - name: Build image publisher IAM plan only
+      - name: Build publisher WIF plan only
         shell: bash
         run: |
           set -euo pipefail
@@ -109,12 +115,12 @@ jobs:
             -lock=false \
             -input=false \
             -no-color \
-            -out=publisher.tfplan \
+            -out=publisher-wif.tfplan \
             -var="source_commit_sha=$APP_SHA"
-          terraform -chdir=terraform/birzha_test show -json publisher.tfplan > "$RUNNER_TEMP/publisher-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color publisher.tfplan > "$RUNNER_TEMP/publisher-plan.txt"
+          terraform -chdir=terraform/birzha_test show -json publisher-wif.tfplan > "$RUNNER_TEMP/publisher-wif-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color publisher-wif.tfplan > "$RUNNER_TEMP/publisher-wif-plan.txt"
 
-      - name: Assert exact two-resource publisher delta
+      - name: Assert exact two-resource WIF delta
         shell: bash
         run: |
           set -euo pipefail
@@ -122,42 +128,41 @@ jobs:
           import json, os
           from pathlib import Path
 
-          plan = json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('publisher-plan.json').read_text())
-          changes = plan.get('resource_changes', [])
+          plan = json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('publisher-wif-plan.json').read_text())
           actual = {
               item['address']: item['change']['actions']
-              for item in changes
+              for item in plan.get('resource_changes', [])
               if item['change']['actions'] != ['no-op']
           }
           expected = {
-              'yandex_iam_service_account.publisher': ['create'],
-              'yandex_container_registry_iam_binding.publisher_push': ['create'],
+              'yandex_iam_workload_identity_oidc_federation.github_image_publisher': ['create'],
+              'yandex_iam_workload_identity_federated_credential.github_image_publisher': ['create'],
           }
           if actual != expected:
-              raise SystemExit(f'Unexpected publisher plan delta: {actual!r}')
-          print('PUBLISHER_PLAN_EXACT_2_ADD_PASS')
+              raise SystemExit(f'Unexpected publisher WIF plan delta: {actual!r}')
+          print('PUBLISHER_WIF_PLAN_EXACT_2_ADD_PASS')
           PY
-          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/publisher-plan.txt"
-          if grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/publisher-plan.txt"; then
-            echo "Runtime resource unexpectedly present in publisher plan" >&2
+          grep -Fq 'Plan: 2 to add, 0 to change, 0 to destroy.' "$RUNNER_TEMP/publisher-wif-plan.txt"
+          if grep -Eq 'yandex_serverless_container\.mcp|yandex_api_gateway\.mcp' "$RUNNER_TEMP/publisher-wif-plan.txt"; then
+            echo "Runtime resource unexpectedly present in WIF plan" >&2
             exit 1
           fi
 
-      - name: Sanitize publisher plan
+      - name: Sanitize WIF plan
         shell: bash
         run: |
           set -euo pipefail
-          sed -i "s#${RUNNER_TEMP}#<RUNNER_TEMP>#g" "$RUNNER_TEMP/publisher-plan.txt"
-          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/publisher-plan.txt"; then
+          sed -i "s#${RUNNER_TEMP}#<RUNNER_TEMP>#g" "$RUNNER_TEMP/publisher-wif-plan.txt"
+          if grep -Eq 'BEGIN (RSA |EC |OPENSSH )?PRIVATE KEY|private_key[[:space:]]*=' "$RUNNER_TEMP/publisher-wif-plan.txt"; then
             echo "Refusing to publish plan: secret-like material detected" >&2
             exit 1
           fi
 
-      - name: Upload sanitized publisher plan
-        uses: actions/upload-artifact@v4
+      - name: Upload sanitized WIF plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: birzha-image-publisher-iam-plan
-          path: ${{ runner.temp }}/publisher-plan.txt
+          name: birzha-image-publisher-wif-plan
+          path: ${{ runner.temp }}/publisher-wif-plan.txt
           if-no-files-found: error
           retention-days: 7
 
