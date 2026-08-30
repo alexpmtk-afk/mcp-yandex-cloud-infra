@@ -1,0 +1,76 @@
+name: Recovery Yandex MCP Audit
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create recovery-audit || true
+          yc config set service-account-key "$KEY_FILE"
+      - name: Audit TEST resources and secret metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          test -n "$FOLDER_ID"
+          echo "folder_present=true"
+
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-api-credentials") | .id' | head -1)"
+          if [[ -z "$SECRET_ID" || "$SECRET_ID" == "null" ]]; then
+            echo "lockbox_present=false"
+          else
+            echo "lockbox_present=true"
+            VERSIONS="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json 2>/dev/null || echo '[]')"
+            ACTIVE_VERSION="$(printf '%s' "$VERSIONS" | jq -r '[.[] | select((.status // "") == "ACTIVE")][0].id // empty')"
+            if [[ -z "$ACTIVE_VERSION" ]]; then
+              echo "lockbox_active_version=false"
+            else
+              echo "lockbox_active_version=true"
+              # Fetch payload only inside the runner and emit key NAMES, never values.
+              KEYS="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$ACTIVE_VERSION" --format json | jq -r '[.entries[].key] | sort | join(",")')"
+              echo "lockbox_keys=$KEYS"
+            fi
+          fi
+
+          echo "container_count=$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq 'length')"
+          yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | "container_present=true container_id=" + .id'
+
+          if yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/redis.json" 2>/dev/null; then
+            echo "redis_cluster_count=$(jq 'length' "$RUNNER_TEMP/redis.json")"
+            jq -r '.[] | "redis_cluster=" + .name + " status=" + (.status // "unknown")' "$RUNNER_TEMP/redis.json"
+          else
+            echo "redis_cluster_count=unknown"
+          fi
+      - name: Remove ephemeral CI key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/redis.json"
