@@ -1,0 +1,55 @@
+name: Recovery Lockbox Bootstrap Key
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - .github/workflows/recovery-bootstrap-key.yml
+
+permissions:
+  contents: read
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create recovery-bootstrap || true
+          yc config set service-account-key "$KEY_FILE"
+      - name: Create one-time RSA private key in Lockbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          NAME="marketplaces-mcp-bootstrap-${GITHUB_SHA:0:8}"
+          openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:4096 -out "$RUNNER_TEMP/private.pem" 2>/dev/null
+          openssl pkey -in "$RUNNER_TEMP/private.pem" -pubout -out "$RUNNER_TEMP/public.pem" 2>/dev/null
+          jq -n --rawfile private "$RUNNER_TEMP/private.pem" '[{"key":"private_key","text_value":$private}]' > "$RUNNER_TEMP/private-payload.json"
+          yc lockbox secret create --folder-id "$FOLDER_ID" --name "$NAME" --description "One-time encrypted transfer key; delete after bootstrap" --payload - --format json --no-user-output < "$RUNNER_TEMP/private-payload.json" > "$RUNNER_TEMP/created.json"
+          echo "bootstrap_secret_id=$(jq -r '.id' "$RUNNER_TEMP/created.json")"
+          echo "bootstrap_public_key_b64=$(base64 -w0 "$RUNNER_TEMP/public.pem")"
+      - name: Remove local key material
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/private.pem" "$RUNNER_TEMP/public.pem" "$RUNNER_TEMP/private-payload.json" "$RUNNER_TEMP/created.json" "$RUNNER_TEMP/yc-service-account-key.json"
