@@ -50,11 +50,9 @@ jobs:
           jq -r '.entries[] | select(.key == "private_key") | .text_value' "$RUNNER_TEMP/bootstrap-payload.json" > "$RUNNER_TEMP/private.pem"
           chmod 600 "$RUNNER_TEMP/private.pem"
           : > "$RUNNER_TEMP/plain.json"
-          INDEX=0
           while IFS= read -r CHUNK; do
             printf '%s' "$CHUNK" | base64 -d > "$RUNNER_TEMP/chunk.enc"
-            openssl pkeyutl -decrypt -inkey "$RUNNER_TEMP/private.pem" -in "$RUNNER_TEMP/chunk.enc" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 >> "$RUNNER_TEMP/plain.json"
-            INDEX=$((INDEX + 1))
+            openssl pkeyutl -decrypt -inkey "$RUNNER_TEMP/private.pem" -in "$RUNNER_TEMP/chunk.enc" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 >> "$RUNNER_TEMP/plain.json"
           done < <(jq -r '.chunks[]' "$PACKAGE")
           ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/plain.json" | awk '{print $1}')"
           test "$ACTUAL_SHA" = "$EXPECTED_SHA"
