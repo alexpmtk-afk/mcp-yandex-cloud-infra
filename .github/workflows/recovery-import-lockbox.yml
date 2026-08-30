@@ -49,6 +49,10 @@ jobs:
           yc lockbox payload get --id "$BOOTSTRAP_ID" --format json --no-user-output > "$RUNNER_TEMP/bootstrap-payload.json"
           jq -r '.entries[] | select(.key == "private_key") | .text_value' "$RUNNER_TEMP/bootstrap-payload.json" > "$RUNNER_TEMP/private.pem"
           chmod 600 "$RUNNER_TEMP/private.pem"
+          openssl pkey -in "$RUNNER_TEMP/private.pem" -pubout -out "$RUNNER_TEMP/public.pem" 2>/dev/null
+          echo "actual_bootstrap_public_key_b64=$(base64 -w0 "$RUNNER_TEMP/public.pem")"
+          echo "actual_bootstrap_public_fingerprint=$(openssl pkey -pubin -in "$RUNNER_TEMP/public.pem" -outform DER 2>/dev/null | sha256sum | awk '{print $1}')"
+
           : > "$RUNNER_TEMP/plain.json"
           while IFS= read -r CHUNK; do
             printf '%s' "$CHUNK" | base64 -d > "$RUNNER_TEMP/chunk.enc"
@@ -77,4 +81,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/bootstrap-payload.json" "$RUNNER_TEMP/private.pem" "$RUNNER_TEMP/chunk.enc" "$RUNNER_TEMP/plain.json" "$RUNNER_TEMP/lockbox-payload.json" "$RUNNER_TEMP/version.json"
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/bootstrap-payload.json" "$RUNNER_TEMP/private.pem" "$RUNNER_TEMP/public.pem" "$RUNNER_TEMP/chunk.enc" "$RUNNER_TEMP/plain.json" "$RUNNER_TEMP/lockbox-payload.json" "$RUNNER_TEMP/version.json"
