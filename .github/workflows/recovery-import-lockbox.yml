@@ -1,0 +1,82 @@
+name: Recovery Import Marketplace Lockbox
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - .github/workflows/recovery-import-lockbox.yml
+      - .recovery/lockbox-bootstrap.enc.json
+
+permissions:
+  contents: read
+
+jobs:
+  import:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create recovery-import || true
+          yc config set service-account-key "$KEY_FILE"
+      - name: Decrypt inside runner and write active Lockbox version
+        shell: bash
+        run: |
+          set -euo pipefail
+          PACKAGE=".recovery/lockbox-bootstrap.enc.json"
+          test "$(jq -r '.format' "$PACKAGE")" = "rsa-oaep-sha256-chunks-v1"
+          BOOTSTRAP_ID="$(jq -r '.bootstrap_secret_id' "$PACKAGE")"
+          EXPECTED_SHA="$(jq -r '.plaintext_sha256' "$PACKAGE")"
+
+          yc lockbox payload get --id "$BOOTSTRAP_ID" --format json --no-user-output > "$RUNNER_TEMP/bootstrap-payload.json"
+          jq -r '.entries[] | select(.key == "private_key") | .text_value' "$RUNNER_TEMP/bootstrap-payload.json" > "$RUNNER_TEMP/private.pem"
+          chmod 600 "$RUNNER_TEMP/private.pem"
+          : > "$RUNNER_TEMP/plain.json"
+          INDEX=0
+          while IFS= read -r CHUNK; do
+            printf '%s' "$CHUNK" | base64 -d > "$RUNNER_TEMP/chunk.enc"
+            openssl pkeyutl -decrypt -inkey "$RUNNER_TEMP/private.pem" -in "$RUNNER_TEMP/chunk.enc" -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 >> "$RUNNER_TEMP/plain.json"
+            INDEX=$((INDEX + 1))
+          done < <(jq -r '.chunks[]' "$PACKAGE")
+          ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/plain.json" | awk '{print $1}')"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          jq -e 'has("cabinets_json") and has("mcp_bearer_token") and has("redis_password")' "$RUNNER_TEMP/plain.json" >/dev/null
+
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          TARGET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-api-credentials") | .id' | head -1)"
+          test -n "$TARGET_ID"
+          jq -c '[
+            {"key":"cabinets_json","text_value":.cabinets_json},
+            {"key":"mcp_bearer_token","text_value":.mcp_bearer_token},
+            {"key":"redis_password","text_value":.redis_password}
+          ]' "$RUNNER_TEMP/plain.json" > "$RUNNER_TEMP/lockbox-payload.json"
+          yc lockbox secret add-version --id "$TARGET_ID" --description "Remote MCP production bootstrap" --payload - --format json --no-user-output < "$RUNNER_TEMP/lockbox-payload.json" > "$RUNNER_TEMP/version.json"
+          echo "target_lockbox_version=$(jq -r '.id' "$RUNNER_TEMP/version.json")"
+          echo "target_lockbox_keys=$(jq -r '.payload_entry_keys | sort | join(",")' "$RUNNER_TEMP/version.json")"
+
+          yc lockbox secret delete --id "$BOOTSTRAP_ID" --no-user-output >/dev/null
+          echo "bootstrap_key_deleted=true"
+      - name: Remove plaintext and CI key material
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/bootstrap-payload.json" "$RUNNER_TEMP/private.pem" "$RUNNER_TEMP/chunk.enc" "$RUNNER_TEMP/plain.json" "$RUNNER_TEMP/lockbox-payload.json" "$RUNNER_TEMP/version.json"
