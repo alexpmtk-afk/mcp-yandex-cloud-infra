@@ -1,0 +1,111 @@
+name: Recovery Codex Native MCP Proof
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - '.github/workflows/recovery-codex-native-mcp-proof.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  codex-mcp-proof:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI and Codex CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsS -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          npm install -g @openai/codex@latest
+          codex --version
+
+      - name: Configure native Codex remote MCP safely
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create codex-native-mcp-proof || true
+          yc config set service-account-key "$KEY_FILE"
+
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain')"
+          test -n "$DOMAIN"
+
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          MARKETPLACES_MCP_TOKEN="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$MARKETPLACES_MCP_TOKEN"
+          echo "::add-mask::$MARKETPLACES_MCP_TOKEN"
+          export MARKETPLACES_MCP_TOKEN
+          MCP_URL="https://$DOMAIN/mcp"
+
+          export CODEX_HOME="$RUNNER_TEMP/codex-home"
+          mkdir -p "$CODEX_HOME"
+          codex mcp add marketplaces-yandex --url "$MCP_URL" --bearer-token-env-var MARKETPLACES_MCP_TOKEN
+
+          codex mcp list --json > "$RUNNER_TEMP/mcp-list.json"
+          jq -e '.[] | select(.name=="marketplaces-yandex" and .enabled==true and .transport.type=="streamable_http" and .transport.bearer_token_env_var=="MARKETPLACES_MCP_TOKEN")' "$RUNNER_TEMP/mcp-list.json" >/dev/null
+          echo "codex_native_remote_mcp_config=PASS"
+
+          codex mcp get marketplaces-yandex --json > "$RUNNER_TEMP/mcp-get.json"
+          jq -e '.name=="marketplaces-yandex" and .enabled==true and .transport.type=="streamable_http" and .transport.bearer_token_env_var=="MARKETPLACES_MCP_TOKEN"' "$RUNNER_TEMP/mcp-get.json" >/dev/null
+          echo "codex_native_bearer_config=PASS"
+
+          set +e
+          codex doctor --json > "$RUNNER_TEMP/doctor.json" 2> "$RUNNER_TEMP/doctor.err"
+          DOCTOR_RC=$?
+          set -e
+          if [ -s "$RUNNER_TEMP/doctor.json" ]; then
+            jq -e '.checks["mcp.config"].status == "ok"' "$RUNNER_TEMP/doctor.json" >/dev/null && echo "codex_doctor_mcp_config=PASS" || true
+          fi
+          echo "codex_doctor_exit=$DOCTOR_RC"
+
+          # Independent protocol-level proof against the same endpoint/token, with no payload data emitted.
+          python - <<'PY'
+          import json, os, urllib.request
+          url = os.environ['MCP_URL'] if 'MCP_URL' in os.environ else None
+          if not url:
+              raise SystemExit('MCP_URL missing')
+          token = os.environ['MARKETPLACES_MCP_TOKEN']
+          body = json.dumps({
+              'jsonrpc':'2.0','id':1,'method':'initialize','params':{
+                  'protocolVersion':'2025-06-18','capabilities':{},
+                  'clientInfo':{'name':'codex-native-proof','version':'1'}
+              }
+          }).encode()
+          req = urllib.request.Request(url, data=body, method='POST', headers={
+              'Authorization':'Bearer '+token,
+              'Content-Type':'application/json',
+              'Accept':'application/json, text/event-stream',
+          })
+          with urllib.request.urlopen(req, timeout=30) as r:
+              text = r.read().decode()
+              assert r.status == 200
+              assert 'result' in text
+              assert r.headers.get('mcp-session-id')
+          print('codex_target_initialize=PASS')
+          PY
+        env:
+          MCP_URL: ${{ env.MCP_URL }}
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/mcp-list.json" "$RUNNER_TEMP/mcp-get.json" "$RUNNER_TEMP/doctor.json" "$RUNNER_TEMP/doctor.err"
