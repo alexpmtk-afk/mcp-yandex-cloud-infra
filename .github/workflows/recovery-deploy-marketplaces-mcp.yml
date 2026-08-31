@@ -156,7 +156,7 @@ jobs:
             --image "$IMAGE" \
             --memory 512MB \
             --cores 1 \
-            --execution-timeout 60s \
+            --execution-timeout 300s \
             --concurrency 8 \
             --service-account-id "$RUNTIME_SA_ID" \
             --network-id "$NETWORK_ID" \
@@ -194,6 +194,7 @@ jobs:
 
           export MCP_REMOTE_URL="$BASE_URL/mcp"
           export MCP_REMOTE_BEARER="$MCP_BEARER"
+          python -m pip install --disable-pip-version-check --quiet "httpx==0.28.1"
           python - <<'PY'
           import json, os
           import httpx
@@ -216,7 +217,7 @@ jobs:
                   return resp.json()
               return None
 
-          with httpx.Client(timeout=90.0, follow_redirects=True) as c:
+          with httpx.Client(timeout=240.0, follow_redirects=True) as c:
               init = c.post(url, headers=common, json={
                   'jsonrpc':'2.0','id':1,'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
