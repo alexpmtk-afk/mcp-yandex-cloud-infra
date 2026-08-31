@@ -64,7 +64,7 @@ resource "yandex_resourcemanager_folder_iam_member" "ydb_bootstrap_admin" {
 resource "yandex_iam_service_account_iam_member" "terraform_federated_credential_viewer" {
   service_account_id = yandex_iam_service_account.publisher.id
   role               = "iam.serviceAccounts.federatedCredentialViewer"
-  member              = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  member             = "serviceAccount:${var.terraform_deployer_service_account_id}"
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_editor" {
