@@ -51,6 +51,12 @@ function rewriteClientMessage(message, { policy, usage = null, nowMs = Date.now(
 
   const currentModel = currentModelFromParams(params);
   const decision = classify({ prompt, currentModel, usage, policy, nowMs });
+
+  // Explicit escape hatch: keep the Desktop-selected model/effort unchanged.
+  if (decision.force) {
+    return { message, routed: false, decision, prompt };
+  }
+
   const routedParams = applyRouteToParams(params, decision.route);
 
   return {
