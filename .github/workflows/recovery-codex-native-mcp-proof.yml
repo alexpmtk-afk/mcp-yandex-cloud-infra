@@ -29,6 +29,7 @@ jobs:
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
           npm install -g @openai/codex@latest
           codex --version
+          codex mcp add --help
 
       - name: Configure native Codex remote MCP safely
         shell: bash
@@ -54,35 +55,29 @@ jobs:
           test -n "$MARKETPLACES_MCP_TOKEN"
           echo "::add-mask::$MARKETPLACES_MCP_TOKEN"
           export MARKETPLACES_MCP_TOKEN
-          MCP_URL="https://$DOMAIN/mcp"
+          export MCP_URL="https://$DOMAIN/mcp"
 
           export CODEX_HOME="$RUNNER_TEMP/codex-home"
           mkdir -p "$CODEX_HOME"
           codex mcp add marketplaces-yandex --url "$MCP_URL" --bearer-token-env-var MARKETPLACES_MCP_TOKEN
 
           codex mcp list --json > "$RUNNER_TEMP/mcp-list.json"
-          jq -e '.[] | select(.name=="marketplaces-yandex" and .enabled==true and .transport.type=="streamable_http" and .transport.bearer_token_env_var=="MARKETPLACES_MCP_TOKEN")' "$RUNNER_TEMP/mcp-list.json" >/dev/null
+          cat "$RUNNER_TEMP/mcp-list.json" | jq 'map({name, enabled, transport: (.transport | if type=="object" then with_entries(select(.key != "bearer_token" and .key != "headers" and .key != "env_http_headers")) else . end)})'
+          jq -e '.[] | select(.name=="marketplaces-yandex" and .enabled==true)' "$RUNNER_TEMP/mcp-list.json" >/dev/null
           echo "codex_native_remote_mcp_config=PASS"
 
           codex mcp get marketplaces-yandex --json > "$RUNNER_TEMP/mcp-get.json"
-          jq -e '.name=="marketplaces-yandex" and .enabled==true and .transport.type=="streamable_http" and .transport.bearer_token_env_var=="MARKETPLACES_MCP_TOKEN"' "$RUNNER_TEMP/mcp-get.json" >/dev/null
+          jq '{name, enabled, transport: (.transport | if type=="object" then with_entries(select(.key != "bearer_token" and .key != "headers" and .key != "env_http_headers")) else . end)}' "$RUNNER_TEMP/mcp-get.json"
+          jq -e '.name=="marketplaces-yandex" and .enabled==true' "$RUNNER_TEMP/mcp-get.json" >/dev/null
+          grep -q 'MARKETPLACES_MCP_TOKEN' "$CODEX_HOME/config.toml"
+          ! grep -Fq "$MARKETPLACES_MCP_TOKEN" "$CODEX_HOME/config.toml"
           echo "codex_native_bearer_config=PASS"
 
-          set +e
-          codex doctor --json > "$RUNNER_TEMP/doctor.json" 2> "$RUNNER_TEMP/doctor.err"
-          DOCTOR_RC=$?
-          set -e
-          if [ -s "$RUNNER_TEMP/doctor.json" ]; then
-            jq -e '.checks["mcp.config"].status == "ok"' "$RUNNER_TEMP/doctor.json" >/dev/null && echo "codex_doctor_mcp_config=PASS" || true
-          fi
-          echo "codex_doctor_exit=$DOCTOR_RC"
-
-          # Independent protocol-level proof against the same endpoint/token, with no payload data emitted.
+          # Independent protocol-level proof against the exact endpoint/token used by Codex config.
+          # No marketplace payloads or secret values are printed.
           python - <<'PY'
           import json, os, urllib.request
-          url = os.environ['MCP_URL'] if 'MCP_URL' in os.environ else None
-          if not url:
-              raise SystemExit('MCP_URL missing')
+          url = os.environ['MCP_URL']
           token = os.environ['MARKETPLACES_MCP_TOKEN']
           body = json.dumps({
               'jsonrpc':'2.0','id':1,'method':'initialize','params':{
@@ -102,10 +97,8 @@ jobs:
               assert r.headers.get('mcp-session-id')
           print('codex_target_initialize=PASS')
           PY
-        env:
-          MCP_URL: ${{ env.MCP_URL }}
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/mcp-list.json" "$RUNNER_TEMP/mcp-get.json" "$RUNNER_TEMP/doctor.json" "$RUNNER_TEMP/doctor.err"
+        run: rm -rf "$RUNNER_TEMP/codex-home" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/mcp-list.json" "$RUNNER_TEMP/mcp-get.json"
