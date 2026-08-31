@@ -12,6 +12,14 @@ variable "yc_service_account_key_file" {
   sensitive   = true
 }
 
+variable "yc_token" {
+  description = "Ephemeral IAM token used by Terraform provider to avoid the Serverless Container DeployRevision service-account-key authentication bug."
+  type        = string
+  default     = null
+  nullable    = true
+  sensitive   = true
+}
+
 variable "terraform_deployer_service_account_id" {
   description = "Existing central infra deployer SA ID, used only for narrow reconciliation grants in the BIRZHA TEST scope."
   type        = string

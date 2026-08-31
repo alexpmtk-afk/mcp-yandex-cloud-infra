@@ -55,8 +55,45 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
           echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Mint ephemeral Yandex IAM token for Terraform provider
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' 'cryptography'
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+
+          key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
+          now=int(time.time())
+          signed=jwt.encode(
+              {
+                  'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+                  'iss':key['service_account_id'],
+                  'iat':now,
+                  'exp':now+3600,
+              },
+              key['private_key'],
+              algorithm='PS256',
+              headers={'kid':key['id']},
+          )
+          req=urllib.request.Request(
+              'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+              data=json.dumps({'jwt':signed}).encode(),
+              headers={'Content-Type':'application/json'},
+              method='POST',
+          )
+          with urllib.request.urlopen(req, timeout=30) as r:
+              token=json.loads(r.read())['iamToken']
+          assert token and len(token) > 100
+          print(f'::add-mask::{token}')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'TF_VAR_yc_token={token}\n')
+          print('EPHEMERAL_IAM_TOKEN_READY')
+          PY
 
       - name: Initialize BIRZHA remote state
         shell: bash
