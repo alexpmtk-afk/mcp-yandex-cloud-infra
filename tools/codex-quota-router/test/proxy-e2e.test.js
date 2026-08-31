@@ -38,7 +38,9 @@ const request = {
   }
 };
 
-child.stdin.write(JSON.stringify(request) + '\n');
+// Regression: Windows/.NET wrappers can put U+FEFF before the first JSONL value.
+// The proxy must normalize it instead of failing open and silently keeping Sol.
+child.stdin.write('\uFEFF' + JSON.stringify(request) + '\n');
 child.stdin.end();
 
 const timer = setTimeout(() => {
@@ -61,5 +63,5 @@ child.on('exit', (code) => {
   assert.equal(actual.params.collaborationMode.settings.reasoning_effort, 'low');
   assert.equal(actual.params.collaborationMode.settings.developer_instructions, 'preserve-me');
   assert.deepEqual(actual.params.input, request.params.input);
-  console.log('proxy e2e: PASS');
+  console.log('proxy e2e BOM regression: PASS');
 });
