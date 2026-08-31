@@ -1,0 +1,37 @@
+name: Recovery Test Windows Codex Setup
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - 'scripts/setup-codex-marketplaces-windows.ps1'
+      - '.github/workflows/recovery-test-windows-codex-setup.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse PowerShell and validate secret-free config logic
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $path = 'scripts/setup-codex-marketplaces-windows.ps1'
+          $tokens = $null
+          $errors = $null
+          [System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $path), [ref]$tokens, [ref]$errors) | Out-Null
+          if ($errors.Count -gt 0) {
+            $errors | ForEach-Object { Write-Error $_.Message }
+            exit 1
+          }
+          $text = Get-Content -Raw $path
+          if ($text -notmatch 'bearer_token_env_var') { throw 'Missing Codex bearer_token_env_var configuration.' }
+          if ($text -notmatch 'default_tools_approval_mode = "writes"') { throw 'Missing write approval safety policy.' }
+          if ($text -notmatch 'lockbox payload get') { throw 'Setup no longer reads the bearer from Lockbox.' }
+          if ($text -match '(?i)mcp_bearer_token\s*=\s*["''][^"'']+["'']') { throw 'Possible hard-coded MCP bearer detected.' }
+          Write-Host 'WINDOWS_CODEX_SETUP_PARSE=PASS'
