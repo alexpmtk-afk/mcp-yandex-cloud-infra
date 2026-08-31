@@ -1,0 +1,119 @@
+name: Codex Quota Router v0.3 PR Verify
+
+on:
+  pull_request:
+    branches:
+      - main
+    paths:
+      - 'tools/codex-quota-router/**'
+      - '.github/workflows/tooling-codex-quota-router-v0.3-pr.yml'
+
+jobs:
+  windows-verify:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Router unit tests
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\router.test.js
+
+      - name: Proxy routing unit tests
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\proxy.test.js
+
+      - name: Transparent stdio proxy e2e
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\proxy-e2e.test.js
+
+      - name: Parse standalone PowerShell scripts
+        shell: pwsh
+        run: |
+          $scripts = @(
+            '.\tools\codex-quota-router\install-standalone.ps1',
+            '.\tools\codex-quota-router\uninstall-standalone.ps1'
+          )
+          foreach ($script in $scripts) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) { $errors | Format-List; throw "$script parse failed" }
+          }
+
+      - name: Compile standalone launcher
+        shell: powershell
+        run: |
+          $launcher = Join-Path $env:RUNNER_TEMP 'codex-router.exe'
+          Add-Type -Path .\tools\codex-quota-router\shim\CodexRouterShim.cs -OutputAssembly $launcher -OutputType ConsoleApplication
+          if (-not (Test-Path $launcher)) { throw 'launcher compile failed' }
+
+      - name: Standalone launcher auto-discovery
+        shell: powershell
+        run: |
+          $launcher = Join-Path $env:RUNNER_TEMP 'codex-router.exe'
+          $local = Join-Path $env:RUNNER_TEMP 'localappdata-discovery'
+          $oldDir = Join-Path $local 'OpenAI\Codex\bin\oldhash'
+          $newDir = Join-Path $local 'OpenAI\Codex\bin\newhash'
+          New-Item -ItemType Directory -Force -Path $oldDir,$newDir | Out-Null
+          Set-Content -LiteralPath (Join-Path $oldDir 'codex.exe') -Value 'old'
+          Set-Content -LiteralPath (Join-Path $newDir 'codex.exe') -Value 'new'
+          (Get-Item (Join-Path $oldDir 'codex.exe')).LastWriteTimeUtc = [datetime]::UtcNow.AddDays(-2)
+          (Get-Item (Join-Path $newDir 'codex.exe')).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(-1)
+          $env:CODEX_ROUTER_LOCALAPPDATA = $local
+          $env:CODEX_ROUTER_DISCOVER_ONLY = '1'
+          $found = (& $launcher).Trim()
+          $expected = Join-Path $newDir 'codex.exe'
+          if ([IO.Path]::GetFullPath($found) -ne [IO.Path]::GetFullPath($expected)) { throw "wrong discovery result: $found" }
+          Remove-Item Env:CODEX_ROUTER_DISCOVER_ONLY -ErrorAction SilentlyContinue
+          Remove-Item Env:CODEX_ROUTER_LOCALAPPDATA -ErrorAction SilentlyContinue
+
+      - name: Standalone launcher routing e2e
+        shell: powershell
+        run: |
+          $launcher = Join-Path $env:RUNNER_TEMP 'codex-router.exe'
+          $fake = Join-Path $env:RUNNER_TEMP 'fake-codex.exe'
+          $fakeSource = @'
+          using System;
+          public static class FakeCodex {
+              public static int Main(string[] args) {
+                  if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("codex-cli 0.0.0-fake"); return 0; }
+                  string line;
+                  while ((line = Console.ReadLine()) != null) Console.WriteLine(line);
+                  return 0;
+              }
+          }
+          '@
+          Add-Type -TypeDefinition $fakeSource -OutputAssembly $fake -OutputType ConsoleApplication
+          $codexHome = Join-Path $env:RUNNER_TEMP '.codex-standalone-e2e'
+          New-Item -ItemType Directory -Force -Path (Join-Path $codexHome 'quota-router') | Out-Null
+          $env:CODEX_HOME = $codexHome
+          $env:CODEX_ROUTER_REAL_EXE = $fake
+          $env:CODEX_ROUTER_PROXY_JS = (Resolve-Path '.\tools\codex-quota-router\bin\app-server-proxy.js').Path
+          $request = '{"jsonrpc":"2.0","id":7,"method":"turn/start","params":{"threadId":"old-thread","model":"gpt-5.6-sol","effort":"medium","input":[{"type":"text","text":"Покажи список файлов в текущей папке. Ничего не изменяй.","text_elements":[]}]}}'
+          $response = $request | & $launcher
+          if ($LASTEXITCODE -ne 0) { throw "launcher exited $LASTEXITCODE" }
+          $json = $response | ConvertFrom-Json
+          if ($json.params.threadId -ne 'old-thread') { throw 'threadId not preserved' }
+          if ($json.params.model -ne 'gpt-5.6-luna') { throw "expected Luna, got $($json.params.model)" }
+          if ($json.params.effort -ne 'low') { throw "expected low, got $($json.params.effort)" }
+          Remove-Item Env:CODEX_ROUTER_REAL_EXE -ErrorAction SilentlyContinue
+          Remove-Item Env:CODEX_ROUTER_PROXY_JS -ErrorAction SilentlyContinue
+
+      - name: Standalone installer simulation
+        shell: powershell
+        run: |
+          $fake = Join-Path $env:RUNNER_TEMP 'fake-codex.exe'
+          $profile = Join-Path $env:RUNNER_TEMP 'fake-user'
+          $local = Join-Path $profile 'AppData\Local'
+          $binDir = Join-Path $local 'OpenAI\Codex\bin\testhash'
+          $codexHome = Join-Path $profile '.codex'
+          New-Item -ItemType Directory -Force -Path $binDir,$codexHome | Out-Null
+          Copy-Item -LiteralPath $fake -Destination (Join-Path $binDir 'codex.exe') -Force
+          & .\tools\codex-quota-router\install-standalone.ps1 -CodexHome $codexHome -UserProfilePath $profile -UserLocalAppData $local -SkipEnvironmentRegistration
+          if (-not (Test-Path (Join-Path $codexHome 'quota-router\codex-router.exe'))) { throw 'launcher missing after install' }
+          $marker = Get-Content (Join-Path $codexHome 'quota-router\standalone-install.json') -Raw | ConvertFrom-Json
+          if ($marker.version -ne '0.3.0') { throw 'wrong marker version' }
+          if ($marker.environmentRegistered) { throw 'environment unexpectedly registered in CI' }
