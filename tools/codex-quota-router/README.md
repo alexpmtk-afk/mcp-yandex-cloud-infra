@@ -1,59 +1,71 @@
-# Codex Quota Router v0.1
+# Codex Quota Router v0.3
 
-Local, zero-model-call quota guard for Codex. It combines:
+Local, zero-model-call per-turn router for Codex Desktop.
 
-- `UserPromptSubmit` preflight routing before the main model turn;
-- local reading of Codex rolling quota from session JSONL;
-- optional integration with `codex-usage-monitor`;
-- per-turn snapshots in `~/.codex/quota-router/history.jsonl`;
-- default `Luna / low`, with blocking recommendations for Terra/Sol when needed;
-- quota-aware blocking when the 5-hour or weekly window is critically low.
+## v0.3 architecture
 
-## Important limitation
+On Windows, Codex Desktop supports the `CODEX_CLI_PATH` environment override. v0.3 uses that supported launch point instead of replacing the relocated OpenAI `codex.exe` binary.
 
-Codex hooks can block a prompt and inject context, but the current hook output schema does not expose a command that changes the active model. Therefore v0.1 cannot invisibly switch Luna -> Terra -> Sol inside the same turn. Instead it blocks *before* expensive model work and tells the user which model/effort to select. This avoids spending the wrong model's quota.
+Flow:
 
-## Install on Windows
-
-Run from this folder:
-
-```powershell
-powershell -ExecutionPolicy Bypass -File .\install.ps1
+```text
+Codex Desktop
+  -> CODEX_CLI_PATH
+  -> ~/.codex/quota-router/codex-router.exe
+  -> app-server-proxy.js
+  -> current original %LOCALAPPDATA%/OpenAI/Codex/bin/<hash>/codex.exe
 ```
 
-Then fully restart Codex / ChatGPT Desktop and use `/hooks` once to review/trust the new global user hooks.
+The standalone launcher automatically discovers the newest relocated original Codex binary after Desktop updates. `CODEX_ROUTER_REAL_EXE` remains available as an explicit override for diagnostics/tests.
 
-## Behavior
+The proxy preserves the existing `threadId` and rewrites only `turn/start` routing fields. It can therefore select Luna / Terra / Sol and reasoning effort per new turn while the existing chat/thread continues normally.
+
+## Routing
 
 - Simple/routine -> Luna low/medium.
 - Integration/debugging -> Terra medium.
 - Architecture/high-risk -> Sol medium/high.
-- If current model is stronger or weaker than the recommended route, the prompt is blocked before the main turn and a switch is recommended.
-- If quota is critical, heavy tasks are blocked until reset.
-- Add `QUOTA_FORCE` to the request to intentionally bypass routing for an urgent task.
+- `QUOTA_FORCE` can intentionally bypass routing.
 
-## Privacy
+The router does not call a model itself and does not store raw prompts. Route history stores prompt hash/length plus routing metadata.
 
-The router does not store raw prompts. It stores only a short SHA-256 hash, prompt length, route, quota snapshot, model and project cwd. It makes no model/API call of its own.
-
-## Test
+## Standalone install on Windows
 
 ```powershell
-node .\test\router.test.js
+powershell -ExecutionPolicy Bypass -File .\install-standalone.ps1 -CodexHome $HOME\.codex
 ```
 
-Expected: `router tests: PASS`.
+The installer:
 
-## Status
+- copies router runtime files under `~/.codex/quota-router`;
+- compiles `codex-router.exe` as a separate launcher;
+- smoke-tests it against the current original Codex binary;
+- registers `CODEX_CLI_PATH` for the target Windows user;
+- does not replace or modify OpenAI's `codex.exe`.
+
+A full Codex Desktop restart is required after installation.
+
+## Standalone rollback
 
 ```powershell
-node $HOME\.codex\quota-router\bin\status.js
+powershell -ExecutionPolicy Bypass -File .\uninstall-standalone.ps1 -CodexHome $HOME\.codex
 ```
 
-## Rollback
+The previous `CODEX_CLI_PATH` value is restored if one existed.
 
-Run `uninstall.ps1`. The installer and uninstaller back up `~/.codex/hooks.json` before changing it.
+## Tests
 
-## Why no profiles in v0.1
+CI verifies:
 
-The router does not depend on Codex profiles. Current Codex releases have had reports of global hooks being discovered twice when profile layering is used, so v0.1 keeps the path simpler: one global hook layer + the model picker.
+- router unit tests;
+- proxy routing unit tests;
+- transparent stdio proxy e2e;
+- standalone launcher compilation;
+- automatic discovery of the newest original Codex binary;
+- launcher + proxy + `turn/start` routing e2e with preserved `threadId`;
+- standalone installer simulation;
+- legacy v0.1 hook regression/rollback tests.
+
+## Legacy v0.1 hook layer
+
+The original global hook guard remains available as a secondary quota/preflight safety layer. It is no longer the mechanism responsible for automatic model switching in v0.3.
