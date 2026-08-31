@@ -13,7 +13,7 @@ variable "yc_service_account_key_file" {
 }
 
 variable "terraform_deployer_service_account_id" {
-  description = "Existing central infra deployer SA ID, used only for narrow read-only WIF reconciliation grants in the BIRZHA TEST scope."
+  description = "Existing central infra deployer SA ID, used only for narrow reconciliation grants in the BIRZHA TEST scope."
   type        = string
   default     = "ajecdjjrkdo1t3itpl9k"
 
@@ -21,6 +21,12 @@ variable "terraform_deployer_service_account_id" {
     condition     = can(regex("^aje[a-z0-9]+$", var.terraform_deployer_service_account_id))
     error_message = "terraform_deployer_service_account_id must be a Yandex service account ID."
   }
+}
+
+variable "ydb_bootstrap_enabled" {
+  description = "Temporary bootstrap switch granting the central infra deployer ydb.admin only while creating the initial durable YDB state. Must be false after successful deployment."
+  type        = bool
+  default     = false
 }
 
 variable "wif_bootstrap_deployer_service_account_id" {

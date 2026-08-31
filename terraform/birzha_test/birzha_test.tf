@@ -47,6 +47,20 @@ resource "yandex_resourcemanager_folder_iam_member" "terraform_wif_viewer" {
   member    = "serviceAccount:${var.terraform_deployer_service_account_id}"
 }
 
+resource "yandex_resourcemanager_folder_iam_member" "terraform_ydb_viewer" {
+  folder_id = yandex_resourcemanager_folder.birzha_test.id
+  role      = "ydb.viewer"
+  member    = "serviceAccount:${var.terraform_deployer_service_account_id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "ydb_bootstrap_admin" {
+  count       = var.ydb_bootstrap_enabled ? 1 : 0
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "ydb.admin"
+  member      = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  sleep_after = 60
+}
+
 resource "yandex_iam_service_account_iam_member" "terraform_federated_credential_viewer" {
   service_account_id = yandex_iam_service_account.publisher.id
   role               = "iam.serviceAccounts.federatedCredentialViewer"
@@ -123,6 +137,7 @@ resource "yandex_ydb_database_serverless" "state" {
   description         = "Durable immutable Forecast Journal and append-only Outcome state"
   deletion_protection = true
   labels              = local.labels
+  depends_on          = [yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin]
 }
 
 resource "yandex_ydb_database_iam_binding" "runtime_editor" {
