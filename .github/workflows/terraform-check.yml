@@ -48,7 +48,10 @@ jobs:
         run: terraform -chdir=terraform/birzha_test validate
 
   birzha-oidc-subject-plan:
-    if: github.event_name == 'pull_request'
+    # This is a legacy, deliberately single-resource proof. It must run only on
+    # OIDC-subject correction PRs; ordinary BIRZHA infrastructure changes such
+    # as YDB/runtime resources are validated by terraform-check above.
+    if: github.event_name == 'pull_request' && contains(github.event.pull_request.title, 'OIDC')
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 15

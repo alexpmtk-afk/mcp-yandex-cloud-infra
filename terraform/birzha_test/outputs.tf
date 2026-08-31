@@ -33,6 +33,16 @@ output "publisher_federated_credential_id" {
   value       = yandex_iam_workload_identity_federated_credential.github_image_publisher.id
 }
 
+output "ydb_database_id" {
+  description = "Durable YDB database used for Forecast and Outcome state."
+  value       = yandex_ydb_database_serverless.state.id
+}
+
+output "ydb_connection_string" {
+  description = "Full YDB SDK endpoint configured in the runtime container."
+  value       = yandex_ydb_database_serverless.state.ydb_full_endpoint
+}
+
 output "serverless_container_id" {
   description = "BIRZHA Forecast TEST Serverless Container ID, once an image is configured."
   value       = try(yandex_serverless_container.mcp[0].id, null)
