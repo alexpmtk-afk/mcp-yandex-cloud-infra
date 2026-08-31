@@ -43,12 +43,27 @@ jobs:
             if ($errors.Count -gt 0) { $errors | Format-List; throw "$script parse failed" }
           }
 
-      - name: Compile standalone launcher
+      - name: Compile standalone launcher and fake CLI
         shell: powershell
         run: |
           $launcher = Join-Path $env:RUNNER_TEMP 'codex-router.exe'
           Add-Type -Path .\tools\codex-quota-router\shim\CodexRouterShim.cs -OutputAssembly $launcher -OutputType ConsoleApplication
           if (-not (Test-Path $launcher)) { throw 'launcher compile failed' }
+
+          $fake = Join-Path $env:RUNNER_TEMP 'fake-codex.exe'
+          $fakeSource = @'
+          using System;
+          public static class FakeCodex {
+              public static int Main(string[] args) {
+                  if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("codex-cli 0.0.0-fake"); return 0; }
+                  string line;
+                  while ((line = Console.ReadLine()) != null) Console.WriteLine(line);
+                  return 0;
+              }
+          }
+          '@
+          Add-Type -TypeDefinition $fakeSource -OutputAssembly $fake -OutputType ConsoleApplication
+          if (-not (Test-Path $fake)) { throw 'fake CLI compile failed' }
 
       - name: Standalone launcher auto-discovery
         shell: powershell
@@ -75,18 +90,6 @@ jobs:
         run: |
           $launcher = Join-Path $env:RUNNER_TEMP 'codex-router.exe'
           $fake = Join-Path $env:RUNNER_TEMP 'fake-codex.exe'
-          $fakeSource = @'
-          using System;
-          public static class FakeCodex {
-              public static int Main(string[] args) {
-                  if (args.Length == 1 && args[0] == "--version") { Console.WriteLine("codex-cli 0.0.0-fake"); return 0; }
-                  string line;
-                  while ((line = Console.ReadLine()) != null) Console.WriteLine(line);
-                  return 0;
-              }
-          }
-          '@
-          Add-Type -TypeDefinition $fakeSource -OutputAssembly $fake -OutputType ConsoleApplication
           $codexHome = Join-Path $env:RUNNER_TEMP '.codex-standalone-e2e'
           New-Item -ItemType Directory -Force -Path (Join-Path $codexHome 'quota-router') | Out-Null
           $env:CODEX_HOME = $codexHome
