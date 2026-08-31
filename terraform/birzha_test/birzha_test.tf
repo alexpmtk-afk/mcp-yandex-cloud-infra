@@ -141,7 +141,9 @@ resource "yandex_serverless_container" "mcp" {
   execution_timeout  = "120s"
   service_account_id = yandex_iam_service_account.runtime.id
 
-  runtime { type = "http" }
+  runtime {
+    type = "http"
+  }
 
   image {
     url = var.mcp_image_url
@@ -154,7 +156,9 @@ resource "yandex_serverless_container" "mcp" {
     }
   }
 
-  labels = merge(local.labels, { source_sha = substr(var.source_commit_sha, 0, 16) })
+  labels = merge(local.labels, {
+    source_sha = substr(var.source_commit_sha, 0, 16)
+  })
   depends_on = [yandex_ydb_database_iam_binding.runtime_editor]
 }
 
