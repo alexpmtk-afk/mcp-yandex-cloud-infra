@@ -211,7 +211,7 @@ resource "yandex_serverless_container" "mcp" {
       BIRZHA_SOURCE_COMMIT     = var.source_commit_sha
       BIRZHA_STATE_BACKEND     = "ydb"
       BIRZHA_REQUIRE_MCP_AUTH  = "true"
-      BIRZHA_SECURITY_REVISION = "m8-auth-v2"
+      BIRZHA_SECURITY_REVISION = "m8-auth-v3"
       YDB_CONNECTION_STRING    = yandex_ydb_database_serverless.state.ydb_full_endpoint
     }
   }
