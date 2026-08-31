@@ -67,7 +67,9 @@ public static class FakeCodex {
             input = @(@{ type='text'; text=$simplePrompt; text_elements=@() })
         }
     }
-    $wire = ([char]0xFEFF) + ($request | ConvertTo-Json -Compress -Depth 12)
+    # The direct proxy e2e owns the explicit single-BOM regression. The .NET
+    # Framework launcher may itself add one preamble, which the proxy strips.
+    $wire = $request | ConvertTo-Json -Compress -Depth 12
     $startInfo = New-Object Diagnostics.ProcessStartInfo
     $startInfo.FileName = $launcher
     $startInfo.UseShellExecute = $false
