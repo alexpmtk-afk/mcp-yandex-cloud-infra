@@ -32,6 +32,14 @@ jobs:
         shell: pwsh
         run: node .\tools\codex-quota-router\test\proxy-e2e.test.js
 
+      - name: Proxy safe-failure e2e
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\proxy-safe-failure.test.js
+
+      - name: Quota expiry and fallback tests
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\usage-expiry.test.js
+
       - name: Parse standalone PowerShell scripts
         shell: pwsh
         run: |
@@ -44,6 +52,10 @@ jobs:
             [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$null, [ref]$errors)
             if ($errors.Count -gt 0) { $errors | Format-List; throw "$script parse failed" }
           }
+
+      - name: Consolidated standalone e2e
+        shell: powershell
+        run: .\tools\codex-quota-router\test\standalone-e2e.ps1
 
       - name: Compile standalone launcher and fake CLI
         shell: powershell
@@ -81,11 +93,13 @@ jobs:
           (Get-Item (Join-Path $newDir 'codex.exe')).LastWriteTimeUtc = [datetime]::UtcNow.AddMinutes(-1)
           $env:CODEX_ROUTER_LOCALAPPDATA = $local
           $env:CODEX_ROUTER_DISCOVER_ONLY = '1'
+          $env:CODEX_ROUTER_REAL_EXE = $launcher
           $found = (& $launcher).Trim()
           $expected = Join-Path $newDir 'codex.exe'
           if ([IO.Path]::GetFullPath($found) -ne [IO.Path]::GetFullPath($expected)) { throw "wrong discovery result: $found" }
           Remove-Item Env:CODEX_ROUTER_DISCOVER_ONLY -ErrorAction SilentlyContinue
           Remove-Item Env:CODEX_ROUTER_LOCALAPPDATA -ErrorAction SilentlyContinue
+          Remove-Item Env:CODEX_ROUTER_REAL_EXE -ErrorAction SilentlyContinue
 
       - name: Standalone launcher routing e2e
         shell: pwsh
@@ -118,8 +132,18 @@ jobs:
           $codexHome = Join-Path $profile '.codex'
           New-Item -ItemType Directory -Force -Path $binDir,$codexHome | Out-Null
           Copy-Item -LiteralPath $fake -Destination (Join-Path $binDir 'codex.exe') -Force
+          $original = Join-Path $binDir 'codex.exe'
+          $hashBefore = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
           & .\tools\codex-quota-router\install-standalone.ps1 -CodexHome $codexHome -UserProfilePath $profile -UserLocalAppData $local -SkipEnvironmentRegistration
           if (-not (Test-Path (Join-Path $codexHome 'quota-router\codex-router.exe'))) { throw 'launcher missing after install' }
           $marker = Get-Content (Join-Path $codexHome 'quota-router\standalone-install.json') -Raw | ConvertFrom-Json
-          if ($marker.version -ne '0.3.0') { throw 'wrong marker version' }
+          if ($marker.version -ne '0.4.0') { throw 'wrong marker version' }
           if ($marker.environmentRegistered) { throw 'environment unexpectedly registered in CI' }
+          $hashAfter = (Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash
+          if ($hashAfter -ne $hashBefore) { throw 'original Codex binary changed during install' }
+          if ($marker.realExeSha256Before -ne $hashBefore -or $marker.realExeSha256After -ne $hashBefore) { throw 'original hash not recorded correctly' }
+
+          & .\tools\codex-quota-router\uninstall-standalone.ps1 -CodexHome $codexHome
+          if (Test-Path (Join-Path $codexHome 'quota-router\codex-router.exe')) { throw 'launcher remains after uninstall' }
+          if (Test-Path (Join-Path $codexHome 'quota-router\standalone-install.json')) { throw 'marker remains after uninstall' }
+          if ((Get-FileHash -LiteralPath $original -Algorithm SHA256).Hash -ne $hashBefore) { throw 'original Codex binary changed during uninstall' }

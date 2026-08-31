@@ -1,15 +1,18 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const proxy = path.join(__dirname, '..', 'bin', 'app-server-proxy.js');
 const fake = path.join(__dirname, 'fake-app-server.js');
+const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-router-proxy-'));
 
 const child = spawn(process.execPath, [proxy, process.execPath, fake], {
   stdio: ['pipe', 'pipe', 'pipe'],
-  env: { ...process.env, CODEX_HOME: path.join(__dirname, '.tmp-codex-home') }
+  env: { ...process.env, CODEX_HOME: codexHome }
 });
 
 let stdout = '';
@@ -51,17 +54,31 @@ const timer = setTimeout(() => {
 
 child.on('exit', (code) => {
   clearTimeout(timer);
-  assert.equal(code, 0, stderr);
-  const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
-  assert.equal(lines.length, 1, stdout);
-  const actual = JSON.parse(lines[0]);
-  assert.equal(actual.id, 42);
-  assert.equal(actual.params.threadId, 'existing-old-thread');
-  assert.equal(actual.params.model, 'gpt-5.6-luna');
-  assert.equal(actual.params.effort, 'low');
-  assert.equal(actual.params.collaborationMode.settings.model, 'gpt-5.6-luna');
-  assert.equal(actual.params.collaborationMode.settings.reasoning_effort, 'low');
-  assert.equal(actual.params.collaborationMode.settings.developer_instructions, 'preserve-me');
-  assert.deepEqual(actual.params.input, request.params.input);
-  console.log('proxy e2e BOM regression: PASS');
+  try {
+    assert.equal(code, 0, stderr);
+    const lines = stdout.trim().split(/\r?\n/).filter(Boolean);
+    assert.equal(lines.length, 1, stdout);
+    const actual = JSON.parse(lines[0]);
+    assert.equal(actual.id, 42);
+    assert.equal(actual.params.threadId, 'existing-old-thread');
+    assert.equal(actual.params.model, 'gpt-5.6-luna');
+    assert.equal(actual.params.effort, 'low');
+    assert.equal(actual.params.collaborationMode.settings.model, 'gpt-5.6-luna');
+    assert.equal(actual.params.collaborationMode.settings.reasoning_effort, 'low');
+    assert.equal(actual.params.collaborationMode.settings.developer_instructions, 'preserve-me');
+    assert.deepEqual(actual.params.input, request.params.input);
+
+    const historyText = fs.readFileSync(path.join(codexHome, 'quota-router', 'history.jsonl'), 'utf8');
+    assert.equal(historyText.includes(request.params.input[0].text), false, 'raw prompt leaked to history');
+    const record = JSON.parse(historyText.trim());
+    const allowed = new Set([
+      'timestamp','event','requestId','threadId','promptHash','promptLength','currentModel','score',
+      'selectedModel','selectedEffort','quotaSource','quotaObservedAt','remaining5h','remaining7d',
+      'reset5hMinutes','reset7dMinutes','force'
+    ]);
+    assert.deepEqual(Object.keys(record).filter((key) => !allowed.has(key)), []);
+    console.log('proxy e2e BOM/privacy regression: PASS');
+  } finally {
+    fs.rmSync(codexHome, { recursive: true, force: true });
+  }
 });

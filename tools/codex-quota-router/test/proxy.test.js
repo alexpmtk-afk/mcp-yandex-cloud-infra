@@ -59,4 +59,15 @@ const untouched = rewriteClientMessage(notification, { policy });
 assert.equal(untouched.routed, false);
 assert.deepEqual(untouched.message, notification);
 
+const withoutSettings = turn('Покажи список файлов. Ничего не изменяй.');
+withoutSettings.params.collaborationMode = { mode: 'default' };
+const withoutSettingsResult = rewriteClientMessage(withoutSettings, { policy });
+assert.deepEqual(withoutSettingsResult.message.params.collaborationMode, { mode: 'default' });
+
+assert.throws(
+  () => rewriteClientMessage(turn('Покажи список файлов.'), { policy: { thresholds: null } }),
+  /Cannot read|incomplete/,
+  'an invalid policy must fail instead of preserving the expensive model'
+);
+
 console.log('proxy tests: PASS');

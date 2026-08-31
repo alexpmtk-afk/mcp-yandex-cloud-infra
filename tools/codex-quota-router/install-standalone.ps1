@@ -60,6 +60,7 @@ $realExe = Get-ChildItem $binRoot -Recurse -Filter codex.exe -File -ErrorAction 
     Sort-Object LastWriteTimeUtc -Descending |
     Select-Object -First 1 -ExpandProperty FullName
 if (-not $realExe) { throw "Original Codex executable not found under: $binRoot" }
+$realExeHashBefore = (Get-FileHash -LiteralPath $realExe -Algorithm SHA256).Hash
 
 $oldCodexHome = $env:CODEX_HOME
 $oldRealExe = $env:CODEX_ROUTER_REAL_EXE
@@ -76,6 +77,11 @@ finally {
     else { $env:CODEX_HOME = $oldCodexHome }
     if ($null -eq $oldRealExe) { Remove-Item Env:CODEX_ROUTER_REAL_EXE -ErrorAction SilentlyContinue }
     else { $env:CODEX_ROUTER_REAL_EXE = $oldRealExe }
+}
+
+$realExeHashAfter = (Get-FileHash -LiteralPath $realExe -Algorithm SHA256).Hash
+if ($realExeHashAfter -ne $realExeHashBefore) {
+    throw "Original Codex executable changed during installation: $realExe"
 }
 
 $userSid = $null
@@ -114,11 +120,13 @@ if (-not $SkipEnvironmentRegistration) {
 }
 
 [pscustomobject]@{
-    version = '0.3.0'
+    version = '0.4.0'
     installedAt = [DateTimeOffset]::UtcNow.ToString('o')
     launcher = $launcher
     launcherSha256 = (Get-FileHash -LiteralPath $launcher -Algorithm SHA256).Hash
     realExeSmokeTest = $realExe
+    realExeSha256Before = $realExeHashBefore
+    realExeSha256After = $realExeHashAfter
     userProfile = $UserProfilePath
     userSid = $userSid
     registryPath = $registryPath

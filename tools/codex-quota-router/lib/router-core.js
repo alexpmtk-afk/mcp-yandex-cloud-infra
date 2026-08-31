@@ -89,12 +89,15 @@ function minutesUntilReset(limit, nowMs = Date.now()) {
   if (!limit || !limit.resetsAt) return null;
   const resetMs = Number(limit.resetsAt) * 1000;
   if (!Number.isFinite(resetMs)) return null;
-  return Math.max(0, Math.round((resetMs - nowMs) / 60000));
+  if (resetMs <= nowMs) return null;
+  return Math.round((resetMs - nowMs) / 60000);
 }
 
 function quotaState(usage, policy, nowMs = Date.now()) {
-  const primary = usage && usage.rateLimits ? usage.rateLimits.primary : null;
-  const secondary = usage && usage.rateLimits ? usage.rateLimits.secondary : null;
+  const rawPrimary = usage && usage.rateLimits ? usage.rateLimits.primary : null;
+  const rawSecondary = usage && usage.rateLimits ? usage.rateLimits.secondary : null;
+  const primary = minutesUntilReset(rawPrimary, nowMs) === null ? null : rawPrimary;
+  const secondary = minutesUntilReset(rawSecondary, nowMs) === null ? null : rawSecondary;
   const pRem = remaining(primary);
   const sRem = remaining(secondary);
   const pReset = minutesUntilReset(primary, nowMs);

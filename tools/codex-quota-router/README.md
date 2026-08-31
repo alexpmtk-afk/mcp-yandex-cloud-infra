@@ -1,4 +1,4 @@
-# Codex Quota Router v0.3
+# Codex Quota Router v0.4
 
 Local, zero-model-call per-turn router for Codex Desktop.
 
@@ -18,7 +18,7 @@ Codex Desktop
 
 The standalone launcher automatically discovers the newest relocated original Codex binary after Desktop updates. `CODEX_ROUTER_REAL_EXE` remains available as an explicit override for diagnostics/tests.
 
-The proxy preserves the existing `threadId` and rewrites only `turn/start` routing fields. It can therefore select Luna / Terra / Sol and reasoning effort per new turn while the existing chat/thread continues normally.
+The proxy preserves the existing `threadId` and rewrites only `turn/start` routing fields. It can therefore select Luna / Terra / Sol and reasoning effort per new turn while the existing chat/thread continues normally. If the selected route cannot be applied and verified, the proxy returns a local protocol error and does not forward the original expensive request.
 
 ## Routing
 
@@ -28,6 +28,8 @@ The proxy preserves the existing `threadId` and rewrites only `turn/start` routi
 - `QUOTA_FORCE` can intentionally bypass routing.
 
 The router does not call a model itself and does not store raw prompts. Route history stores prompt hash/length plus routing metadata.
+
+Expired 5-hour and 7-day usage windows are treated as unknown. Fallback discovery skips expired snapshots instead of displaying stale remaining quota.
 
 ## Standalone install on Windows
 
@@ -60,6 +62,8 @@ CI verifies:
 - router unit tests;
 - proxy routing unit tests;
 - transparent stdio proxy e2e;
+- BOM-prefixed JSONL and safe-failure regressions;
+- expired quota and fallback selection regressions;
 - standalone launcher compilation;
 - automatic discovery of the newest original Codex binary;
 - launcher + proxy + `turn/start` routing e2e with preserved `threadId`;

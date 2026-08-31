@@ -13,10 +13,10 @@ public static class CodexRouterShim
         {
             string launcherPath = GetCurrentExecutablePath();
             string realExe = Environment.GetEnvironmentVariable("CODEX_ROUTER_REAL_EXE");
-            if (String.IsNullOrWhiteSpace(realExe))
+            if (String.IsNullOrWhiteSpace(realExe) || SamePath(realExe, launcherPath))
                 realExe = DiscoverRealCodex(launcherPath);
 
-            if (String.IsNullOrWhiteSpace(realExe) || !File.Exists(realExe))
+            if (String.IsNullOrWhiteSpace(realExe) || !File.Exists(realExe) || SamePath(realExe, launcherPath))
             {
                 Console.Error.WriteLine("Codex Auto Router: real Codex executable not found.");
                 return 127;
@@ -185,6 +185,11 @@ public static class CodexRouterShim
         if (String.IsNullOrWhiteSpace(value)) return String.Empty;
         try { return Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
         catch { return value; }
+    }
+
+    private static bool SamePath(string left, string right)
+    {
+        return String.Equals(NormalizePath(left), NormalizePath(right), StringComparison.OrdinalIgnoreCase);
     }
 
     private static string QuoteArg(string arg)

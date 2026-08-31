@@ -16,23 +16,21 @@ const { appendJsonl, codexHome, loadUsage } = require('../lib/usage');
   const decision = classify({ prompt: input.prompt, currentModel: input.model, usage, policy });
 
   appendJsonl(path.join(codexHome(), 'quota-router', 'history.jsonl'), {
-    at: new Date().toISOString(),
+    timestamp: new Date().toISOString(),
     event: 'preflight',
-    sessionId: input.session_id || null,
-    turnId: input.turn_id || null,
-    cwd: input.cwd || null,
+    requestId: input.turn_id || null,
+    threadId: input.session_id || null,
     promptHash: promptHash(input.prompt),
     promptLength: String(input.prompt || '').length,
     currentModel: input.model || null,
     score: decision.score,
-    recommendedModel: decision.route.model,
-    recommendedEffort: decision.route.effort,
+    selectedModel: decision.route.model,
+    selectedEffort: decision.route.effort,
     quotaSource: usageResult.source,
     remaining5h: decision.quota.pRem,
     remaining7d: decision.quota.sRem,
     reset5hMinutes: decision.quota.pReset,
     reset7dMinutes: decision.quota.sReset,
-    blocked: decision.block,
     force: decision.force
   });
 

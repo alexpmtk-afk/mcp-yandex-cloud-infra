@@ -11,14 +11,35 @@ function monitorScript() {
   return path.join(codexHome(), 'plugins', 'codex-usage-monitor', 'bin', 'codex-usage-monitor.js');
 }
 
-function hasRateLimits(summary) {
-  return Boolean(summary && summary.rateLimits && (summary.rateLimits.primary || summary.rateLimits.secondary));
+function isCurrentLimit(limit, nowMs = Date.now()) {
+  if (!limit || typeof limit !== 'object') return false;
+  const resetsAt = Number(limit.resetsAt);
+  return Number.isFinite(resetsAt) && resetsAt * 1000 > nowMs;
 }
 
-function loadUsage(transcriptPath) {
+function sanitizeSummary(summary, nowMs = Date.now()) {
+  if (!summary || typeof summary !== 'object') return summary || null;
+  const limits = summary.rateLimits || {};
+  return {
+    ...summary,
+    rateLimits: {
+      primary: isCurrentLimit(limits.primary, nowMs) ? limits.primary : null,
+      secondary: isCurrentLimit(limits.secondary, nowMs) ? limits.secondary : null
+    }
+  };
+}
+
+function hasRateLimits(summary, nowMs = Date.now()) {
+  const sanitized = sanitizeSummary(summary, nowMs);
+  return Boolean(sanitized && sanitized.rateLimits &&
+    (sanitized.rateLimits.primary || sanitized.rateLimits.secondary));
+}
+
+function loadUsage(transcriptPath, { nowMs = Date.now() } = {}) {
   const monitor = monitorScript();
   let summary = null;
   let source = null;
+  let observedAt = null;
 
   if (fs.existsSync(monitor)) {
     const args = [monitor, 'json'];
@@ -26,22 +47,24 @@ function loadUsage(transcriptPath) {
     const out = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 5000, windowsHide: true });
     if (out.status === 0 && out.stdout) {
       try {
-        summary = JSON.parse(out.stdout);
+        summary = sanitizeSummary(JSON.parse(out.stdout), nowMs);
         source = 'codex-usage-monitor';
+        observedAt = new Date(nowMs).toISOString();
       } catch {}
     }
   }
 
   if (!summary && transcriptPath) {
-    summary = summarizeTail(transcriptPath);
+    summary = sanitizeSummary(summarizeTail(transcriptPath), nowMs);
     source = 'local-jsonl';
+    try { observedAt = fs.statSync(transcriptPath).mtime.toISOString(); } catch {}
   }
 
   // A newly opened Codex session often has no token_count/rate_limits yet.
   // In that case use the freshest local session that DOES contain quota data,
   // while preserving the current session's model/reasoning metadata when known.
-  if (!hasRateLimits(summary)) {
-    const fallback = findLatestQuotaSummary(transcriptPath);
+  if (!hasRateLimits(summary, nowMs)) {
+    const fallback = findLatestQuotaSummary(transcriptPath, nowMs);
     if (fallback && fallback.summary) {
       if (summary) {
         summary = {
@@ -55,13 +78,14 @@ function loadUsage(transcriptPath) {
         summary = fallback.summary;
       }
       source = source ? `${source}+quota-fallback` : 'local-quota-fallback';
+      observedAt = new Date(fallback.mtimeMs).toISOString();
     }
   }
 
-  return { source: source || 'local-jsonl', summary };
+  return { source: source || 'local-jsonl', observedAt, summary: sanitizeSummary(summary, nowMs) };
 }
 
-function findLatestQuotaSummary(excludePath = null) {
+function findLatestQuotaSummary(excludePath = null, nowMs = Date.now()) {
   const sessionsRoot = path.join(codexHome(), 'sessions');
   if (!fs.existsSync(sessionsRoot)) return null;
 
@@ -72,8 +96,8 @@ function findLatestQuotaSummary(excludePath = null) {
   const excluded = excludePath ? path.resolve(excludePath) : null;
   for (const item of files) {
     if (excluded && path.resolve(item.file) === excluded) continue;
-    const summary = summarizeTail(item.file);
-    if (hasRateLimits(summary)) return { file: item.file, summary, mtimeMs: item.mtimeMs };
+    const summary = sanitizeSummary(summarizeTail(item.file), nowMs);
+    if (hasRateLimits(summary, nowMs)) return { file: item.file, summary, mtimeMs: item.mtimeMs };
   }
   return null;
 }
@@ -154,4 +178,14 @@ function appendJsonl(file, record) {
   fs.appendFileSync(file, JSON.stringify(record) + os.EOL, 'utf8');
 }
 
-module.exports = { appendJsonl, codexHome, findLatestQuotaSummary, hasRateLimits, loadUsage, monitorScript, summarizeTail };
+module.exports = {
+  appendJsonl,
+  codexHome,
+  findLatestQuotaSummary,
+  hasRateLimits,
+  isCurrentLimit,
+  loadUsage,
+  monitorScript,
+  sanitizeSummary,
+  summarizeTail
+};

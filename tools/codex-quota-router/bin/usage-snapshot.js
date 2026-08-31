@@ -14,10 +14,11 @@ const { appendJsonl, codexHome, loadUsage } = require('../lib/usage');
   const remaining = (x) => x && typeof x.usedPercent === 'number' ? Math.max(0, 100 - x.usedPercent) : null;
   const r5 = remaining(p), r7 = remaining(w);
   appendJsonl(path.join(codexHome(), 'quota-router', 'history.jsonl'), {
-    at: new Date().toISOString(), event: 'stop', sessionId: input.session_id || null, turnId: input.turn_id || null,
-    model: input.model || s.model || null, reasoningEffort: s.reasoningEffort || null,
+    timestamp: new Date().toISOString(), event: 'stop', requestId: input.turn_id || null, threadId: input.session_id || null,
+    promptHash: null, promptLength: null, currentModel: input.model || s.model || null, score: null,
+    selectedModel: input.model || s.model || null, selectedEffort: s.reasoningEffort || null,
     remaining5h: r5, remaining7d: r7,
-    latestUsage: s.latestUsage || null, totalUsage: s.totalUsage || null, source: result.source
+    reset5hMinutes: null, reset7dMinutes: null, quotaSource: result.source, quotaObservedAt: result.observedAt, force: false
   });
   const out = { continue: true };
   if ((r5 !== null && r5 <= 20) || (r7 !== null && r7 <= 15)) {
