@@ -1,0 +1,154 @@
+name: Recovery Real Marketplace Acceptance
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - '.github/workflows/recovery-real-marketplace-acceptance.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Prove remote MCP to WB and Ozon
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create marketplaces-real-acceptance || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-api-credentials") | .id' | head -1)"
+          ACTIVE_VERSION="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[] | select((.status // "") == "ACTIVE")][0].id // empty')"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          GATEWAY_DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[] | select((.name // "") | contains("marketplaces"))][0].domain // .[0].domain // empty')"
+          test -n "$SECRET_ID"; test -n "$ACTIVE_VERSION"; test -n "$CONTAINER_ID"; test -n "$GATEWAY_DOMAIN"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$ACTIVE_VERSION" --format json --no-user-output > "$RUNNER_TEMP/marketplace-secret-acceptance.json"
+          MCP_BEARER="$(jq -r '.entries[] | select(.key == "mcp_bearer_token") | .text_value' "$RUNNER_TEMP/marketplace-secret-acceptance.json")"
+          test -n "$MCP_BEARER"
+          echo "::add-mask::$MCP_BEARER"
+          export MCP_REMOTE_URL="https://${GATEWAY_DOMAIN}/mcp"
+          export MCP_REMOTE_BEARER="$MCP_BEARER"
+
+          python - <<'PY'
+          import json, os
+          import httpx
+
+          url = os.environ['MCP_REMOTE_URL']
+          bearer = os.environ['MCP_REMOTE_BEARER']
+          common = {
+              'Authorization': f'Bearer {bearer}',
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+
+          def payload(resp):
+              resp.raise_for_status()
+              for line in resp.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return resp.json() if resp.text.strip() else None
+
+          with httpx.Client(timeout=120.0, follow_redirects=True) as c:
+              init = c.post(url, headers=common, json={
+                  'jsonrpc':'2.0','id':1,'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'real-marketplace-acceptance','version':'1'}
+                  }
+              })
+              init_data = payload(init)
+              assert init_data and 'result' in init_data, 'MCP initialize failed'
+              session = init.headers.get('mcp-session-id')
+              assert session, 'missing MCP session id'
+              headers = dict(common)
+              headers['Mcp-Session-Id'] = session
+              headers['MCP-Protocol-Version'] = init_data['result'].get('protocolVersion','2025-06-18')
+              n = c.post(url, headers=headers, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert n.status_code in (200,202), f'initialized notification status={n.status_code}'
+
+              rid = 10
+              def rpc(method, params=None):
+                  nonlocal rid
+                  rid += 1
+                  r = c.post(url, headers=headers, json={
+                      'jsonrpc':'2.0','id':rid,'method':method,'params':params or {}
+                  })
+                  data = payload(r)
+                  assert data and 'result' in data, f'{method} failed'
+                  return data['result']
+
+              tools = rpc('tools/list')['tools']
+              names = {t['name'] for t in tools}
+              print('remote_mcp_initialize=true')
+              print('remote_mcp_tool_count=' + str(len(names)))
+
+              required = ['wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status']
+              missing = [name for name in required if name not in names]
+              assert not missing, 'missing required tools: ' + ','.join(missing)
+              print('required_tools_present=true')
+
+              def tool(name, arguments):
+                  result = rpc('tools/call', {'name':name,'arguments':arguments})
+                  if result.get('isError'):
+                      raise AssertionError(f'{name} returned MCP error')
+                  for item in result.get('content') or []:
+                      if item.get('type') == 'text':
+                          try:
+                              return json.loads(item.get('text') or '{}')
+                          except json.JSONDecodeError:
+                              raise AssertionError(f'{name} returned non-JSON text')
+                  raise AssertionError(f'{name} returned no text result')
+
+              wb = tool('wb_get_sales', {'date_from':'2026-08-30','flag':0})
+              print('wb_tool_completed=true')
+              print('wb_ok=' + str(wb.get('ok') is True).lower())
+              print('wb_http_status=' + str(wb.get('status', 'unknown')))
+              assert wb.get('ok') is True, 'WB official API call failed'
+              assert 200 <= int(wb.get('status',0)) < 300, 'WB HTTP status is not 2xx'
+
+              oz = tool('ozon_get_products', {'visibility':'ALL','limit':1,'last_id':''})
+              print('ozon_tool_completed=true')
+              print('ozon_ok=' + str(oz.get('ok') is True).lower())
+              print('ozon_http_status=' + str(oz.get('status', 'unknown')))
+              assert oz.get('ok') is True, 'Ozon official API call failed'
+              assert 200 <= int(oz.get('status',0)) < 300, 'Ozon HTTP status is not 2xx'
+
+              wb_rl = tool('wb_rate_limit_status', {})
+              oz_rl = tool('ozon_rate_limit_status', {})
+              assert wb_rl.get('ok') is True and wb_rl.get('backend') == 'redis', 'WB limiter is not Redis'
+              assert oz_rl.get('ok') is True and oz_rl.get('backend') == 'redis', 'Ozon limiter is not Redis'
+              print('shared_rate_limiter=redis')
+              print('remote_wb_official_api=true')
+              print('remote_ozon_official_api=true')
+          PY
+
+          sleep 2
+          LOG_COUNT="$(yc logging read --resource-ids="$CONTAINER_ID" --since '10m ago' --limit 100 --format json 2>/dev/null | jq 'length' || echo 0)"
+          test "$LOG_COUNT" -gt 0
+          echo "yandex_runtime_log_entries=$LOG_COUNT"
+          echo "REMOTE_MARKETPLACE_ACCEPTANCE=PASS"
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/marketplace-secret-acceptance.json"
