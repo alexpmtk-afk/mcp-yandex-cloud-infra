@@ -1,0 +1,25 @@
+{
+  "version": "0.1.0",
+  "defaultRoute": {"model": "gpt-5.6-luna", "effort": "low"},
+  "thresholds": {
+    "lunaMedium": 31,
+    "terraMedium": 56,
+    "solMedium": 82,
+    "solHigh": 93
+  },
+  "quota": {
+    "resetSoonMinutes": 30,
+    "critical5hRemaining": 8,
+    "low5hRemaining": 20,
+    "criticalWeeklyRemaining": 8,
+    "lowWeeklyRemaining": 20,
+    "longUntilResetMinutes": 120
+  },
+  "behavior": {
+    "enforceModelMatch": true,
+    "blockHeavyWhenQuotaCritical": true,
+    "injectContextWhenAllowed": true,
+    "allowForceMarker": true,
+    "forceMarker": "QUOTA_FORCE"
+  }
+}
