@@ -18,6 +18,12 @@ $shimTemp = Join-Path $env:TEMP ("codex-router-standalone-{0}.exe" -f [Guid]::Ne
 if (-not (Test-Path $CodexHome)) { throw "Codex home not found: $CodexHome" }
 if (-not (Test-Path $shimSource)) { throw "Shim source not found: $shimSource" }
 
+$existingState = $null
+if (Test-Path -LiteralPath $marker) {
+    try { $existingState = Get-Content -LiteralPath $marker -Raw | ConvertFrom-Json }
+    catch { throw "Existing standalone install marker is invalid: $marker" }
+}
+
 if ([string]::IsNullOrWhiteSpace($UserProfilePath)) {
     $UserProfilePath = Split-Path -Parent $CodexHome
 }
@@ -107,13 +113,21 @@ if (-not $SkipEnvironmentRegistration) {
     $registryPath = "Registry::HKEY_USERS\$userSid\Environment"
     if (-not (Test-Path $registryPath)) { throw "User environment registry hive is not loaded: $registryPath" }
 
-    try {
-        $previousCliPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name CODEX_CLI_PATH -ErrorAction Stop
-        $hadPreviousCliPath = $true
+    $isRouterUpgrade = $existingState -and $existingState.environmentRegistered -and
+        ([IO.Path]::GetFullPath([string]$existingState.launcher) -ieq [IO.Path]::GetFullPath($launcher))
+    if ($isRouterUpgrade) {
+        $hadPreviousCliPath = [bool]$existingState.hadPreviousCliPath
+        $previousCliPath = if ($hadPreviousCliPath) { [string]$existingState.previousCliPath } else { $null }
     }
-    catch {
-        $previousCliPath = $null
-        $hadPreviousCliPath = $false
+    else {
+        try {
+            $previousCliPath = Get-ItemPropertyValue -LiteralPath $registryPath -Name CODEX_CLI_PATH -ErrorAction Stop
+            $hadPreviousCliPath = $true
+        }
+        catch {
+            $previousCliPath = $null
+            $hadPreviousCliPath = $false
+        }
     }
 
     New-ItemProperty -LiteralPath $registryPath -Name CODEX_CLI_PATH -Value $launcher -PropertyType String -Force | Out-Null
