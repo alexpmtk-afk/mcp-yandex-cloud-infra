@@ -24,7 +24,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - name: Checkout infrastructure main
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -67,53 +67,15 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
-      - name: Plan recovery phase with fail-closed remote Host
+      - name: Capture deployed runtime outputs
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=terraform/birzha_test plan -input=false -no-color \
-            -out=phase1.tfplan \
-            -var="source_commit_sha=${SOURCE_SHA}" \
-            -var="mcp_image_url=${IMAGE_URL}" \
-            -var="mcp_allowed_hosts=__remote_host_not_configured__.invalid" \
-            -var="mcp_allowed_origins=" \
-            -var="ydb_bootstrap_enabled=false"
-          terraform -chdir=terraform/birzha_test show -json phase1.tfplan > "$RUNNER_TEMP/phase1.json"
-
-      - name: Assert recovered partial-state safety
-        shell: bash
-        run: |
-          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/outputs.json"
           python - <<'PY'
           import json, os
           from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase1.json').read_text())
-          changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected='yandex_api_gateway.mcp[0]'
-          if set(changes) != {expected}:
-              raise SystemExit(f'Unexpected recovery delta: {sorted(changes)}')
-          item=changes[expected]
-          if item['change']['actions'] != ['create']:
-              raise SystemExit(f'Gateway recovery must only create: {item["change"]["actions"]}')
-          after=item['change']['after']
-          if after.get('execution_timeout') != '120':
-              raise SystemExit(f'Gateway execution timeout mismatch: {after.get("execution_timeout")!r}')
-          print('RECOVERY_PHASE_PLAN_PASS')
-          PY
-
-      - name: Apply recovery phase exactly
-        shell: bash
-        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve phase1.tfplan
-
-      - name: Capture real Gateway and YDB outputs
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/phase1-outputs.json"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase1-outputs.json').read_text())
+          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'outputs.json').read_text())
           v=lambda k:o[k]['value']
           required=('test_folder_id','container_registry_id','runtime_service_account_id','gateway_service_account_id','ydb_database_id','serverless_container_id','api_gateway_id','api_gateway_domain','mcp_endpoint')
           for k in required:
@@ -121,74 +83,40 @@ jobs:
           if v('container_registry_id') != os.environ['EXPECTED_REGISTRY_ID']:
               raise SystemExit('Registry drift')
           domain=v('api_gateway_domain').strip()
-          if not domain or '/' in domain: raise SystemExit(f'Bad gateway domain: {domain!r}')
+          endpoint=v('mcp_endpoint').strip()
+          if endpoint != f'https://{domain}/mcp': raise SystemExit('MCP endpoint/domain mismatch')
           with open(os.environ['GITHUB_ENV'],'a') as f:
               f.write(f'GATEWAY_DOMAIN={domain}\n')
-              f.write(f'MCP_ENDPOINT=https://{domain}/mcp\n')
-          print('RECOVERY_OUTPUTS_PASS')
+              f.write(f'MCP_ENDPOINT={endpoint}\n')
+          print('DEPLOYED_OUTPUTS_PASS')
           print('gateway_domain='+domain)
           print('ydb_database_id='+v('ydb_database_id'))
           print('serverless_container_id='+v('serverless_container_id'))
           PY
 
-      - name: Plan phase two with exact Gateway Host
+      - name: Assert Terraform steady state and no temporary YDB admin
         shell: bash
         run: |
           set -euo pipefail
           REAL_HOSTS="${GATEWAY_DOMAIN},${GATEWAY_DOMAIN}:*"
-          terraform -chdir=terraform/birzha_test plan -input=false -no-color \
-            -out=phase2.tfplan \
+          set +e
+          terraform -chdir=terraform/birzha_test plan -detailed-exitcode -input=false -no-color \
             -var="source_commit_sha=${SOURCE_SHA}" \
             -var="mcp_image_url=${IMAGE_URL}" \
             -var="mcp_allowed_hosts=${REAL_HOSTS}" \
             -var="mcp_allowed_origins=" \
-            -var="ydb_bootstrap_enabled=false"
-          terraform -chdir=terraform/birzha_test show -json phase2.tfplan > "$RUNNER_TEMP/phase2.json"
-
-      - name: Assert complete runtime contract
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase2.json').read_text())
-          changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected='yandex_serverless_container.mcp[0]'
-          if set(changes) != {expected}:
-              raise SystemExit(f'Unexpected phase-two delta: {sorted(changes)}')
-          item=changes[expected]
-          if 'delete' in item['change']['actions']:
-              raise SystemExit('Container replacement forbidden')
-          c=item['change']['after']
-          if c.get('concurrency') != 1: raise SystemExit('Concurrency drift')
-          image=c['image'][0]
-          if image.get('url') != os.environ['IMAGE_URL']: raise SystemExit('Image drift')
-          env=image.get('environment') or {}
-          expected_hosts=f"{os.environ['GATEWAY_DOMAIN']},{os.environ['GATEWAY_DOMAIN']}:*"
-          expected_env={
-            'MCP_ALLOWED_HOSTS':expected_hosts,
-            'MCP_ALLOWED_ORIGINS':'',
-            'BIRZHA_SOURCE_COMMIT':os.environ['SOURCE_SHA'],
-            'BIRZHA_STATE_BACKEND':'ydb',
-          }
-          for k,v in expected_env.items():
-              if env.get(k) != v: raise SystemExit(f'{k} mismatch: {env.get(k)!r}')
-          ydb=env.get('YDB_CONNECTION_STRING')
-          if not isinstance(ydb,str) or not ydb.strip(): raise SystemExit('YDB connection string missing')
-          print('PHASE2_RUNTIME_CONTRACT_PASS')
-          PY
-
-      - name: Apply phase two exactly
-        shell: bash
-        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve phase2.tfplan
+            -var="ydb_bootstrap_enabled=false" > "$RUNNER_TEMP/drift.txt"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then cat "$RUNNER_TEMP/drift.txt"; exit "$RC"; fi
+          echo TERRAFORM_STEADY_STATE_PASS
 
       - name: Wait for remote YDB-backed health
         shell: bash
         run: |
           set -euo pipefail
           URL="https://${GATEWAY_DOMAIN}/healthz"
-          for i in $(seq 1 36); do
+          for i in $(seq 1 24); do
             if curl --proto '=https' --tlsv1.2 --silent --show-error --fail --max-time 15 "$URL" > "$RUNNER_TEMP/health.json"; then
               if python - <<'PY'
           import json, os
@@ -210,40 +138,66 @@ jobs:
       - name: Install official MCP client
         run: python -m pip install --disable-pip-version-check 'mcp==2.1.1'
 
-      - name: Prove remote MCP, real MOEX and durable Forecast storage
+      - name: Prove remote MCP, real MOEX and durable Forecast roundtrip
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
           import asyncio, json, os
           from mcp import Client
+
           async def main():
               async with Client(os.environ['MCP_ENDPOINT']) as client:
                   listed=await client.list_tools()
                   names={t.name for t in listed.tools}
-                  required={'system.version','market.resolve_instrument','market.snapshot','forecast.create','forecast.get','forecast.list','outcome.evaluate','validation.walk_forward','validation.assess_model'}
+                  required={'system.version','market.resolve_instrument','market.candles','market.snapshot','forecast.create','forecast.get','forecast.list','outcome.evaluate','validation.walk_forward','validation.assess_model'}
                   assert not required-names, required-names
+
                   version=await client.call_tool('system.version', {})
-                  assert not version.is_error
+                  assert not version.is_error, version
                   assert version.structured_content['service']=='BIRZHA MCP FORECAST'
+
                   resolved=await client.call_tool('market.resolve_instrument', {'symbol':'SBER'})
-                  assert not resolved.is_error
+                  assert not resolved.is_error, resolved
                   assert resolved.structured_content['secid']=='SBER'
+
                   created=await client.call_tool('forecast.create', {'symbol':'SBER'})
                   assert not created.is_error, created
-                  c=created.structured_content
-                  fid=c.get('forecast_id') or (c.get('record') or {}).get('forecast_id')
-                  assert fid, c
+                  payload=created.structured_content
+                  forecast=payload.get('forecast') or payload.get('record') or payload
+                  fid=forecast.get('forecast_id')
+                  assert fid, payload
+                  assert forecast.get('symbol')=='SBER', forecast
+                  assert payload.get('storage_scope')=='distributed', payload
+                  journal=payload.get('journal') or {}
+                  assert journal.get('forecast_id')==fid, journal
+                  assert journal.get('status') in {'APPENDED','DUPLICATE'}, journal
+
                   fetched=await client.call_tool('forecast.get', {'forecast_id':fid})
                   assert not fetched.is_error, fetched
-                  f=fetched.structured_content
-                  assert f.get('forecast_id')==fid, f
-                  assert f.get('symbol')=='SBER', f
-                  print(json.dumps({'remote_mcp':'PASS','tool_count':len(names),'resolved':'SBER','forecast_id':fid,'direction':f.get('direction'),'engine':f.get('engine_version')},sort_keys=True))
+                  stored=fetched.structured_content
+                  assert stored.get('forecast_id')==fid, stored
+                  assert stored.get('symbol')=='SBER', stored
+                  assert stored.get('engine_version')==forecast.get('engine_version'), stored
+
+                  recent=await client.call_tool('forecast.list', {'limit':5,'symbol':'SBER'})
+                  assert not recent.is_error, recent
+
+                  print(json.dumps({
+                      'remote_mcp':'PASS',
+                      'tool_count':len(names),
+                      'resolved':'SBER',
+                      'forecast_id':fid,
+                      'direction':stored.get('direction'),
+                      'engine':stored.get('engine_version'),
+                      'journal_status':journal.get('status'),
+                      'state_backend':'ydb'
+                  },sort_keys=True))
+
           asyncio.run(main())
           PY
 
-      - name: Verify zero Terraform drift and no temporary YDB admin
+      - name: Re-assert zero Terraform drift after remote acceptance
         shell: bash
         run: |
           set -euo pipefail
@@ -254,26 +208,25 @@ jobs:
             -var="mcp_image_url=${IMAGE_URL}" \
             -var="mcp_allowed_hosts=${REAL_HOSTS}" \
             -var="mcp_allowed_origins=" \
-            -var="ydb_bootstrap_enabled=false" > "$RUNNER_TEMP/drift.txt"
+            -var="ydb_bootstrap_enabled=false" > "$RUNNER_TEMP/post-drift.txt"
           RC=$?
           set -e
-          if [ "$RC" -ne 0 ]; then cat "$RUNNER_TEMP/drift.txt"; exit "$RC"; fi
-          echo POST_DEPLOY_DRIFT_NONE
+          if [ "$RC" -ne 0 ]; then cat "$RUNNER_TEMP/post-drift.txt"; exit "$RC"; fi
+          echo POST_ACCEPTANCE_DRIFT_NONE
 
       - name: Write deployment evidence
         if: success()
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/final.json"
           mkdir -p "$RUNNER_TEMP/evidence"
           python - <<'PY'
           import json, os
           from datetime import datetime, timezone
           from pathlib import Path
-          r=Path(os.environ['RUNNER_TEMP']); o=json.loads((r/'final.json').read_text()); v=lambda k:o[k]['value']
+          r=Path(os.environ['RUNNER_TEMP']); o=json.loads((r/'outputs.json').read_text()); v=lambda k:o[k]['value']
           e={
-            'schema':'BIRZHA_MCP_TEST_DEPLOYMENT_V4',
+            'schema':'BIRZHA_MCP_TEST_DEPLOYMENT_V5',
             'timestamp_utc':datetime.now(timezone.utc).isoformat(),
             'infra_sha':os.environ['GITHUB_SHA'],
             'application_source_sha':os.environ['SOURCE_SHA'],
@@ -289,7 +242,14 @@ jobs:
             'state_backend':'ydb',
             'container_concurrency':1,
             'temporary_ydb_admin_present':False,
-            'acceptance':{'partial_state_recovery':'PASS','gateway':'PASS','phase2':'PASS','remote_health':'PASS','remote_mcp':'PASS','real_moex':'PASS','durable_forecast_roundtrip':'PASS','terraform_drift':'NONE'},
+            'acceptance':{
+              'terraform_precheck':'NO_DRIFT',
+              'remote_health':'PASS',
+              'remote_mcp':'PASS',
+              'real_moex':'PASS',
+              'durable_forecast_roundtrip':'PASS',
+              'terraform_postcheck':'NO_DRIFT'
+            },
           }
           (r/'evidence'/'deployment.json').write_text(json.dumps(e,indent=2,sort_keys=True)+'\n')
           print(json.dumps(e,sort_keys=True))
@@ -299,7 +259,7 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: birzha-mcp-test-deployment-evidence-v4
+          name: birzha-mcp-test-deployment-evidence-v5
           path: ${{ runner.temp }}/evidence/deployment.json
           if-no-files-found: error
           retention-days: 30
