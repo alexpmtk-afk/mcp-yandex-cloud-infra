@@ -255,13 +255,14 @@ jobs:
           python - <<'PY'
           import asyncio, json, os
           from pathlib import Path
-          import httpx
+          import httpx2
           from mcp import Client
           from mcp.client.streamable_http import streamable_http_client
 
           async def main():
               token=(Path(os.environ['RUNNER_TEMP'])/'mcp-token').read_text()
-              async with httpx.AsyncClient(headers={'Authorization':f'Bearer {token}'}) as hc:
+              timeout=httpx2.Timeout(30.0, read=300.0)
+              async with httpx2.AsyncClient(headers={'Authorization':f'Bearer {token}'}, timeout=timeout, follow_redirects=True) as hc:
                   transport=streamable_http_client(os.environ['MCP_ENDPOINT'], http_client=hc)
                   async with Client(transport) as client:
                       listed=await client.list_tools(); names={t.name for t in listed.tools}
