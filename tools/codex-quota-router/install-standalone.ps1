@@ -117,6 +117,28 @@ if (-not $SkipEnvironmentRegistration) {
     }
 
     New-ItemProperty -LiteralPath $registryPath -Name CODEX_CLI_PATH -Value $launcher -PropertyType String -Force | Out-Null
+
+    if (-not ('CodexRouter.EnvironmentBroadcast' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+namespace CodexRouter {
+    public static class EnvironmentBroadcast {
+        [DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+        private static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd, uint message, UIntPtr wParam, string lParam,
+            uint flags, uint timeout, out UIntPtr result);
+
+        public static void Notify() {
+            UIntPtr result;
+            SendMessageTimeout(new IntPtr(0xffff), 0x001A, UIntPtr.Zero,
+                "Environment", 0x0002, 5000, out result);
+        }
+    }
+}
+'@
+    }
+    [CodexRouter.EnvironmentBroadcast]::Notify()
 }
 
 [pscustomobject]@{
