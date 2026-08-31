@@ -153,6 +153,7 @@ jobs:
             'yandex_lockbox_secret_iam_member.deployer_mcp_auth',
             'yandex_lockbox_secret_iam_member.deployer_mcp_auth_metadata',
             'yandex_iam_service_account_iam_member.terraform_runtime_user',
+            'yandex_resourcemanager_folder_iam_member.terraform_secret_revision_editor',
             'yandex_serverless_container.mcp[0]',
           }
           changed=[]
