@@ -11,17 +11,86 @@ function monitorScript() {
   return path.join(codexHome(), 'plugins', 'codex-usage-monitor', 'bin', 'codex-usage-monitor.js');
 }
 
+function hasRateLimits(summary) {
+  return Boolean(summary && summary.rateLimits && (summary.rateLimits.primary || summary.rateLimits.secondary));
+}
+
 function loadUsage(transcriptPath) {
   const monitor = monitorScript();
+  let summary = null;
+  let source = null;
+
   if (fs.existsSync(monitor)) {
     const args = [monitor, 'json'];
     if (transcriptPath) args.push('--file', transcriptPath);
     const out = spawnSync(process.execPath, args, { encoding: 'utf8', timeout: 5000, windowsHide: true });
     if (out.status === 0 && out.stdout) {
-      try { return { source: 'codex-usage-monitor', summary: JSON.parse(out.stdout) }; } catch {}
+      try {
+        summary = JSON.parse(out.stdout);
+        source = 'codex-usage-monitor';
+      } catch {}
     }
   }
-  return { source: 'local-jsonl', summary: summarizeTail(transcriptPath) };
+
+  if (!summary && transcriptPath) {
+    summary = summarizeTail(transcriptPath);
+    source = 'local-jsonl';
+  }
+
+  // A newly opened Codex session often has no token_count/rate_limits yet.
+  // In that case use the freshest local session that DOES contain quota data,
+  // while preserving the current session's model/reasoning metadata when known.
+  if (!hasRateLimits(summary)) {
+    const fallback = findLatestQuotaSummary(transcriptPath);
+    if (fallback && fallback.summary) {
+      if (summary) {
+        summary = {
+          ...fallback.summary,
+          model: summary.model || fallback.summary.model || null,
+          reasoningEffort: summary.reasoningEffort || fallback.summary.reasoningEffort || null,
+          latestUsage: summary.latestUsage || fallback.summary.latestUsage || null,
+          totalUsage: summary.totalUsage || fallback.summary.totalUsage || null
+        };
+      } else {
+        summary = fallback.summary;
+      }
+      source = source ? `${source}+quota-fallback` : 'local-quota-fallback';
+    }
+  }
+
+  return { source: source || 'local-jsonl', summary };
+}
+
+function findLatestQuotaSummary(excludePath = null) {
+  const sessionsRoot = path.join(codexHome(), 'sessions');
+  if (!fs.existsSync(sessionsRoot)) return null;
+
+  const files = [];
+  walkJsonl(sessionsRoot, files, 300);
+  files.sort((a, b) => b.mtimeMs - a.mtimeMs);
+
+  const excluded = excludePath ? path.resolve(excludePath) : null;
+  for (const item of files) {
+    if (excluded && path.resolve(item.file) === excluded) continue;
+    const summary = summarizeTail(item.file);
+    if (hasRateLimits(summary)) return { file: item.file, summary, mtimeMs: item.mtimeMs };
+  }
+  return null;
+}
+
+function walkJsonl(dir, out, maxFiles) {
+  if (out.length >= maxFiles) return;
+  let entries;
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+  for (const entry of entries) {
+    if (out.length >= maxFiles) return;
+    const full = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walkJsonl(full, out, maxFiles);
+    } else if (entry.isFile() && entry.name.toLowerCase().endsWith('.jsonl')) {
+      try { out.push({ file: full, mtimeMs: fs.statSync(full).mtimeMs }); } catch {}
+    }
+  }
 }
 
 function summarizeTail(transcriptPath) {
@@ -56,7 +125,8 @@ function summarizeTail(transcriptPath) {
       const info = p.info || {};
       latestUsage = info.last_token_usage || latestUsage;
       totalUsage = info.total_token_usage || totalUsage;
-      rateLimits = normalizeRateLimits(p.rate_limits);
+      const normalized = normalizeRateLimits(p.rate_limits);
+      if (normalized.primary || normalized.secondary) rateLimits = normalized;
     }
   }
   return { model, reasoningEffort: effort, latestUsage, totalUsage, rateLimits };
@@ -84,4 +154,4 @@ function appendJsonl(file, record) {
   fs.appendFileSync(file, JSON.stringify(record) + os.EOL, 'utf8');
 }
 
-module.exports = { appendJsonl, codexHome, loadUsage, monitorScript, summarizeTail };
+module.exports = { appendJsonl, codexHome, findLatestQuotaSummary, hasRateLimits, loadUsage, monitorScript, summarizeTail };
