@@ -223,6 +223,7 @@ resource "yandex_serverless_container" "mcp" {
     yandex_ydb_database_iam_binding.runtime_editor,
     yandex_lockbox_secret_iam_member.runtime_mcp_auth,
     yandex_lockbox_secret_iam_member.deployer_mcp_auth_metadata,
+    yandex_iam_service_account_iam_member.terraform_runtime_user,
   ]
 }
 
