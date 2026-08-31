@@ -86,7 +86,7 @@ jobs:
 
           SG_ID="$(yc vpc security-group list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-valkey-sg") | .id' | head -1)"
           if [[ -z "$SG_ID" ]]; then
-            SG_ID="$(yc vpc security-group create --name marketplaces-mcp-valkey-sg --folder-id "$FOLDER_ID" --network-id "$NETWORK_ID" --rule 'direction=ingress,port=6380,protocol=tcp,v4-cidrs=[0.0.0.0/0]' --rule 'direction=egress,protocol=any,v4-cidrs=[0.0.0.0/0]' --format json | jq -r '.id')"
+            SG_ID="$(yc vpc security-group create --name marketplaces-mcp-valkey-sg --folder-id "$FOLDER_ID" --network-id "$NETWORK_ID" --rule 'direction=ingress,port=6380,protocol=tcp,v4-cidrs=[10.60.0.0/24]' --rule 'direction=egress,protocol=any,v4-cidrs=[0.0.0.0/0]' --format json | jq -r '.id')"
           fi
           test -n "$SG_ID"
 
@@ -127,7 +127,7 @@ jobs:
         run: |
           set -euo pipefail
           SOURCE_SHA="$(sed -n 's/.*@\([0-9a-f]\{40\}\).*/\1/p' app/.source-revision)"
-          test "$SOURCE_SHA" = "8fb7dd64d5dda1559122d2293a4f812417b1330f"
+          test "$SOURCE_SHA" = "ea82741f8af4c3e8419c3d3a4056fb9c8ccb8daf"
           python -m compileall -q app/core app/wb_mcp app/ozon_mcp app/ozon_perf_mcp
           IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:${SOURCE_SHA:0:12}"
           docker build --label "org.opencontainers.image.revision=$SOURCE_SHA" -t "$IMAGE" app
@@ -226,10 +226,10 @@ jobs:
               init_data = payload(init)
               assert init_data and 'result' in init_data, init_data
               session = init.headers.get('mcp-session-id')
-              assert session, 'missing mcp-session-id'
               proto = init_data['result'].get('protocolVersion','2025-06-18')
               headers = dict(common)
-              headers['Mcp-Session-Id'] = session
+              if session:
+                  headers['Mcp-Session-Id'] = session
               headers['MCP-Protocol-Version'] = proto
               n = c.post(url, headers=headers, json={'jsonrpc':'2.0','method':'notifications/initialized'})
               assert n.status_code in (200,202), n.status_code

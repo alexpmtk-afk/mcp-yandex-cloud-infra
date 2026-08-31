@@ -1,2 +1,2 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@0955be12ea3f20ce128bd47e977995fae511c337
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@ea82741f8af4c3e8419c3d3a4056fb9c8ccb8daf
 Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.
