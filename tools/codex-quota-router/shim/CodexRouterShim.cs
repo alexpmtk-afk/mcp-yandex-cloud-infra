@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Text;
@@ -10,15 +11,21 @@ public static class CodexRouterShim
     {
         try
         {
-            string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+            string launcherPath = GetCurrentExecutablePath();
             string realExe = Environment.GetEnvironmentVariable("CODEX_ROUTER_REAL_EXE");
             if (String.IsNullOrWhiteSpace(realExe))
-                realExe = Path.Combine(baseDir, "codex-real.exe");
+                realExe = DiscoverRealCodex(launcherPath);
 
-            if (!File.Exists(realExe))
+            if (String.IsNullOrWhiteSpace(realExe) || !File.Exists(realExe))
             {
-                Console.Error.WriteLine("Codex Auto Router: real Codex executable not found: " + realExe);
+                Console.Error.WriteLine("Codex Auto Router: real Codex executable not found.");
                 return 127;
+            }
+
+            if (Environment.GetEnvironmentVariable("CODEX_ROUTER_DISCOVER_ONLY") == "1")
+            {
+                Console.Out.WriteLine(realExe);
+                return 0;
             }
 
             string codexHome = Environment.GetEnvironmentVariable("CODEX_HOME");
@@ -119,6 +126,65 @@ public static class CodexRouterShim
             Console.Error.WriteLine("Codex Auto Router shim failed: " + ex.Message);
             return 127;
         }
+    }
+
+    private static string DiscoverRealCodex(string launcherPath)
+    {
+        string localAppData = Environment.GetEnvironmentVariable("CODEX_ROUTER_LOCALAPPDATA");
+        if (String.IsNullOrWhiteSpace(localAppData))
+            localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+
+        if (String.IsNullOrWhiteSpace(localAppData))
+            return null;
+
+        string binRoot = Path.Combine(localAppData, "OpenAI", "Codex", "bin");
+        if (!Directory.Exists(binRoot))
+            return null;
+
+        string launcherFullPath = NormalizePath(launcherPath);
+        List<FileInfo> candidates = new List<FileInfo>();
+        try
+        {
+            foreach (string file in Directory.GetFiles(binRoot, "codex.exe", SearchOption.AllDirectories))
+            {
+                string fullPath = NormalizePath(file);
+                if (String.Equals(fullPath, launcherFullPath, StringComparison.OrdinalIgnoreCase))
+                    continue;
+                candidates.Add(new FileInfo(file));
+            }
+        }
+        catch
+        {
+            return null;
+        }
+
+        candidates.Sort(delegate(FileInfo a, FileInfo b)
+        {
+            int byWrite = b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc);
+            if (byWrite != 0) return byWrite;
+            return StringComparer.OrdinalIgnoreCase.Compare(b.FullName, a.FullName);
+        });
+
+        return candidates.Count > 0 ? candidates[0].FullName : null;
+    }
+
+    private static string GetCurrentExecutablePath()
+    {
+        try
+        {
+            return Process.GetCurrentProcess().MainModule.FileName;
+        }
+        catch
+        {
+            return Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "codex-router.exe");
+        }
+    }
+
+    private static string NormalizePath(string value)
+    {
+        if (String.IsNullOrWhiteSpace(value)) return String.Empty;
+        try { return Path.GetFullPath(value).TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar); }
+        catch { return value; }
     }
 
     private static string QuoteArg(string arg)
