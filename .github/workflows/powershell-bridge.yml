@@ -1,0 +1,46 @@
+name: PowerShell Bridge
+
+on:
+  push:
+    branches:
+      - tooling/powershell-bridge-v0.1
+    paths:
+      - 'tools/powershell-bridge/command.ps1'
+      - '.github/workflows/powershell-bridge.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: powershell-bridge
+  cancel-in-progress: false
+
+jobs:
+  execute:
+    if: startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
+    runs-on: [self-hosted, Windows, X64, codex-bridge]
+    timeout-minutes: 10
+    steps:
+      - name: Checkout command
+        uses: actions/checkout@v4
+        with:
+          ref: tooling/powershell-bridge-v0.1
+          fetch-depth: 1
+
+      - name: Execute approved PowerShell command
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== POWERSHELL_BRIDGE_BEGIN ==='
+          Write-Host "Commit: $env:GITHUB_SHA"
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host '--- command.ps1 ---'
+          Get-Content "tools/powershell-bridge/command.ps1"
+          Write-Host '--- output ---'
+          & "tools/powershell-bridge/command.ps1"
+          $exit = $LASTEXITCODE
+          if ($null -eq $exit) { $exit = 0 }
+          Write-Host "--- exit_code=$exit ---"
+          Write-Host '=== POWERSHELL_BRIDGE_END ==='
+          if ($exit -ne 0) { exit $exit }
