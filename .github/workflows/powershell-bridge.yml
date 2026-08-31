@@ -28,7 +28,7 @@ jobs:
           fetch-depth: 1
 
       - name: Execute approved PowerShell command
-        shell: powershell
+        shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host '=== POWERSHELL_BRIDGE_BEGIN ==='
