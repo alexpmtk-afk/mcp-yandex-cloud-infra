@@ -56,9 +56,9 @@ jobs:
           if (-not $hooks.hooks.Stop) { throw 'Stop hook missing' }
 
           $cfg = Get-Content (Join-Path $env:CODEX_HOME 'config.toml') -Raw
-          if ($cfg -notmatch '(?m)^model = "gpt-5.6-luna"$') { throw 'default Luna model not set' }
-          if ($cfg -notmatch '(?m)^model_reasoning_effort = "low"$') { throw 'default low effort not set' }
-          if ($cfg -notmatch '(?m)^\[mcp_servers\.example\]$') { throw 'existing config table was damaged' }
+          if ($cfg -notmatch '(?m)^model = "gpt-5.6-luna"\r?$') { throw 'default Luna model not set' }
+          if ($cfg -notmatch '(?m)^model_reasoning_effort = "low"\r?$') { throw 'default low effort not set' }
+          if ($cfg -notmatch '(?m)^\[mcp_servers\.example\]\r?$') { throw 'existing config table was damaged' }
 
       - name: Preflight allow and block tests
         shell: pwsh
