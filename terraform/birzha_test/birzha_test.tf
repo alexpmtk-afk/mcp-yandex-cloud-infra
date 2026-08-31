@@ -138,6 +138,7 @@ resource "yandex_serverless_container" "mcp" {
   description        = "Private Streamable HTTP BIRZHA MCP Forecast TEST service"
   memory             = 512
   cores              = 1
+  concurrency        = 1
   execution_timeout  = "120s"
   service_account_id = yandex_iam_service_account.runtime.id
 
