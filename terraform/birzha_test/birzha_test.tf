@@ -146,6 +146,41 @@ resource "yandex_ydb_database_iam_binding" "runtime_editor" {
   members     = ["serviceAccount:${yandex_iam_service_account.runtime.id}"]
 }
 
+resource "yandex_lockbox_secret" "mcp_auth" {
+  folder_id           = yandex_resourcemanager_folder.birzha_test.id
+  name                = "birzha-mcp-forecast-test-auth"
+  description         = "Generated bearer token protecting the BIRZHA MCP TEST endpoint"
+  deletion_protection = true
+  labels              = local.labels
+
+  password_payload_specification {
+    password_key        = "bearer_token"
+    length              = 64
+    include_uppercase   = true
+    include_lowercase   = true
+    include_digits      = true
+    include_punctuation = false
+  }
+}
+
+resource "yandex_lockbox_secret_version" "mcp_auth" {
+  secret_id = yandex_lockbox_secret.mcp_auth.id
+}
+
+resource "yandex_lockbox_secret_iam_member" "runtime_mcp_auth" {
+  secret_id   = yandex_lockbox_secret.mcp_auth.id
+  role        = "lockbox.payloadViewer"
+  member      = "serviceAccount:${yandex_iam_service_account.runtime.id}"
+  sleep_after = 10
+}
+
+resource "yandex_lockbox_secret_iam_member" "deployer_mcp_auth" {
+  secret_id   = yandex_lockbox_secret.mcp_auth.id
+  role        = "lockbox.payloadViewer"
+  member      = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  sleep_after = 10
+}
+
 resource "yandex_serverless_container" "mcp" {
   count              = var.mcp_image_url == null ? 0 : 1
   folder_id          = yandex_resourcemanager_folder.birzha_test.id
@@ -161,21 +196,32 @@ resource "yandex_serverless_container" "mcp" {
     type = "http"
   }
 
+  secrets {
+    id                   = yandex_lockbox_secret.mcp_auth.id
+    version_id           = yandex_lockbox_secret_version.mcp_auth.id
+    key                  = "bearer_token"
+    environment_variable = "BIRZHA_MCP_BEARER_TOKEN"
+  }
+
   image {
     url = var.mcp_image_url
     environment = {
-      MCP_ALLOWED_HOSTS     = var.mcp_allowed_hosts
-      MCP_ALLOWED_ORIGINS   = var.mcp_allowed_origins
-      BIRZHA_SOURCE_COMMIT  = var.source_commit_sha
-      BIRZHA_STATE_BACKEND  = "ydb"
-      YDB_CONNECTION_STRING = yandex_ydb_database_serverless.state.ydb_full_endpoint
+      MCP_ALLOWED_HOSTS       = var.mcp_allowed_hosts
+      MCP_ALLOWED_ORIGINS     = var.mcp_allowed_origins
+      BIRZHA_SOURCE_COMMIT    = var.source_commit_sha
+      BIRZHA_STATE_BACKEND    = "ydb"
+      BIRZHA_REQUIRE_MCP_AUTH = "true"
+      YDB_CONNECTION_STRING   = yandex_ydb_database_serverless.state.ydb_full_endpoint
     }
   }
 
   labels = merge(local.labels, {
     source_sha = substr(var.source_commit_sha, 0, 16)
   })
-  depends_on = [yandex_ydb_database_iam_binding.runtime_editor]
+  depends_on = [
+    yandex_ydb_database_iam_binding.runtime_editor,
+    yandex_lockbox_secret_iam_member.runtime_mcp_auth,
+  ]
 }
 
 resource "yandex_serverless_container_iam_member" "gateway_invoker" {

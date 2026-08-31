@@ -43,6 +43,16 @@ output "ydb_connection_string" {
   value       = yandex_ydb_database_serverless.state.ydb_full_endpoint
 }
 
+output "mcp_auth_secret_id" {
+  description = "Lockbox secret holding the generated MCP TEST bearer token."
+  value       = yandex_lockbox_secret.mcp_auth.id
+}
+
+output "mcp_auth_secret_version_id" {
+  description = "Pinned Lockbox version injected into the MCP TEST container."
+  value       = yandex_lockbox_secret_version.mcp_auth.id
+}
+
 output "serverless_container_id" {
   description = "BIRZHA Forecast TEST Serverless Container ID, once an image is configured."
   value       = try(yandex_serverless_container.mcp[0].id, null)
