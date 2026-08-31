@@ -18,14 +18,13 @@ concurrency:
 jobs:
   execute:
     if: startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
-    runs-on: [self-hosted, Windows, X64, codex-bridge]
+    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
     timeout-minutes: 10
     steps:
       - name: Fetch and execute approved PowerShell command
         shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
         env:
           GH_TOKEN: ${{ github.token }}
-          BRIDGE_REF: tooling/powershell-bridge-v0.1
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host '=== POWERSHELL_BRIDGE_BEGIN ==='
@@ -33,7 +32,7 @@ jobs:
           Write-Host "Runner: $env:RUNNER_NAME"
           Write-Host "Computer: $env:COMPUTERNAME"
 
-          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/tools/powershell-bridge/command.ps1?ref=$env:BRIDGE_REF"
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/tools/powershell-bridge/command.ps1?ref=$env:GITHUB_SHA"
           $headers = @{
             Authorization = "Bearer $env:GH_TOKEN"
             Accept = 'application/vnd.github+json'
