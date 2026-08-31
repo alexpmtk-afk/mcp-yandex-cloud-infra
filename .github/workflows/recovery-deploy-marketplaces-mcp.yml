@@ -167,8 +167,16 @@ jobs:
             --format json --no-user-output > "$RUNNER_TEMP/revision.json"
           REVISION_ID="$(jq -r '.id // empty' "$RUNNER_TEMP/revision.json")"
           test -n "$REVISION_ID"
+          GATEWAY_ID="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[] | select((.name // "") | contains("marketplaces"))][0].id // empty')"
+          test -n "$GATEWAY_ID"
+          yc serverless api-gateway update \
+            --id "$GATEWAY_ID" \
+            --execution-timeout 300s \
+            --format json --no-user-output > "$RUNNER_TEMP/gateway-update.json"
+          test "$(jq -r '.execution_timeout // empty' "$RUNNER_TEMP/gateway-update.json")" = "300s"
           echo "revision_id=$REVISION_ID" >> "$GITHUB_OUTPUT"
           echo "container_revision_deployed=true"
+          echo "gateway_execution_timeout=300s"
 
       - name: Remote-only MCP acceptance
         id: smoke
@@ -292,5 +300,6 @@ jobs:
                 "$RUNNER_TEMP/marketplace-secret-smoke.json" \
                 "$RUNNER_TEMP/valkey-create.json" \
                 "$RUNNER_TEMP/revision.json" \
+                "$RUNNER_TEMP/gateway-update.json" \
                 "$RUNNER_TEMP/health.txt" \
                 "$RUNNER_TEMP/unauth.txt"
