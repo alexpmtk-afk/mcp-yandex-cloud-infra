@@ -190,7 +190,7 @@ resource "yandex_api_gateway" "mcp" {
   folder_id         = yandex_resourcemanager_folder.birzha_test.id
   name              = "birzha-mcp-forecast-test-gateway"
   description       = "Public TEST gateway to the private BIRZHA MCP Forecast container"
-  execution_timeout = "120s"
+  execution_timeout = "120"
   labels            = local.labels
 
   spec = templatefile("${path.module}/gateway.yaml.tftpl", {

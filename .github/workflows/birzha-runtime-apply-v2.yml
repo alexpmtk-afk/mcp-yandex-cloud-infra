@@ -24,7 +24,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 45
+    timeout-minutes: 35
     steps:
       - name: Checkout infrastructure main
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -67,48 +67,7 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
 
-      - name: Plan narrow YDB IAM bootstrap
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test plan -input=false -no-color \
-            -target=yandex_resourcemanager_folder_iam_member.terraform_ydb_viewer \
-            -target=yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin \
-            -out=ydb-bootstrap.tfplan \
-            -var="ydb_bootstrap_enabled=true"
-          terraform -chdir=terraform/birzha_test show -json ydb-bootstrap.tfplan > "$RUNNER_TEMP/ydb-bootstrap.json"
-
-      - name: Assert narrow YDB IAM bootstrap
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'ydb-bootstrap.json').read_text())
-          changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          required={
-            'yandex_resourcemanager_folder_iam_member.terraform_ydb_viewer',
-            'yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin[0]',
-          }
-          if set(changes) != required:
-              raise SystemExit(f'Unexpected YDB bootstrap delta: {sorted(changes)}')
-          for address,item in changes.items():
-              if item['change']['actions'] != ['create']:
-                  raise SystemExit(f'YDB bootstrap must only create IAM: {address}={item["change"]["actions"]}')
-          after={a:i['change']['after'] for a,i in changes.items()}
-          if after['yandex_resourcemanager_folder_iam_member.terraform_ydb_viewer'].get('role') != 'ydb.viewer':
-              raise SystemExit('Permanent YDB reconciliation role must be ydb.viewer')
-          if after['yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin[0]'].get('role') != 'ydb.admin':
-              raise SystemExit('Temporary YDB bootstrap role must be ydb.admin')
-          print('YDB_IAM_BOOTSTRAP_PLAN_PASS')
-          PY
-
-      - name: Apply narrow YDB IAM bootstrap exactly
-        shell: bash
-        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve ydb-bootstrap.tfplan
-
-      - name: Plan phase one with fail-closed remote Host
+      - name: Plan recovery phase with fail-closed remote Host
         shell: bash
         run: |
           set -euo pipefail
@@ -118,10 +77,10 @@ jobs:
             -var="mcp_image_url=${IMAGE_URL}" \
             -var="mcp_allowed_hosts=__remote_host_not_configured__.invalid" \
             -var="mcp_allowed_origins=" \
-            -var="ydb_bootstrap_enabled=true"
+            -var="ydb_bootstrap_enabled=false"
           terraform -chdir=terraform/birzha_test show -json phase1.tfplan > "$RUNNER_TEMP/phase1.json"
 
-      - name: Assert phase-one resource safety
+      - name: Assert recovered partial-state safety
         shell: bash
         run: |
           set -euo pipefail
@@ -130,29 +89,19 @@ jobs:
           from pathlib import Path
           p=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase1.json').read_text())
           changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          required={
-            'yandex_ydb_database_serverless.state',
-            'yandex_ydb_database_iam_binding.runtime_editor',
-            'yandex_serverless_container.mcp[0]',
-            'yandex_serverless_container_iam_member.gateway_invoker[0]',
-            'yandex_api_gateway.mcp[0]',
-          }
-          if set(changes) != required:
-              raise SystemExit(f'Unexpected phase-one delta: {sorted(changes)}')
-          if any('delete' in x['change']['actions'] for x in changes.values()):
-              raise SystemExit('Destroy or replacement is forbidden')
-          c=changes['yandex_serverless_container.mcp[0]']['change']['after']
-          if c.get('concurrency') != 1:
-              raise SystemExit(f'Expected concurrency=1, got {c.get("concurrency")}')
-          if c['image'][0].get('url') != os.environ['IMAGE_URL']:
-              raise SystemExit('Immutable image URL mismatch')
-          y=changes['yandex_ydb_database_serverless.state']['change']['after']
-          if y.get('deletion_protection') is not True:
-              raise SystemExit('YDB deletion protection is not enabled')
-          print('PHASE1_PLAN_PASS')
+          expected='yandex_api_gateway.mcp[0]'
+          if set(changes) != {expected}:
+              raise SystemExit(f'Unexpected recovery delta: {sorted(changes)}')
+          item=changes[expected]
+          if item['change']['actions'] != ['create']:
+              raise SystemExit(f'Gateway recovery must only create: {item["change"]["actions"]}')
+          after=item['change']['after']
+          if after.get('execution_timeout') != '120':
+              raise SystemExit(f'Gateway execution timeout mismatch: {after.get("execution_timeout")!r}')
+          print('RECOVERY_PHASE_PLAN_PASS')
           PY
 
-      - name: Apply phase one exactly
+      - name: Apply recovery phase exactly
         shell: bash
         run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve phase1.tfplan
 
@@ -176,9 +125,10 @@ jobs:
           with open(os.environ['GITHUB_ENV'],'a') as f:
               f.write(f'GATEWAY_DOMAIN={domain}\n')
               f.write(f'MCP_ENDPOINT=https://{domain}/mcp\n')
-          print('PHASE1_OUTPUTS_PASS')
+          print('RECOVERY_OUTPUTS_PASS')
           print('gateway_domain='+domain)
           print('ydb_database_id='+v('ydb_database_id'))
+          print('serverless_container_id='+v('serverless_container_id'))
           PY
 
       - name: Plan phase two with exact Gateway Host
@@ -192,10 +142,10 @@ jobs:
             -var="mcp_image_url=${IMAGE_URL}" \
             -var="mcp_allowed_hosts=${REAL_HOSTS}" \
             -var="mcp_allowed_origins=" \
-            -var="ydb_bootstrap_enabled=true"
+            -var="ydb_bootstrap_enabled=false"
           terraform -chdir=terraform/birzha_test show -json phase2.tfplan > "$RUNNER_TEMP/phase2.json"
 
-      - name: Assert complete runtime contract after YDB exists
+      - name: Assert complete runtime contract
         shell: bash
         run: |
           set -euo pipefail
@@ -204,9 +154,10 @@ jobs:
           from pathlib import Path
           p=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase2.json').read_text())
           changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          if set(changes) != {'yandex_serverless_container.mcp[0]'}:
+          expected='yandex_serverless_container.mcp[0]'
+          if set(changes) != {expected}:
               raise SystemExit(f'Unexpected phase-two delta: {sorted(changes)}')
-          item=changes['yandex_serverless_container.mcp[0]']
+          item=changes[expected]
           if 'delete' in item['change']['actions']:
               raise SystemExit('Container replacement forbidden')
           c=item['change']['after']
@@ -215,13 +166,13 @@ jobs:
           if image.get('url') != os.environ['IMAGE_URL']: raise SystemExit('Image drift')
           env=image.get('environment') or {}
           expected_hosts=f"{os.environ['GATEWAY_DOMAIN']},{os.environ['GATEWAY_DOMAIN']}:*"
-          expected={
+          expected_env={
             'MCP_ALLOWED_HOSTS':expected_hosts,
             'MCP_ALLOWED_ORIGINS':'',
             'BIRZHA_SOURCE_COMMIT':os.environ['SOURCE_SHA'],
             'BIRZHA_STATE_BACKEND':'ydb',
           }
-          for k,v in expected.items():
+          for k,v in expected_env.items():
               if env.get(k) != v: raise SystemExit(f'{k} mismatch: {env.get(k)!r}')
           ydb=env.get('YDB_CONNECTION_STRING')
           if not isinstance(ydb,str) or not ydb.strip(): raise SystemExit('YDB connection string missing')
@@ -292,42 +243,7 @@ jobs:
           asyncio.run(main())
           PY
 
-      - name: Plan removal of temporary YDB admin
-        shell: bash
-        run: |
-          set -euo pipefail
-          REAL_HOSTS="${GATEWAY_DOMAIN},${GATEWAY_DOMAIN}:*"
-          terraform -chdir=terraform/birzha_test plan -input=false -no-color \
-            -out=ydb-cleanup.tfplan \
-            -var="source_commit_sha=${SOURCE_SHA}" \
-            -var="mcp_image_url=${IMAGE_URL}" \
-            -var="mcp_allowed_hosts=${REAL_HOSTS}" \
-            -var="mcp_allowed_origins=" \
-            -var="ydb_bootstrap_enabled=false"
-          terraform -chdir=terraform/birzha_test show -json ydb-cleanup.tfplan > "$RUNNER_TEMP/ydb-cleanup.json"
-
-      - name: Assert only temporary YDB admin is removed
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'ydb-cleanup.json').read_text())
-          changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected='yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin[0]'
-          if set(changes) != {expected}:
-              raise SystemExit(f'Unexpected cleanup delta: {sorted(changes)}')
-          if changes[expected]['change']['actions'] != ['delete']:
-              raise SystemExit(f'Cleanup must only delete temporary YDB admin: {changes[expected]["change"]["actions"]}')
-          print('YDB_IAM_CLEANUP_PLAN_PASS')
-          PY
-
-      - name: Remove temporary YDB admin exactly
-        shell: bash
-        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve ydb-cleanup.tfplan
-
-      - name: Verify zero Terraform drift
+      - name: Verify zero Terraform drift and no temporary YDB admin
         shell: bash
         run: |
           set -euo pipefail
@@ -357,7 +273,7 @@ jobs:
           from pathlib import Path
           r=Path(os.environ['RUNNER_TEMP']); o=json.loads((r/'final.json').read_text()); v=lambda k:o[k]['value']
           e={
-            'schema':'BIRZHA_MCP_TEST_DEPLOYMENT_V3',
+            'schema':'BIRZHA_MCP_TEST_DEPLOYMENT_V4',
             'timestamp_utc':datetime.now(timezone.utc).isoformat(),
             'infra_sha':os.environ['GITHUB_SHA'],
             'application_source_sha':os.environ['SOURCE_SHA'],
@@ -372,8 +288,8 @@ jobs:
             'mcp_endpoint':v('mcp_endpoint'),
             'state_backend':'ydb',
             'container_concurrency':1,
-            'ydb_bootstrap_admin_removed':True,
-            'acceptance':{'ydb_iam_bootstrap':'PASS','phase1':'PASS','phase2':'PASS','remote_health':'PASS','remote_mcp':'PASS','real_moex':'PASS','durable_forecast_roundtrip':'PASS','ydb_admin_cleanup':'PASS','terraform_drift':'NONE'},
+            'temporary_ydb_admin_present':False,
+            'acceptance':{'partial_state_recovery':'PASS','gateway':'PASS','phase2':'PASS','remote_health':'PASS','remote_mcp':'PASS','real_moex':'PASS','durable_forecast_roundtrip':'PASS','terraform_drift':'NONE'},
           }
           (r/'evidence'/'deployment.json').write_text(json.dumps(e,indent=2,sort_keys=True)+'\n')
           print(json.dumps(e,sort_keys=True))
@@ -383,26 +299,10 @@ jobs:
         if: success()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: birzha-mcp-test-deployment-evidence-v3
+          name: birzha-mcp-test-deployment-evidence-v4
           path: ${{ runner.temp }}/evidence/deployment.json
           if-no-files-found: error
           retention-days: 30
-
-      - name: Emergency remove temporary YDB admin after failure
-        if: failure()
-        shell: bash
-        run: |
-          set +e
-          terraform -chdir=terraform/birzha_test apply -input=false -auto-approve \
-            -target=yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin \
-            -var="ydb_bootstrap_enabled=false"
-          RC=$?
-          if [ "$RC" -eq 0 ]; then
-            echo YDB_BOOTSTRAP_ADMIN_EMERGENCY_CLEANUP_PASS
-          else
-            echo "::error::Emergency YDB bootstrap-admin cleanup failed"
-          fi
-          exit "$RC"
 
       - name: Remove ephemeral provider key
         if: always()
