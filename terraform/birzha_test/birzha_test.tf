@@ -64,7 +64,7 @@ resource "yandex_resourcemanager_folder_iam_member" "ydb_bootstrap_admin" {
 resource "yandex_iam_service_account_iam_member" "terraform_federated_credential_viewer" {
   service_account_id = yandex_iam_service_account.publisher.id
   role               = "iam.serviceAccounts.federatedCredentialViewer"
-  member             = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  member              = "serviceAccount:${var.terraform_deployer_service_account_id}"
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_editor" {
@@ -221,6 +221,7 @@ resource "yandex_serverless_container" "mcp" {
   depends_on = [
     yandex_ydb_database_iam_binding.runtime_editor,
     yandex_lockbox_secret_iam_member.runtime_mcp_auth,
+    yandex_lockbox_secret_iam_member.deployer_mcp_auth_metadata,
   ]
 }
 
