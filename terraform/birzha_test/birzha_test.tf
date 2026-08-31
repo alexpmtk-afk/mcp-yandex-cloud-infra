@@ -38,10 +38,7 @@ resource "yandex_resourcemanager_folder_iam_member" "runtime_registry_pull" {
 resource "yandex_container_registry_iam_binding" "publisher_push" {
   registry_id = yandex_container_registry.birzha.id
   role        = "container-registry.images.pusher"
-
-  members = [
-    "serviceAccount:${yandex_iam_service_account.publisher.id}",
-  ]
+  members     = ["serviceAccount:${yandex_iam_service_account.publisher.id}"]
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "terraform_wif_viewer" {
@@ -57,8 +54,7 @@ resource "yandex_iam_service_account_iam_member" "terraform_federated_credential
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_editor" {
-  count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
-
+  count       = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
   role        = "iam.workloadIdentityFederations.editor"
   member      = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
@@ -66,8 +62,7 @@ resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_editor" {
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_user" {
-  count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
-
+  count       = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
   role        = "iam.workloadIdentityFederations.user"
   member      = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
@@ -75,8 +70,7 @@ resource "yandex_resourcemanager_folder_iam_member" "wif_bootstrap_user" {
 }
 
 resource "yandex_iam_service_account_iam_member" "wif_bootstrap_federated_credential_editor" {
-  count = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
-
+  count              = var.wif_bootstrap_deployer_service_account_id == null ? 0 : 1
   service_account_id = yandex_iam_service_account.publisher.id
   role               = "iam.serviceAccounts.federatedCredentialEditor"
   member             = "serviceAccount:${var.wif_bootstrap_deployer_service_account_id}"
@@ -84,8 +78,7 @@ resource "yandex_iam_service_account_iam_member" "wif_bootstrap_federated_creden
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "federated_credential_update_user" {
-  count = var.federated_credential_update_deployer_service_account_id == null ? 0 : 1
-
+  count       = var.federated_credential_update_deployer_service_account_id == null ? 0 : 1
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
   role        = "iam.workloadIdentityFederations.user"
   member      = "serviceAccount:${var.federated_credential_update_deployer_service_account_id}"
@@ -93,8 +86,7 @@ resource "yandex_resourcemanager_folder_iam_member" "federated_credential_update
 }
 
 resource "yandex_iam_service_account_iam_member" "federated_credential_update_editor" {
-  count = var.federated_credential_update_deployer_service_account_id == null ? 0 : 1
-
+  count              = var.federated_credential_update_deployer_service_account_id == null ? 0 : 1
   service_account_id = yandex_iam_service_account.publisher.id
   role               = "iam.serviceAccounts.federatedCredentialEditor"
   member             = "serviceAccount:${var.federated_credential_update_deployer_service_account_id}"
@@ -106,31 +98,37 @@ resource "yandex_iam_workload_identity_oidc_federation" "github_image_publisher"
   name        = "birzha-mcp-forecast-github-publisher"
   description = "GitHub Actions OIDC federation for BIRZHA TEST image publishing"
   disabled    = false
-
-  audiences = [
-    "https://github.com/alexpmtk-afk",
-  ]
-  issuer   = "https://token.actions.githubusercontent.com"
-  jwks_url = "https://token.actions.githubusercontent.com/.well-known/jwks"
-
-  labels = local.labels
-
-  depends_on = [
-    yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor,
-  ]
+  audiences   = ["https://github.com/alexpmtk-afk"]
+  issuer      = "https://token.actions.githubusercontent.com"
+  jwks_url    = "https://token.actions.githubusercontent.com/.well-known/jwks"
+  labels      = local.labels
+  depends_on  = [yandex_resourcemanager_folder_iam_member.wif_bootstrap_editor]
 }
 
 resource "yandex_iam_workload_identity_federated_credential" "github_image_publisher" {
   service_account_id  = yandex_iam_service_account.publisher.id
   federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
   external_subject_id = "repo:alexpmtk-afk@309119594/birzha-mcp-forecast@1350648480:ref:refs/heads/main"
-
   depends_on = [
     yandex_resourcemanager_folder_iam_member.wif_bootstrap_user,
     yandex_iam_service_account_iam_member.wif_bootstrap_federated_credential_editor,
     yandex_resourcemanager_folder_iam_member.federated_credential_update_user,
     yandex_iam_service_account_iam_member.federated_credential_update_editor,
   ]
+}
+
+resource "yandex_ydb_database_serverless" "state" {
+  folder_id           = yandex_resourcemanager_folder.birzha_test.id
+  name                = "birzha-mcp-forecast-state"
+  description         = "Durable immutable Forecast Journal and append-only Outcome state"
+  deletion_protection = true
+  labels              = local.labels
+}
+
+resource "yandex_ydb_database_iam_binding" "runtime_editor" {
+  database_id = yandex_ydb_database_serverless.state.id
+  role        = "ydb.editor"
+  members     = ["serviceAccount:${yandex_iam_service_account.runtime.id}"]
 }
 
 resource "yandex_serverless_container" "mcp" {
@@ -140,25 +138,24 @@ resource "yandex_serverless_container" "mcp" {
   description        = "Private Streamable HTTP BIRZHA MCP Forecast TEST service"
   memory             = 512
   cores              = 1
-  execution_timeout  = "60s"
+  execution_timeout  = "120s"
   service_account_id = yandex_iam_service_account.runtime.id
 
-  runtime {
-    type = "http"
-  }
+  runtime { type = "http" }
 
   image {
     url = var.mcp_image_url
     environment = {
-      MCP_ALLOWED_HOSTS    = var.mcp_allowed_hosts
-      MCP_ALLOWED_ORIGINS  = var.mcp_allowed_origins
-      BIRZHA_SOURCE_COMMIT = var.source_commit_sha
+      MCP_ALLOWED_HOSTS     = var.mcp_allowed_hosts
+      MCP_ALLOWED_ORIGINS   = var.mcp_allowed_origins
+      BIRZHA_SOURCE_COMMIT  = var.source_commit_sha
+      BIRZHA_STATE_BACKEND  = "ydb"
+      YDB_CONNECTION_STRING = yandex_ydb_database_serverless.state.ydb_full_endpoint
     }
   }
 
-  labels = merge(local.labels, {
-    source_sha = substr(var.source_commit_sha, 0, 16)
-  })
+  labels = merge(local.labels, { source_sha = substr(var.source_commit_sha, 0, 16) })
+  depends_on = [yandex_ydb_database_iam_binding.runtime_editor]
 }
 
 resource "yandex_serverless_container_iam_member" "gateway_invoker" {
@@ -173,7 +170,7 @@ resource "yandex_api_gateway" "mcp" {
   folder_id         = yandex_resourcemanager_folder.birzha_test.id
   name              = "birzha-mcp-forecast-test-gateway"
   description       = "Public TEST gateway to the private BIRZHA MCP Forecast container"
-  execution_timeout = "60s"
+  execution_timeout = "120s"
   labels            = local.labels
 
   spec = templatefile("${path.module}/gateway.yaml.tftpl", {
