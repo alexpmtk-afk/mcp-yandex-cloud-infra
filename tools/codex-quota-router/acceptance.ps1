@@ -51,12 +51,12 @@ try {
   Set-Content -Path $transcript -Value @($l1,$l2) -Encoding UTF8
   $router = Join-Path $InstallDir 'bin\quota-router.js'
 
-  $simple = @{ session_id='acceptance'; turn_id='simple'; transcript_path=$transcript; cwd=$tmp; hook_event_name='UserPromptSubmit'; model='gpt-5.6-luna'; permission_mode='default'; prompt='Покажи последний commit и статус workflow' } | ConvertTo-Json -Compress
+  $simple = @{ session_id='acceptance'; turn_id='simple'; transcript_path=$transcript; cwd=$tmp; hook_event_name='UserPromptSubmit'; model='gpt-5.6-luna'; permission_mode='default'; prompt='Show the latest commit and workflow status' } | ConvertTo-Json -Compress
   $simpleJson = ($simple | & node $router) | ConvertFrom-Json
   if ($simpleJson.decision -eq 'block' -or -not $simpleJson.hookSpecificOutput.additionalContext) { Fail 'simple_preflight' 'Simple Luna task was not allowed.' }
   Pass 'simple_preflight_luna_allowed'
 
-  $heavy = @{ session_id='acceptance'; turn_id='heavy'; transcript_path=$transcript; cwd=$tmp; hook_event_name='UserPromptSubmit'; model='gpt-5.6-luna'; permission_mode='default'; prompt='Найди и исправь сложную интеграционную ошибку MCP между GitHub, Yandex Cloud и API, затем протестируй' } | ConvertTo-Json -Compress
+  $heavy = @{ session_id='acceptance'; turn_id='heavy'; transcript_path=$transcript; cwd=$tmp; hook_event_name='UserPromptSubmit'; model='gpt-5.6-luna'; permission_mode='default'; prompt='Find and fix a complex MCP integration bug across GitHub, Yandex Cloud, and API, then run integration tests' } | ConvertTo-Json -Compress
   $heavyJson = ($heavy | & node $router) | ConvertFrom-Json
   if ($heavyJson.decision -ne 'block' -or $heavyJson.reason -notmatch 'gpt-5\.6-(terra|sol)') { Fail 'heavy_preflight' 'Heavy Luna task did not route upward.' }
   Pass 'heavy_preflight_routes_up'
