@@ -1,12 +1,14 @@
 name: Codex Quota Router v0.3 PR Verify
 
 on:
+  workflow_call:
   pull_request:
     branches:
       - main
     paths:
       - 'tools/codex-quota-router/**'
       - '.github/workflows/tooling-codex-quota-router-v0.3-pr.yml'
+      - '.github/workflows/tooling-codex-quota-router-v0.1.yml'
 
 jobs:
   windows-verify:
