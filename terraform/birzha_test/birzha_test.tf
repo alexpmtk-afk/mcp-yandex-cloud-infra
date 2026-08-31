@@ -211,7 +211,7 @@ resource "yandex_serverless_container" "mcp" {
       BIRZHA_SOURCE_COMMIT     = var.source_commit_sha
       BIRZHA_STATE_BACKEND     = "ydb"
       BIRZHA_REQUIRE_MCP_AUTH  = "true"
-      BIRZHA_SECURITY_REVISION = "m8-auth-v4"
+      BIRZHA_SECURITY_REVISION = "m8-auth-v5"
       YDB_CONNECTION_STRING    = yandex_ydb_database_serverless.state.ydb_full_endpoint
     }
   }
@@ -224,6 +224,7 @@ resource "yandex_serverless_container" "mcp" {
     yandex_lockbox_secret_iam_member.runtime_mcp_auth,
     yandex_lockbox_secret_iam_member.deployer_mcp_auth_metadata,
     yandex_iam_service_account_iam_member.terraform_runtime_user,
+    yandex_resourcemanager_folder_iam_member.terraform_secret_revision_editor,
   ]
 }
 
