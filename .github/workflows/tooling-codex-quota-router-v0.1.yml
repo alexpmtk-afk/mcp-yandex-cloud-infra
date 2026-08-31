@@ -1,4 +1,4 @@
-name: Codex Quota Router v0.1
+name: Codex Quota Router v0.2
 
 on:
   push:
@@ -19,21 +19,42 @@ jobs:
         with:
           node-version: '22'
 
-      - name: Unit tests
+      - name: Router unit tests
         shell: pwsh
         run: node .\tools\codex-quota-router\test\router.test.js
+
+      - name: Proxy routing unit tests
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\proxy.test.js
+
+      - name: Transparent stdio proxy e2e
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\proxy-e2e.test.js
 
       - name: Parse PowerShell scripts
         shell: pwsh
         run: |
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\tools\codex-quota-router\install.ps1), [ref]$null, [ref]$errors)
-          if ($errors.Count -gt 0) { $errors | Format-List; throw 'install.ps1 parse failed' }
-          $errors = $null
-          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\tools\codex-quota-router\uninstall.ps1), [ref]$null, [ref]$errors)
-          if ($errors.Count -gt 0) { $errors | Format-List; throw 'uninstall.ps1 parse failed' }
+          $scripts = @(
+            '.\tools\codex-quota-router\install.ps1',
+            '.\tools\codex-quota-router\uninstall.ps1',
+            '.\tools\codex-quota-router\install-proxy.ps1',
+            '.\tools\codex-quota-router\uninstall-proxy.ps1'
+          )
+          foreach ($script in $scripts) {
+            $errors = $null
+            [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path $script), [ref]$null, [ref]$errors)
+            if ($errors.Count -gt 0) { $errors | Format-List; throw "$script parse failed" }
+          }
 
-      - name: Simulate Windows install
+      - name: Compile Windows launcher shim
+        shell: powershell
+        run: |
+          $out = Join-Path $env:RUNNER_TEMP 'codex-router-shim.exe'
+          Add-Type -Path .\tools\codex-quota-router\shim\CodexRouterShim.cs -OutputAssembly $out -OutputType ConsoleApplication
+          if (-not (Test-Path $out)) { throw 'shim compile failed' }
+          Write-Host ("SHIM_SHA256=" + (Get-FileHash $out -Algorithm SHA256).Hash)
+
+      - name: Simulate v0.1 hook install
         shell: pwsh
         run: |
           $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP '.codex-test'
@@ -83,7 +104,7 @@ jobs:
           if ($blockJson.decision -ne 'block') { throw 'model route block failed' }
           if ($blockJson.reason -notmatch 'gpt-5.6-terra') { throw 'Terra recommendation missing' }
 
-      - name: Rollback test
+      - name: Rollback hook install test
         shell: pwsh
         run: |
           $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP '.codex-test'
