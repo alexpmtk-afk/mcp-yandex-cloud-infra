@@ -13,7 +13,7 @@ permissions:
 
 concurrency:
   group: powershell-bridge
-  cancel-in-progress: false
+  cancel-in-progress: true
 
 jobs:
   execute:
@@ -21,24 +21,34 @@ jobs:
     runs-on: [self-hosted, Windows, X64, codex-bridge]
     timeout-minutes: 10
     steps:
-      - name: Checkout command
-        uses: actions/checkout@v4
-        with:
-          ref: tooling/powershell-bridge-v0.1
-          fetch-depth: 1
-
-      - name: Execute approved PowerShell command
+      - name: Fetch and execute approved PowerShell command
         shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BRIDGE_REF: tooling/powershell-bridge-v0.1
         run: |
           $ErrorActionPreference = 'Stop'
           Write-Host '=== POWERSHELL_BRIDGE_BEGIN ==='
           Write-Host "Commit: $env:GITHUB_SHA"
           Write-Host "Runner: $env:RUNNER_NAME"
           Write-Host "Computer: $env:COMPUTERNAME"
+
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/tools/powershell-bridge/command.ps1?ref=$env:BRIDGE_REF"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'powershell-bridge'
+          }
+          $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+          $raw = ($resp.content -replace '\s','')
+          $tmp = Join-Path $env:RUNNER_TEMP 'bridge-command.ps1'
+          [IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String($raw))
+
           Write-Host '--- command.ps1 ---'
-          Get-Content "tools/powershell-bridge/command.ps1"
+          Get-Content $tmp
           Write-Host '--- output ---'
-          & "tools/powershell-bridge/command.ps1"
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp
           $exit = $LASTEXITCODE
           if ($null -eq $exit) { $exit = 0 }
           Write-Host "--- exit_code=$exit ---"
