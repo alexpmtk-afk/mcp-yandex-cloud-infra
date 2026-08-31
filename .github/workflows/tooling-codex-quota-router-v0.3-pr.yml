@@ -71,7 +71,7 @@ jobs:
           Remove-Item Env:CODEX_ROUTER_LOCALAPPDATA -ErrorAction SilentlyContinue
 
       - name: Standalone launcher routing e2e
-        shell: powershell
+        shell: pwsh
         run: |
           $launcher = Join-Path $env:RUNNER_TEMP 'codex-router.exe'
           $fake = Join-Path $env:RUNNER_TEMP 'fake-codex.exe'
