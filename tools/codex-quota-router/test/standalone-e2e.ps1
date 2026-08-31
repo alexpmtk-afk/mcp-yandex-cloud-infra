@@ -86,7 +86,11 @@ public static class FakeCodex {
     try { $response = $responseText | ConvertFrom-Json }
     catch { throw "launcher returned invalid JSON: $responseText" }
     if ($response.params.threadId -ne 'existing-old-thread') { throw 'threadId was not preserved' }
-    if ($response.params.model -ne 'gpt-5.6-luna' -or $response.params.effort -ne 'low') { throw 'simple route is not Luna/low' }
+    if ($response.params.model -ne 'gpt-5.6-luna' -or $response.params.effort -ne 'low') {
+        $historyPath = Join-Path $codexHome 'quota-router\history.jsonl'
+        $historyTail = if (Test-Path -LiteralPath $historyPath) { Get-Content -LiteralPath $historyPath -Tail 1 } else { '<missing>' }
+        throw "simple route is not Luna/low; model=$($response.params.model); effort=$($response.params.effort); history=$historyTail"
+    }
     if ($response.params.collaborationMode.settings.model -ne 'gpt-5.6-luna') { throw 'collaboration model was not routed' }
     if ($response.params.collaborationMode.settings.reasoning_effort -ne 'low') { throw 'collaboration effort was not routed' }
     if ($response.params.collaborationMode.settings.developer_instructions -ne 'preserve-me') { throw 'developer instructions changed' }
