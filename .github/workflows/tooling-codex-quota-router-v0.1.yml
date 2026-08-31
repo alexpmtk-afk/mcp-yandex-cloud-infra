@@ -1,0 +1,94 @@
+name: Codex Quota Router v0.1
+
+on:
+  push:
+    branches:
+      - tooling/codex-quota-router-v0.1
+    paths:
+      - 'tools/codex-quota-router/**'
+      - '.github/workflows/tooling-codex-quota-router-v0.1.yml'
+  workflow_dispatch:
+
+jobs:
+  windows-test:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Unit tests
+        shell: pwsh
+        run: node .\tools\codex-quota-router\test\router.test.js
+
+      - name: Parse PowerShell scripts
+        shell: pwsh
+        run: |
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\tools\codex-quota-router\install.ps1), [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List; throw 'install.ps1 parse failed' }
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile((Resolve-Path .\tools\codex-quota-router\uninstall.ps1), [ref]$null, [ref]$errors)
+          if ($errors.Count -gt 0) { $errors | Format-List; throw 'uninstall.ps1 parse failed' }
+
+      - name: Simulate Windows install
+        shell: pwsh
+        run: |
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP '.codex-test'
+          New-Item -ItemType Directory -Force -Path $env:CODEX_HOME | Out-Null
+          @'
+          model = "gpt-5.6-sol"
+          model_reasoning_effort = "high"
+
+          [mcp_servers.example]
+          url = "https://example.invalid/mcp"
+          required = false
+          '@ | Set-Content (Join-Path $env:CODEX_HOME 'config.toml') -Encoding utf8
+
+          & .\tools\codex-quota-router\install.ps1 -SkipUsageMonitor
+
+          node (Join-Path $env:CODEX_HOME 'quota-router\test\router.test.js')
+
+          $hooks = Get-Content (Join-Path $env:CODEX_HOME 'hooks.json') -Raw | ConvertFrom-Json
+          if (-not $hooks.hooks.UserPromptSubmit) { throw 'UserPromptSubmit hook missing' }
+          if (-not $hooks.hooks.Stop) { throw 'Stop hook missing' }
+
+          $cfg = Get-Content (Join-Path $env:CODEX_HOME 'config.toml') -Raw
+          if ($cfg -notmatch '(?m)^model = "gpt-5.6-luna"$') { throw 'default Luna model not set' }
+          if ($cfg -notmatch '(?m)^model_reasoning_effort = "low"$') { throw 'default low effort not set' }
+          if ($cfg -notmatch '(?m)^\[mcp_servers\.example\]$') { throw 'existing config table was damaged' }
+
+      - name: Preflight allow and block tests
+        shell: pwsh
+        run: |
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP '.codex-test'
+          $session = Join-Path $env:RUNNER_TEMP 'session.jsonl'
+          $reset5 = [DateTimeOffset]::UtcNow.AddHours(4).ToUnixTimeSeconds()
+          $reset7 = [DateTimeOffset]::UtcNow.AddDays(5).ToUnixTimeSeconds()
+          @"
+          {"timestamp":"2026-08-31T12:00:00Z","type":"turn_context","payload":{"turn_id":"t0","model":"gpt-5.6-luna","effort":"low","model_context_window":1050000}}
+          {"timestamp":"2026-08-31T12:01:00Z","type":"event_msg","payload":{"type":"token_count","info":{"total_token_usage":{"input_tokens":1000,"cached_input_tokens":500,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":1120},"last_token_usage":{"input_tokens":1000,"cached_input_tokens":500,"output_tokens":100,"reasoning_output_tokens":20,"total_tokens":1120}},"rate_limits":{"plan_type":"plus","primary":{"used_percent":20,"window_minutes":300,"resets_at":$reset5},"secondary":{"used_percent":10,"window_minutes":10080,"resets_at":$reset7}}}}
+          "@ | Set-Content $session -Encoding utf8
+
+          $allow = @{session_id='s1';turn_id='t1';transcript_path=$session;cwd='C:\work';hook_event_name='UserPromptSubmit';model='gpt-5.6-luna';permission_mode='default';prompt='Покажи последний commit и статус workflow'} | ConvertTo-Json -Compress
+          $allowOut = $allow | node (Join-Path $env:CODEX_HOME 'quota-router\bin\quota-router.js')
+          $allowJson = $allowOut | ConvertFrom-Json
+          if (-not $allowJson.hookSpecificOutput.additionalContext) { throw 'allow preflight failed' }
+
+          $block = @{session_id='s1';turn_id='t2';transcript_path=$session;cwd='C:\work';hook_event_name='UserPromptSubmit';model='gpt-5.6-luna';permission_mode='default';prompt='Найди и исправь сложную интеграционную ошибку MCP между GitHub, Yandex Cloud и API, затем протестируй'} | ConvertTo-Json -Compress
+          $blockOut = $block | node (Join-Path $env:CODEX_HOME 'quota-router\bin\quota-router.js')
+          $blockJson = $blockOut | ConvertFrom-Json
+          if ($blockJson.decision -ne 'block') { throw 'model route block failed' }
+          if ($blockJson.reason -notmatch 'gpt-5.6-terra') { throw 'Terra recommendation missing' }
+
+      - name: Rollback test
+        shell: pwsh
+        run: |
+          $env:CODEX_HOME = Join-Path $env:RUNNER_TEMP '.codex-test'
+          & .\tools\codex-quota-router\uninstall.ps1 -KeepUsageMonitor
+          if (Test-Path (Join-Path $env:CODEX_HOME 'quota-router')) { throw 'quota-router files not removed' }
+          $hooks = Get-Content (Join-Path $env:CODEX_HOME 'hooks.json') -Raw | ConvertFrom-Json
+          if (@($hooks.hooks.UserPromptSubmit).Count -ne 0) { throw 'router UserPromptSubmit hook not removed' }
+          if (@($hooks.hooks.Stop).Count -ne 0) { throw 'router Stop hook not removed' }
