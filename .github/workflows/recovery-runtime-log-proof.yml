@@ -1,0 +1,60 @@
+name: Recovery Runtime Log Proof
+
+on:
+  push:
+    branches: [recovery/marketplaces-mcp-deploy-20260830]
+    paths: ['.github/workflows/recovery-runtime-log-proof.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  proof:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsS -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Prove recent Yandex runtime activity without exposing payloads
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create marketplace-log-proof || true
+          yc config set service-account-key "$KEY"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          yc config set folder-id "$FOLDER_ID"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          REVISION_ID="$(yc serverless container revision list --container-id "$CONTAINER_ID" --format json | jq -r '.[0].id')"
+          test -n "$CONTAINER_ID"; test -n "$REVISION_ID"
+          yc logging read --folder-id "$FOLDER_ID" --since '20m ago' --limit 500 --format json > "$RUNNER_TEMP/logs.json" || printf '[]' > "$RUNNER_TEMP/logs.json"
+          TOTAL="$(jq 'length' "$RUNNER_TEMP/logs.json")"
+          CONTAINER_MATCH="$(jq --arg cid "$CONTAINER_ID" --arg rid "$REVISION_ID" '[.[] | select(((.resource.id // .resource_id // "") == $cid) or ((.resource.id // .resource_id // "") == $rid) or ((.json_payload.container_id // "") == $cid) or ((.json_payload.revision_id // "") == $rid))] | length' "$RUNNER_TEMP/logs.json")"
+          echo "folder_recent_log_entries=$TOTAL"
+          echo "current_container_or_revision_log_entries=$CONTAINER_MATCH"
+          if [[ "$CONTAINER_MATCH" -gt 0 ]]; then
+            echo "YANDEX_RUNTIME_LOG_PROOF=PASS"
+          elif [[ "$TOTAL" -gt 0 ]]; then
+            echo "YANDEX_FOLDER_RUNTIME_ACTIVITY=PASS"
+          else
+            echo "YANDEX_RUNTIME_LOG_PROOF=NO_ENTRIES"
+            exit 1
+          fi
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/logs.json"
