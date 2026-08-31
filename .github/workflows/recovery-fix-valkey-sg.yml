@@ -1,0 +1,53 @@
+name: Recovery Fix Valkey Security Group
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - '.github/workflows/recovery-fix-valkey-sg.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Create stateful Valkey TLS security group
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create marketplaces-sg || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          NETWORK_ID="$(yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-net") | .id' | head -1)"
+          test -n "$FOLDER_ID"; test -n "$NETWORK_ID"
+          SG_ID="$(yc vpc security-group list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-valkey-sg") | .id' | head -1)"
+          if [[ -z "$SG_ID" ]]; then
+            SG_ID="$(yc vpc security-group create --name marketplaces-mcp-valkey-sg --folder-id "$FOLDER_ID" --network-id "$NETWORK_ID" --rule 'direction=ingress,port=6380,protocol=tcp,v4-cidrs=[10.60.0.0/24]' --format json | jq -r '.id')"
+          fi
+          test -n "$SG_ID"
+          echo "valkey_security_group_ready=true"
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
