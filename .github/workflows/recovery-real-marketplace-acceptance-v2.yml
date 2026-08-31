@@ -15,7 +15,7 @@ jobs:
     environment: test
     steps:
       - uses: actions/checkout@v4
-      - name: Install Yandex Cloud CLI
+      - name: Install Yandex Cloud CLI and test client
         shell: bash
         run: |
           set -euo pipefail
@@ -24,6 +24,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
       - name: Real remote-only acceptance
         shell: bash
         env:
