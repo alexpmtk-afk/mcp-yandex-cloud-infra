@@ -1,0 +1,314 @@
+name: Deploy BIRZHA MCP TEST runtime v2
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-runtime-apply-v2.yml"
+      - "terraform/birzha_test/**"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-current-test-runtime
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: b84da3ac95b8d5412f9614f91aa04c3273fb5075
+  IMAGE_DIGEST: sha256:e160e6a12ea7d782f1446f7895a59f6b4f3354dd2f3a34969a017d65862e4c3e
+  IMAGE_URL: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:e160e6a12ea7d782f1446f7895a59f6b4f3354dd2f3a34969a017d65862e4c3e
+  EXPECTED_REGISTRY_ID: crpk5qvf4p7kcqil2u3v
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 40
+    steps:
+      - name: Checkout infrastructure main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Assert immutable application coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$IMAGE_URL" == "cr.yandex/${EXPECTED_REGISTRY_ID}/birzha-mcp-forecast@${IMAGE_DIGEST}" ]]
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize BIRZHA remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Plan phase one with fail-closed remote Host
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan -input=false -no-color \
+            -out=phase1.tfplan \
+            -var="source_commit_sha=${SOURCE_SHA}" \
+            -var="mcp_image_url=${IMAGE_URL}" \
+            -var="mcp_allowed_hosts=__remote_host_not_configured__.invalid" \
+            -var="mcp_allowed_origins="
+          terraform -chdir=terraform/birzha_test show -json phase1.tfplan > "$RUNNER_TEMP/phase1.json"
+
+      - name: Assert phase-one resource safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase1.json').read_text())
+          changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          required={
+            'yandex_ydb_database_serverless.state',
+            'yandex_ydb_database_iam_binding.runtime_editor',
+            'yandex_serverless_container.mcp[0]',
+            'yandex_serverless_container_iam_member.gateway_invoker[0]',
+            'yandex_api_gateway.mcp[0]',
+          }
+          if set(changes) != required:
+              raise SystemExit(f'Unexpected phase-one delta: {sorted(changes)}')
+          if any('delete' in x['change']['actions'] for x in changes.values()):
+              raise SystemExit('Destroy or replacement is forbidden')
+          c=changes['yandex_serverless_container.mcp[0]']['change']['after']
+          if c.get('concurrency') != 1:
+              raise SystemExit(f'Expected concurrency=1, got {c.get("concurrency")}')
+          image=c['image'][0]
+          if image.get('url') != os.environ['IMAGE_URL']:
+              raise SystemExit('Immutable image URL mismatch')
+          y=changes['yandex_ydb_database_serverless.state']['change']['after']
+          if y.get('deletion_protection') is not True:
+              raise SystemExit('YDB deletion protection is not enabled')
+          print('PHASE1_PLAN_PASS')
+          PY
+
+      - name: Apply phase one exactly
+        shell: bash
+        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve phase1.tfplan
+
+      - name: Capture real Gateway and YDB outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/phase1-outputs.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase1-outputs.json').read_text())
+          v=lambda k:o[k]['value']
+          required=('test_folder_id','container_registry_id','runtime_service_account_id','gateway_service_account_id','ydb_database_id','serverless_container_id','api_gateway_id','api_gateway_domain','mcp_endpoint')
+          for k in required:
+              if not v(k): raise SystemExit(f'Missing output {k}')
+          if v('container_registry_id') != os.environ['EXPECTED_REGISTRY_ID']:
+              raise SystemExit('Registry drift')
+          domain=v('api_gateway_domain').strip()
+          if not domain or '/' in domain: raise SystemExit(f'Bad gateway domain: {domain!r}')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'GATEWAY_DOMAIN={domain}\n')
+              f.write(f'MCP_ENDPOINT=https://{domain}/mcp\n')
+          print('PHASE1_OUTPUTS_PASS')
+          print('gateway_domain='+domain)
+          print('ydb_database_id='+v('ydb_database_id'))
+          PY
+
+      - name: Plan phase two with exact Gateway Host
+        shell: bash
+        run: |
+          set -euo pipefail
+          REAL_HOSTS="${GATEWAY_DOMAIN},${GATEWAY_DOMAIN}:*"
+          terraform -chdir=terraform/birzha_test plan -input=false -no-color \
+            -out=phase2.tfplan \
+            -var="source_commit_sha=${SOURCE_SHA}" \
+            -var="mcp_image_url=${IMAGE_URL}" \
+            -var="mcp_allowed_hosts=${REAL_HOSTS}" \
+            -var="mcp_allowed_origins=" 
+          terraform -chdir=terraform/birzha_test show -json phase2.tfplan > "$RUNNER_TEMP/phase2.json"
+
+      - name: Assert complete runtime contract after YDB exists
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'phase2.json').read_text())
+          changes={x['address']:x for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          if set(changes) != {'yandex_serverless_container.mcp[0]'}:
+              raise SystemExit(f'Unexpected phase-two delta: {sorted(changes)}')
+          item=changes['yandex_serverless_container.mcp[0]']
+          if 'delete' in item['change']['actions']:
+              raise SystemExit('Container replacement forbidden')
+          c=item['change']['after']
+          if c.get('concurrency') != 1: raise SystemExit('Concurrency drift')
+          image=c['image'][0]
+          if image.get('url') != os.environ['IMAGE_URL']: raise SystemExit('Image drift')
+          env=image.get('environment') or {}
+          expected_hosts=f"{os.environ['GATEWAY_DOMAIN']},{os.environ['GATEWAY_DOMAIN']}:*"
+          expected={
+            'MCP_ALLOWED_HOSTS':expected_hosts,
+            'MCP_ALLOWED_ORIGINS':'',
+            'BIRZHA_SOURCE_COMMIT':os.environ['SOURCE_SHA'],
+            'BIRZHA_STATE_BACKEND':'ydb',
+          }
+          for k,v in expected.items():
+              if env.get(k) != v: raise SystemExit(f'{k} mismatch: {env.get(k)!r}')
+          ydb=env.get('YDB_CONNECTION_STRING')
+          if not isinstance(ydb,str) or not ydb.strip(): raise SystemExit('YDB connection string missing')
+          print('PHASE2_RUNTIME_CONTRACT_PASS')
+          PY
+
+      - name: Apply phase two exactly
+        shell: bash
+        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve phase2.tfplan
+
+      - name: Wait for remote YDB-backed health
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL="https://${GATEWAY_DOMAIN}/healthz"
+          for i in $(seq 1 36); do
+            if curl --proto '=https' --tlsv1.2 --silent --show-error --fail --max-time 15 "$URL" > "$RUNNER_TEMP/health.json"; then
+              if python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'health.json').read_text())
+          assert d.get('status')=='ok', d
+          assert d.get('service')=='BIRZHA MCP FORECAST', d
+          assert d.get('version')=='0.1.0', d
+          assert d.get('state_backend')=='ydb', d
+          print('REMOTE_HEALTH_YDB_PASS')
+          PY
+              then exit 0; fi
+            fi
+            sleep 5
+          done
+          cat "$RUNNER_TEMP/health.json" 2>/dev/null || true
+          exit 1
+
+      - name: Install official MCP client
+        run: python -m pip install --disable-pip-version-check 'mcp==2.1.1'
+
+      - name: Prove remote MCP, real MOEX and durable Forecast storage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio, json, os
+          from mcp import Client
+          async def main():
+              async with Client(os.environ['MCP_ENDPOINT']) as client:
+                  listed=await client.list_tools()
+                  names={t.name for t in listed.tools}
+                  required={'system.version','market.resolve_instrument','market.snapshot','forecast.create','forecast.get','forecast.list','outcome.evaluate','validation.walk_forward','validation.assess_model'}
+                  assert not required-names, required-names
+                  version=await client.call_tool('system.version', {})
+                  assert not version.is_error
+                  assert version.structured_content['service']=='BIRZHA MCP FORECAST'
+                  resolved=await client.call_tool('market.resolve_instrument', {'symbol':'SBER'})
+                  assert not resolved.is_error
+                  assert resolved.structured_content['secid']=='SBER'
+                  created=await client.call_tool('forecast.create', {'symbol':'SBER'})
+                  assert not created.is_error, created
+                  c=created.structured_content
+                  fid=c.get('forecast_id') or (c.get('record') or {}).get('forecast_id')
+                  assert fid, c
+                  fetched=await client.call_tool('forecast.get', {'forecast_id':fid})
+                  assert not fetched.is_error, fetched
+                  f=fetched.structured_content
+                  assert f.get('forecast_id')==fid, f
+                  assert f.get('symbol')=='SBER', f
+                  print(json.dumps({'remote_mcp':'PASS','tool_count':len(names),'resolved':'SBER','forecast_id':fid,'direction':f.get('direction'),'engine':f.get('engine_version')},sort_keys=True))
+          asyncio.run(main())
+          PY
+
+      - name: Verify zero Terraform drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          REAL_HOSTS="${GATEWAY_DOMAIN},${GATEWAY_DOMAIN}:*"
+          set +e
+          terraform -chdir=terraform/birzha_test plan -detailed-exitcode -input=false -no-color \
+            -var="source_commit_sha=${SOURCE_SHA}" \
+            -var="mcp_image_url=${IMAGE_URL}" \
+            -var="mcp_allowed_hosts=${REAL_HOSTS}" \
+            -var="mcp_allowed_origins=" > "$RUNNER_TEMP/drift.txt"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then cat "$RUNNER_TEMP/drift.txt"; exit "$RC"; fi
+          echo POST_DEPLOY_DRIFT_NONE
+
+      - name: Write deployment evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/final.json"
+          mkdir -p "$RUNNER_TEMP/evidence"
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          r=Path(os.environ['RUNNER_TEMP']); o=json.loads((r/'final.json').read_text()); v=lambda k:o[k]['value']
+          e={
+            'schema':'BIRZHA_MCP_TEST_DEPLOYMENT_V2',
+            'timestamp_utc':datetime.now(timezone.utc).isoformat(),
+            'infra_sha':os.environ['GITHUB_SHA'],
+            'application_source_sha':os.environ['SOURCE_SHA'],
+            'image_digest':os.environ['IMAGE_DIGEST'],
+            'image_url':os.environ['IMAGE_URL'],
+            'folder_id':v('test_folder_id'),
+            'registry_id':v('container_registry_id'),
+            'ydb_database_id':v('ydb_database_id'),
+            'serverless_container_id':v('serverless_container_id'),
+            'api_gateway_id':v('api_gateway_id'),
+            'api_gateway_domain':v('api_gateway_domain'),
+            'mcp_endpoint':v('mcp_endpoint'),
+            'state_backend':'ydb',
+            'container_concurrency':1,
+            'acceptance':{'phase1':'PASS','phase2':'PASS','remote_health':'PASS','remote_mcp':'PASS','real_moex':'PASS','durable_forecast_roundtrip':'PASS','terraform_drift':'NONE'},
+          }
+          (r/'evidence'/'deployment.json').write_text(json.dumps(e,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(e,sort_keys=True))
+          PY
+
+      - name: Upload deployment evidence
+        if: success()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-mcp-test-deployment-evidence-v2
+          path: ${{ runner.temp }}/evidence/deployment.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
