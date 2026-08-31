@@ -98,7 +98,8 @@ jobs:
           $request = '{"jsonrpc":"2.0","id":7,"method":"turn/start","params":{"threadId":"old-thread","model":"gpt-5.6-sol","effort":"medium","input":[{"type":"text","text":"Покажи список файлов в текущей папке. Ничего не изменяй.","text_elements":[]}]}}'
           $response = $request | & $launcher
           if ($LASTEXITCODE -ne 0) { throw "launcher exited $LASTEXITCODE" }
-          $json = $response | ConvertFrom-Json
+          $responseText = ($response -join "`n").TrimStart([char]0xFEFF)
+          $json = $responseText | ConvertFrom-Json
           if ($json.params.threadId -ne 'old-thread') { throw 'threadId not preserved' }
           if ($json.params.model -ne 'gpt-5.6-luna') { throw "expected Luna, got $($json.params.model)" }
           if ($json.params.effort -ne 'low') { throw "expected low, got $($json.params.effort)" }
