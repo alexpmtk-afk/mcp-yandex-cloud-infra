@@ -52,11 +52,13 @@ function scorePrompt(prompt) {
   if (systems.length >= 3) score += 8;
   if (systems.length >= 5) score += 8;
 
-  if (/\b(проведи|сделай|реализуй|исправь|разверни|перепиши)\b/i.test(text)) score += 4;
+  // JavaScript \b is ASCII-oriented, so Cyrillic command words must not be
+  // wrapped in \b. Otherwise Russian prompts are systematically underscored.
+  if (/(?:\b(?:do|make|implement|fix|deploy|rewrite)\b|проведи|сделай|реализуй|исправь|разверни|перепиши)/i.test(text)) score += 4;
   const architectureSignal = /architect|архитект|redesign|перепроект/i.test(text);
   const migrationSignal = /migrat|миграц|deploy|разверн|production|продакш/i.test(text);
   if (architectureSignal && migrationSignal) score = Math.max(score, 84);
-  if (/\b(только|лишь|один|одну|одного|кратко|quick|single)\b/i.test(text) && counts.heavy === 0) score -= 5;
+  if (/(?:\b(?:quick|single)\b|только|лишь|один|одну|одного|кратко)/i.test(text) && counts.heavy === 0) score -= 5;
 
   return { score: clamp(score, 0, 100), counts, systems };
 }
