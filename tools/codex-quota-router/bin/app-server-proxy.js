@@ -58,10 +58,15 @@ child.on('exit', (code, signal) => {
   process.exit(typeof code === 'number' ? code : 1);
 });
 
+function stripLeadingBom(value) {
+  return value && value.charCodeAt(0) === 0xFEFF ? value.slice(1) : value;
+}
+
 function forwardLine(rawLine) {
-  let out = rawLine;
+  const normalizedLine = stripLeadingBom(rawLine);
+  let out = normalizedLine;
   try {
-    const message = JSON.parse(rawLine);
+    const message = JSON.parse(normalizedLine);
     if (process.env.CODEX_ROUTER_DISABLE !== '1') {
       const result = rewriteClientMessage(message, { policy });
       if (result.routed) {
