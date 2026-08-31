@@ -1,0 +1,57 @@
+name: Recovery Allow Serverless To Valkey
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - '.github/workflows/recovery-allow-serverless-to-valkey.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  fix:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Allow Yandex Serverless service subnet to Valkey TLS
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create marketplaces-valkey-network-fix || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          test -n "$FOLDER_ID"
+          SG_ID="$(yc vpc security-group list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-valkey-sg") | .id' | head -1)"
+          test -n "$SG_ID"
+          if yc vpc security-group get "$SG_ID" --format json | jq -e '.rules[]? | select(.direction == "INGRESS" and .ports.from_port == "6380" and (.cidr_blocks.v4_cidr_blocks // [] | index("198.19.0.0/16")))' >/dev/null; then
+            echo "serverless_valkey_rule_already_present=true"
+          else
+            yc vpc security-group update-rules "$SG_ID" \
+              --add-rule 'direction=ingress,port=6380,protocol=tcp,v4-cidrs=[198.19.0.0/16]' \
+              --no-user-output
+            echo "serverless_valkey_rule_added=true"
+          fi
+          yc vpc security-group get "$SG_ID" --format json | jq '[.rules[] | {direction,protocol_name,ports,cidr_blocks}]'
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
