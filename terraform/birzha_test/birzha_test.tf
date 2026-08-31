@@ -206,12 +206,13 @@ resource "yandex_serverless_container" "mcp" {
   image {
     url = var.mcp_image_url
     environment = {
-      MCP_ALLOWED_HOSTS       = var.mcp_allowed_hosts
-      MCP_ALLOWED_ORIGINS     = var.mcp_allowed_origins
-      BIRZHA_SOURCE_COMMIT    = var.source_commit_sha
-      BIRZHA_STATE_BACKEND    = "ydb"
-      BIRZHA_REQUIRE_MCP_AUTH = "true"
-      YDB_CONNECTION_STRING   = yandex_ydb_database_serverless.state.ydb_full_endpoint
+      MCP_ALLOWED_HOSTS        = var.mcp_allowed_hosts
+      MCP_ALLOWED_ORIGINS      = var.mcp_allowed_origins
+      BIRZHA_SOURCE_COMMIT     = var.source_commit_sha
+      BIRZHA_STATE_BACKEND     = "ydb"
+      BIRZHA_REQUIRE_MCP_AUTH  = "true"
+      BIRZHA_SECURITY_REVISION = "m8-auth-v2"
+      YDB_CONNECTION_STRING    = yandex_ydb_database_serverless.state.ydb_full_endpoint
     }
   }
 
