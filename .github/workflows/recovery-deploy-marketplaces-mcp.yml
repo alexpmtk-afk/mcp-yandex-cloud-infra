@@ -1,0 +1,295 @@
+name: Recovery Deploy Marketplaces MCP
+
+on:
+  push:
+    branches:
+      - recovery/marketplaces-mcp-deploy-20260830
+    paths:
+      - 'app/**'
+      - '.github/workflows/recovery-deploy-marketplaces-mcp.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and resolve TEST resources
+        id: resolve
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create marketplaces-deploy || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID="b1gi4pr9msenirafh2c7"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-api-credentials") | .id' | head -1)"
+          ACTIVE_VERSION="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[] | select((.status // "") == "ACTIVE")][0].id // empty')"
+          RUNTIME_SA_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-runtime") | .id' | head -1)"
+          REGISTRY_ID="$(yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp") | .id' | head -1)"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          test -n "$SECRET_ID"; test -n "$ACTIVE_VERSION"; test -n "$RUNTIME_SA_ID"; test -n "$REGISTRY_ID"; test -n "$CONTAINER_ID"
+          echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "secret_version=$ACTIVE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "runtime_sa_id=$RUNTIME_SA_ID" >> "$GITHUB_OUTPUT"
+          echo "registry_id=$REGISTRY_ID" >> "$GITHUB_OUTPUT"
+          echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "resolved_test_resources=true"
+
+      - name: Ensure private VPC and Valkey
+        id: valkey
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resolve.outputs.folder_id }}
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          SECRET_VERSION: ${{ steps.resolve.outputs.secret_version }}
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$SECRET_VERSION" --format json --no-user-output > "$RUNNER_TEMP/marketplace-secret.json"
+          REDIS_PASSWORD="$(jq -r '.entries[] | select(.key == "redis_password") | .text_value' "$RUNNER_TEMP/marketplace-secret.json")"
+          test -n "$REDIS_PASSWORD"
+
+          NETWORK_ID="$(yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-net") | .id' | head -1)"
+          if [[ -z "$NETWORK_ID" ]]; then
+            NETWORK_ID="$(yc vpc network create --name marketplaces-mcp-net --folder-id "$FOLDER_ID" --format json | jq -r '.id')"
+          fi
+          test -n "$NETWORK_ID"
+
+          SUBNET_ID="$(yc vpc subnet list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-a") | .id' | head -1)"
+          if [[ -z "$SUBNET_ID" ]]; then
+            SUBNET_ID="$(yc vpc subnet create --name marketplaces-mcp-a --folder-id "$FOLDER_ID" --network-id "$NETWORK_ID" --zone ru-central1-a --range 10.60.0.0/24 --format json | jq -r '.id')"
+          fi
+          test -n "$SUBNET_ID"
+
+          SG_ID="$(yc vpc security-group list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-valkey-sg") | .id' | head -1)"
+          if [[ -z "$SG_ID" ]]; then
+            SG_ID="$(yc vpc security-group create --name marketplaces-mcp-valkey-sg --folder-id "$FOLDER_ID" --network-id "$NETWORK_ID" --rule 'direction=ingress,port=6380,protocol=tcp,v4-cidrs=[0.0.0.0/0]' --rule 'direction=egress,protocol=any,v4-cidrs=[0.0.0.0/0]' --format json | jq -r '.id')"
+          fi
+          test -n "$SG_ID"
+
+          CLUSTER_ID="$(yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-valkey") | .id' | head -1)"
+          if [[ -z "$CLUSTER_ID" ]]; then
+            yc managed-redis cluster create \
+              --name marketplaces-mcp-valkey \
+              --folder-id "$FOLDER_ID" \
+              --environment production \
+              --redis-version 9.0-valkey \
+              --network-id "$NETWORK_ID" \
+              --resource-preset hm2.nano \
+              --host "zone-id=ru-central1-a,subnet-id=$SUBNET_ID,assign-public-ip=false,replica-priority=100" \
+              --security-group-ids "$SG_ID" \
+              --enable-tls \
+              --disk-size 16GB \
+              --disk-type-id network-ssd \
+              --password "$REDIS_PASSWORD" \
+              --format json --no-user-output > "$RUNNER_TEMP/valkey-create.json"
+            CLUSTER_ID="$(jq -r '.id // .metadata.cluster_id // empty' "$RUNNER_TEMP/valkey-create.json")"
+            if [[ -z "$CLUSTER_ID" ]]; then
+              CLUSTER_ID="$(yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-valkey") | .id' | head -1)"
+            fi
+          fi
+          test -n "$CLUSTER_ID"
+          HOST_FQDN="$(yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[] | select((.role // "") == "MASTER")][0].name // .[0].name // empty')"
+          test -n "$HOST_FQDN"
+          echo "network_id=$NETWORK_ID" >> "$GITHUB_OUTPUT"
+          echo "cluster_id=$CLUSTER_ID" >> "$GITHUB_OUTPUT"
+          echo "host_fqdn=$HOST_FQDN" >> "$GITHUB_OUTPUT"
+          echo "valkey_private_tls_ready=true"
+
+      - name: Build and publish verified application image
+        id: image
+        shell: bash
+        env:
+          REGISTRY_ID: ${{ steps.resolve.outputs.registry_id }}
+        run: |
+          set -euo pipefail
+          SOURCE_SHA="$(sed -n 's/.*@\([0-9a-f]\{40\}\).*/\1/p' app/.source-revision)"
+          test "$SOURCE_SHA" = "8fb7dd64d5dda1559122d2293a4f812417b1330f"
+          python -m compileall -q app/core app/wb_mcp app/ozon_mcp app/ozon_perf_mcp
+          IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:${SOURCE_SHA:0:12}"
+          docker build --label "org.opencontainers.image.revision=$SOURCE_SHA" -t "$IMAGE" app
+          yc iam create-token | docker login --username iam --password-stdin cr.yandex
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "published_revision=$SOURCE_SHA"
+
+      - name: Deploy authenticated networked MCP revision
+        id: deploy
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resolve.outputs.folder_id }}
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          SECRET_VERSION: ${{ steps.resolve.outputs.secret_version }}
+          RUNTIME_SA_ID: ${{ steps.resolve.outputs.runtime_sa_id }}
+          CONTAINER_ID: ${{ steps.resolve.outputs.container_id }}
+          NETWORK_ID: ${{ steps.valkey.outputs.network_id }}
+          REDIS_HOST: ${{ steps.valkey.outputs.host_fqdn }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --container-id "$CONTAINER_ID" \
+            --folder-id "$FOLDER_ID" \
+            --image "$IMAGE" \
+            --memory 512MB \
+            --cores 1 \
+            --execution-timeout 60s \
+            --concurrency 8 \
+            --service-account-id "$RUNTIME_SA_ID" \
+            --network-id "$NETWORK_ID" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,WB_GLOBAL_RPS=5,OZON_GLOBAL_RPS=20,OZON_PERF_GLOBAL_RPS=10" \
+            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$SECRET_VERSION,key=cabinets_json" \
+            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$SECRET_VERSION,key=mcp_bearer_token" \
+            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$SECRET_VERSION,key=redis_password" \
+            --format json --no-user-output > "$RUNNER_TEMP/revision.json"
+          REVISION_ID="$(jq -r '.id // empty' "$RUNNER_TEMP/revision.json")"
+          test -n "$REVISION_ID"
+          echo "revision_id=$REVISION_ID" >> "$GITHUB_OUTPUT"
+          echo "container_revision_deployed=true"
+
+      - name: Remote-only MCP acceptance
+        id: smoke
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resolve.outputs.folder_id }}
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          SECRET_VERSION: ${{ steps.resolve.outputs.secret_version }}
+          CONTAINER_ID: ${{ steps.resolve.outputs.container_id }}
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$SECRET_VERSION" --format json --no-user-output > "$RUNNER_TEMP/marketplace-secret-smoke.json"
+          MCP_BEARER="$(jq -r '.entries[] | select(.key == "mcp_bearer_token") | .text_value' "$RUNNER_TEMP/marketplace-secret-smoke.json")"
+          test -n "$MCP_BEARER"
+          GATEWAY_DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[] | select((.name // "") | contains("marketplaces"))][0].domain // .[0].domain // empty')"
+          test -n "$GATEWAY_DOMAIN"
+          BASE_URL="https://${GATEWAY_DOMAIN}"
+
+          HEALTH_STATUS="$(curl -sS -o "$RUNNER_TEMP/health.txt" -w '%{http_code}' "$BASE_URL/healthz")"
+          test "$HEALTH_STATUS" = "200"
+          UNAUTH_STATUS="$(curl -sS -o "$RUNNER_TEMP/unauth.txt" -w '%{http_code}' -X POST "$BASE_URL/mcp" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"unauth-smoke","version":"1"}}}')"
+          test "$UNAUTH_STATUS" = "401"
+
+          export MCP_REMOTE_URL="$BASE_URL/mcp"
+          export MCP_REMOTE_BEARER="$MCP_BEARER"
+          python - <<'PY'
+          import json, os
+          import httpx
+
+          url = os.environ['MCP_REMOTE_URL']
+          bearer = os.environ['MCP_REMOTE_BEARER']
+          common = {
+              'Authorization': f'Bearer {bearer}',
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+
+          def payload(resp):
+              resp.raise_for_status()
+              text = resp.text
+              for line in text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              if text.strip():
+                  return resp.json()
+              return None
+
+          with httpx.Client(timeout=90.0, follow_redirects=True) as c:
+              init = c.post(url, headers=common, json={
+                  'jsonrpc':'2.0','id':1,'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'remote-acceptance','version':'1'}
+                  }
+              })
+              init_data = payload(init)
+              assert init_data and 'result' in init_data, init_data
+              session = init.headers.get('mcp-session-id')
+              assert session, 'missing mcp-session-id'
+              proto = init_data['result'].get('protocolVersion','2025-06-18')
+              headers = dict(common)
+              headers['Mcp-Session-Id'] = session
+              headers['MCP-Protocol-Version'] = proto
+              n = c.post(url, headers=headers, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert n.status_code in (200,202), n.status_code
+
+              rid = 10
+              def rpc(method, params=None):
+                  nonlocal_rid = None
+                  global rid
+                  rid += 1
+                  r = c.post(url, headers=headers, json={'jsonrpc':'2.0','id':rid,'method':method,'params':params or {}})
+                  data = payload(r)
+                  assert data and 'result' in data, data
+                  return data['result']
+
+              tools = rpc('tools/list')['tools']
+              names = {t['name'] for t in tools}
+              for required in ('wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status'):
+                  assert required in names, f'missing tool {required}'
+
+              wb = rpc('tools/call', {'name':'wb_get_sales','arguments':{'date_from':'2026-08-30','flag':0}})
+              oz = rpc('tools/call', {'name':'ozon_get_products','arguments':{'visibility':'ALL','limit':1,'last_id':''}})
+              wb_rl = rpc('tools/call', {'name':'wb_rate_limit_status','arguments':{}})
+              oz_rl = rpc('tools/call', {'name':'ozon_rate_limit_status','arguments':{}})
+
+              def text_result(result):
+                  content = result.get('content') or []
+                  for item in content:
+                      if item.get('type') == 'text':
+                          return item.get('text','')
+                  return ''
+              wbj = json.loads(text_result(wb))
+              ozj = json.loads(text_result(oz))
+              wbr = json.loads(text_result(wb_rl))
+              ozr = json.loads(text_result(oz_rl))
+              assert wbj.get('ok') is True and int(wbj.get('status',0)) < 300, wbj.get('error')
+              assert ozj.get('ok') is True and int(ozj.get('status',0)) < 300, ozj.get('error')
+              assert wbr.get('ok') is True and wbr.get('backend') == 'redis', wbr
+              assert ozr.get('ok') is True and ozr.get('backend') == 'redis', ozr
+              print('remote_mcp_initialize=true')
+              print('remote_mcp_tool_count=' + str(len(names)))
+              print('remote_wb_official_api=true status=' + str(wbj.get('status')))
+              print('remote_ozon_official_api=true status=' + str(ozj.get('status')))
+              print('remote_shared_limiter=redis')
+          PY
+
+          sleep 2
+          LOG_COUNT="$(yc logging read --resource-ids="$CONTAINER_ID" --since '10m ago' --limit 100 --format json 2>/dev/null | jq 'length' || echo 0)"
+          test "$LOG_COUNT" -gt 0
+          echo "healthz_200=true"
+          echo "unauthenticated_mcp_401=true"
+          echo "container_log_entries=$LOG_COUNT"
+
+      - name: Remove ephemeral secret and auth files
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" \
+                "$RUNNER_TEMP/marketplace-secret.json" \
+                "$RUNNER_TEMP/marketplace-secret-smoke.json" \
+                "$RUNNER_TEMP/valkey-create.json" \
+                "$RUNNER_TEMP/revision.json" \
+                "$RUNNER_TEMP/health.txt" \
+                "$RUNNER_TEMP/unauth.txt"
