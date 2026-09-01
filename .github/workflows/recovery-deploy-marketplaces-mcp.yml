@@ -127,7 +127,8 @@ jobs:
         run: |
           set -euo pipefail
           SOURCE_SHA="$(sed -n 's/.*@\([0-9a-f]\{40\}\).*/\1/p' app/.source-revision)"
-          test "$SOURCE_SHA" = "ea82741f8af4c3e8419c3d3a4056fb9c8ccb8daf"
+          EXPECTED_SOURCE_SHA="e307cd9a34eac3af6d48d8e570c2f19b2381903f"
+          test "$SOURCE_SHA" = "$EXPECTED_SOURCE_SHA"
           python -m compileall -q app/core app/wb_mcp app/ozon_mcp app/ozon_perf_mcp
           IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:${SOURCE_SHA:0:12}"
           docker build --label "org.opencontainers.image.revision=$SOURCE_SHA" -t "$IMAGE" app
