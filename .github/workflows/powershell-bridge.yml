@@ -17,8 +17,8 @@ concurrency:
 
 jobs:
   execute:
-    if: startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
-    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
+    if: startsWith(github.event.head_commit.message, 'bridge-exec-home:') || startsWith(github.event.head_commit.message, 'bridge-exec-work:') || startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
+    runs-on: [self-hosted, Windows, X64, "${{ startsWith(github.event.head_commit.message, 'bridge-exec-work:') && 'codex-bridge-work' || 'codex-bridge-service' }}"]
     timeout-minutes: 10
     steps:
       - name: Fetch and execute approved PowerShell command
