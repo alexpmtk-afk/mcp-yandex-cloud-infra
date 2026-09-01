@@ -1,15 +1,8 @@
-$root = 'C:\ProgramData\ChatGPT-PK\powershell-admin-runner'
+Write-Host "COMPUTER=$env:COMPUTERNAME"
+Write-Host "USER=$env:USERNAME"
+Write-Host "TIME=$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss')"
+Write-Host "POWERSHELL=$($PSVersionTable.PSVersion)"
 
-$svc = Get-Service | Where-Object {
-    $_.Name -like 'actions.runner.*Codex-Bridge-Admin-*'
-} | Select-Object -First 1
-
-Write-Host ("RUNNER_CONFIG=" + (Test-Path (Join-Path $root '.runner')))
-
-if ($svc) {
-    Write-Host "ADMIN_SERVICE=$($svc.Name)"
-    Write-Host "STATUS=$($svc.Status)"
-    Write-Host "STARTTYPE=$($svc.StartType)"
-} else {
-    Write-Host 'ADMIN_SERVICE=NOT_FOUND'
-}
+Get-Service | Where-Object {
+    $_.Name -like 'actions.runner.*Codex-Bridge*'
+} | Select-Object Name,Status,StartType
