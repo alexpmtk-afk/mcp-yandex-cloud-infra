@@ -1,47 +1,83 @@
 $ErrorActionPreference = 'Continue'
-$folderId = 'b1g0224nfivl9224dm96'
-$vm = 'marketplace-card-monitor-ozon'
+Write-Host '=== MARKETPLACE_STOREFRONT_SMOKE_BEGIN ==='
+Write-Host "RUNNER=$env:RUNNER_NAME"
+Write-Host "COMPUTER=$env:COMPUTERNAME"
+Write-Host "USER=$env:USERNAME"
 
-Write-Host '=== MARKETPLACE_CARD_MONITOR_DISCOVERY_BEGIN ==='
-Write-Host "RUNNER_USER=$env:USERNAME"
+$ozonUrl = 'https://www.ozon.ru/product/nippel-dlya-beskamernyh-shin-ventil-sosok-avtomobilnyy-rezinovyy-1420875699/'
+$ozonHome = 'https://www.ozon.ru/'
+$wbUrl = 'https://card.wb.ru/cards/v4/detail?appType=1&curr=rub&dest=-1257786&spp=30&nm=178695806'
 
-$ycCandidates = @(
-  'C:\Users\Win10_Game_OS\yandex-cloud\bin\yc.exe',
-  'C:\Users\Win10_Game_OS\AppData\Local\Yandex\Cloud\yc.exe',
-  'C:\Users\Win10_Game_OS\AppData\Local\Yandex\Cloud\bin\yc.exe',
-  'C:\Program Files\Yandex.Cloud\bin\yc.exe'
+function Test-HttpUrl($name, $url) {
+  try {
+    $r = Invoke-WebRequest -Uri $url -Method Get -MaximumRedirection 5 -UseBasicParsing -TimeoutSec 30 -Headers @{
+      'User-Agent'='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/152.0.0.0 Safari/537.36'
+      'Accept-Language'='ru-RU,ru;q=0.9,en;q=0.8'
+    }
+    Write-Host "$name`_HTTP=$([int]$r.StatusCode)"
+    Write-Host "$name`_FINAL=$($r.BaseResponse.ResponseUri.AbsoluteUri)"
+    Write-Host "$name`_LEN=$($r.Content.Length)"
+    $preview = ($r.Content -replace '[\r\n]+',' ')
+    if ($preview.Length -gt 240) { $preview = $preview.Substring(0,240) }
+    Write-Host "$name`_PREVIEW=$preview"
+  } catch {
+    $status = $null
+    try { $status = [int]$_.Exception.Response.StatusCode } catch {}
+    Write-Host "$name`_HTTP=$status"
+    Write-Host "$name`_ERROR=$($_.Exception.Message)"
+  }
+}
+
+Test-HttpUrl 'OZON_HOME' $ozonHome
+Test-HttpUrl 'OZON_PRODUCT' $ozonUrl
+Test-HttpUrl 'WB_V4' $wbUrl
+
+$browserCandidates = @(
+  @{Name='ChromeProgramFiles'; Path='C:\Program Files\Google\Chrome\Application\chrome.exe'},
+  @{Name='ChromeX86'; Path='C:\Program Files (x86)\Google\Chrome\Application\chrome.exe'},
+  @{Name='ChromeUser'; Path='C:\Users\Win10_Game_OS\AppData\Local\Google\Chrome\Application\chrome.exe'},
+  @{Name='YandexUser'; Path='C:\Users\Win10_Game_OS\AppData\Local\Yandex\YandexBrowser\Application\browser.exe'},
+  @{Name='YandexProgramFiles'; Path='C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe'}
 )
-$yc = $ycCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $yc) {
-  $yc = Get-ChildItem 'C:\Users\Win10_Game_OS' -Filter yc.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-}
-if (-not $yc) { throw 'YC_EXE_NOT_FOUND' }
-Write-Host "YC_EXE=$yc"
-& $yc --version
+$browser = $browserCandidates | Where-Object { Test-Path $_.Path } | Select-Object -First 1
+if ($browser) {
+  Write-Host "BROWSER_NAME=$($browser.Name)"
+  Write-Host "BROWSER_PATH=$($browser.Path)"
+  try {
+    $ver = (Get-Item $browser.Path).VersionInfo.ProductVersion
+    Write-Host "BROWSER_VERSION=$ver"
+  } catch {}
 
-# Use the already authenticated user profile explicitly, without changing other projects.
-$env:YC_CONFIG_PROFILE = 'marketplace-card-monitor'
-Write-Host '=== YC_CONFIG ==='
-& $yc config list
-
-Write-Host '=== VM_IN_PROJECT_FOLDER ==='
-& $yc compute instance list --folder-id $folderId
-Write-Host '=== NETWORKS ==='
-& $yc vpc network list --folder-id $folderId
-Write-Host '=== SUBNETS ==='
-& $yc vpc subnet list --folder-id $folderId
-
-$vmJson = & $yc compute instance get $vm --folder-id $folderId --format json 2>$null
-if ($LASTEXITCODE -eq 0 -and $vmJson) {
-  $obj = $vmJson | ConvertFrom-Json
-  Write-Host "VM_FOUND=YES"
-  Write-Host "VM_ID=$($obj.id)"
-  Write-Host "VM_STATUS=$($obj.status)"
-  Write-Host "VM_ZONE=$($obj.zone_id)"
-  $nic = $obj.network_interfaces | Select-Object -First 1
-  Write-Host "VM_INTERNAL_IP=$($nic.primary_v4_address.address)"
-  Write-Host "VM_EXTERNAL_IP=$($nic.primary_v4_address.one_to_one_nat.address)"
+  $profile = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\ozon-anon-profile-smoke'
+  New-Item -ItemType Directory -Force -Path $profile | Out-Null
+  $dump = Join-Path $env:RUNNER_TEMP 'ozon-dump.txt'
+  $args = @(
+    '--headless=new',
+    '--disable-gpu',
+    '--no-first-run',
+    '--no-default-browser-check',
+    "--user-data-dir=$profile",
+    '--lang=ru-RU',
+    '--dump-dom',
+    $ozonUrl
+  )
+  try {
+    $p = Start-Process -FilePath $browser.Path -ArgumentList $args -NoNewWindow -RedirectStandardOutput $dump -RedirectStandardError (Join-Path $env:RUNNER_TEMP 'ozon-browser-err.txt') -PassThru
+    if (-not $p.WaitForExit(60000)) { $p.Kill(); Write-Host 'BROWSER_TIMEOUT=YES' }
+    Write-Host "BROWSER_EXIT=$($p.ExitCode)"
+    if (Test-Path $dump) {
+      $content = Get-Content $dump -Raw -ErrorAction SilentlyContinue
+      Write-Host "BROWSER_DOM_LEN=$($content.Length)"
+      $signals = @('Похоже, нет соединения','Нам нужно убедиться, что вы не робот','Antibot','1420875699','₽','руб')
+      foreach ($s in $signals) { Write-Host ("BROWSER_SIGNAL_{0}={1}" -f ($s -replace '[^A-Za-z0-9А-Яа-я]','_'), [bool]($content -match [regex]::Escape($s))) }
+      $title = [regex]::Match($content,'<title[^>]*>(.*?)</title>','IgnoreCase,Singleline').Groups[1].Value
+      if ($title) { Write-Host "BROWSER_TITLE=$title" }
+    }
+  } catch {
+    Write-Host "BROWSER_ERROR=$($_.Exception.Message)"
+  }
 } else {
-  Write-Host 'VM_FOUND=NO'
+  Write-Host 'BROWSER_FOUND=NO'
 }
-Write-Host '=== MARKETPLACE_CARD_MONITOR_DISCOVERY_END ==='
+
+Write-Host '=== MARKETPLACE_STOREFRONT_SMOKE_END ==='
