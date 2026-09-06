@@ -1,52 +1,142 @@
 $ErrorActionPreference = 'Continue'
-Write-Host '=== OZON_YANDEX_DIRECT_TEST_BEGIN ==='
+
+Write-Host '=== OZON_USER_NODE_AUDIT_BEGIN ==='
 Write-Host "RUNNER=$env:RUNNER_NAME"
 Write-Host "COMPUTER=$env:COMPUTERNAME"
+Write-Host "SERVICE_USER=$env:USERNAME"
 
-$ozonUrl = 'https://www.ozon.ru/product/nippel-dlya-beskamernyh-shin-ventil-sosok-avtomobilnyy-rezinovyy-1420875699/'
-$yandexCandidates = @(
-  'C:\Users\Win10_Game_OS\AppData\Local\Yandex\YandexBrowser\Application\browser.exe',
-  'C:\Program Files (x86)\Yandex\YandexBrowser\Application\browser.exe',
-  'C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
+Write-Host '--- INTERACTIVE_SESSIONS ---'
+try {
+    quser 2>&1 | ForEach-Object { Write-Host $_ }
+} catch {
+    Write-Host "QUSER_ERROR=$($_.Exception.Message)"
+}
+
+Write-Host '--- MARKETPLACE_SCHEDULED_TASKS ---'
+try {
+    $tasks = Get-ScheduledTask -ErrorAction Stop |
+        Where-Object {
+            $_.TaskName -match '(?i)ozon|marketplace|card.monitor' -or
+            $_.TaskPath -match '(?i)ozon|marketplace|card.monitor'
+        }
+
+    if (-not $tasks) {
+        Write-Host 'SCHEDULED_TASKS_FOUND=NO'
+    } else {
+        Write-Host 'SCHEDULED_TASKS_FOUND=YES'
+        foreach ($task in $tasks) {
+            Write-Host "TASK_NAME=$($task.TaskName)"
+            Write-Host "TASK_PATH=$($task.TaskPath)"
+            Write-Host "TASK_STATE=$($task.State)"
+            Write-Host "TASK_USER=$($task.Principal.UserId)"
+            Write-Host "TASK_LOGON_TYPE=$($task.Principal.LogonType)"
+            foreach ($action in $task.Actions) {
+                Write-Host "TASK_EXECUTE=$($action.Execute)"
+                Write-Host "TASK_ARGUMENTS=$($action.Arguments)"
+                Write-Host "TASK_WORKDIR=$($action.WorkingDirectory)"
+            }
+            try {
+                $info = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath
+                Write-Host "TASK_LAST_RUN=$($info.LastRunTime)"
+                Write-Host "TASK_LAST_RESULT=$($info.LastTaskResult)"
+            } catch {}
+            Write-Host '---'
+        }
+    }
+} catch {
+    Write-Host "SCHEDULED_TASK_ERROR=$($_.Exception.Message)"
+}
+
+Write-Host '--- EXISTING_MONITOR_FILES ---'
+$root = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor'
+Write-Host "MONITOR_ROOT_EXISTS=$(Test-Path $root)"
+if (Test-Path $root) {
+    Get-ChildItem -Path $root -Force -Recurse -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.FullName -notmatch '(?i)\\profile|\\user data|\\cache'
+        } |
+        Select-Object -First 200 |
+        ForEach-Object {
+            Write-Host ("ITEM={0}|TYPE={1}|SIZE={2}|MODIFIED={3}" -f
+                $_.FullName,
+                $(if ($_.PSIsContainer) {'DIR'} else {'FILE'}),
+                $(if ($_.PSIsContainer) {''} else {$_.Length}),
+                $_.LastWriteTime.ToString('s'))
+        }
+}
+
+Write-Host '--- CHROME ---'
+$chromeCandidates = @(
+    'C:\Program Files\Google\Chrome\Application\chrome.exe',
+    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
+    'C:\Users\Win10_Game_OS\AppData\Local\Google\Chrome\Application\chrome.exe'
 )
-$browser = $yandexCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-if (-not $browser) { Write-Host 'YANDEX_FOUND=NO'; exit 2 }
-Write-Host "YANDEX_PATH=$browser"
-Write-Host "YANDEX_VERSION=$((Get-Item $browser).VersionInfo.ProductVersion)"
 
-try {
-  $ip = Invoke-RestMethod -Uri 'https://api.ipify.org' -TimeoutSec 20
-  Write-Host "SERVICE_PUBLIC_IP=$ip"
-} catch { Write-Host "SERVICE_PUBLIC_IP_ERROR=$($_.Exception.Message)" }
+$chromeFound = $false
+foreach ($path in $chromeCandidates) {
+    if (Test-Path $path) {
+        $chromeFound = $true
+        Write-Host "CHROME_PATH=$path"
+        try {
+            Write-Host "CHROME_VERSION=$((Get-Item $path).VersionInfo.ProductVersion)"
+        } catch {}
+    }
+}
+if (-not $chromeFound) {
+    Write-Host 'CHROME_FOUND=NO'
+}
 
-Write-Host '=== WINHTTP_PROXY ==='
-& netsh winhttp show proxy
+Write-Host '--- PYTHON_AND_PLAYWRIGHT ---'
+$pythonCandidates = @()
 
-$profile = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\ozon-yandex-anon-profile-smoke'
-New-Item -ItemType Directory -Force -Path $profile | Out-Null
-$dump = Join-Path $env:RUNNER_TEMP 'ozon-yandex-dump.txt'
-$err = Join-Path $env:RUNNER_TEMP 'ozon-yandex-err.txt'
-$args = @('--headless=new','--disable-gpu','--no-first-run','--no-default-browser-check',"--user-data-dir=$profile",'--lang=ru-RU','--dump-dom',$ozonUrl)
-try {
-  $p = Start-Process -FilePath $browser -ArgumentList $args -NoNewWindow -RedirectStandardOutput $dump -RedirectStandardError $err -PassThru
-  if (-not $p.WaitForExit(60000)) { $p.Kill(); Write-Host 'YANDEX_TIMEOUT=YES' }
-  Write-Host "YANDEX_EXIT=$($p.ExitCode)"
-  if (Test-Path $dump) {
-    $content = Get-Content $dump -Raw -ErrorAction SilentlyContinue
-    Write-Host "YANDEX_DOM_LEN=$($content.Length)"
-    Write-Host "YANDEX_HAS_SKU=$([bool]($content -match '1420875699'))"
-    Write-Host "YANDEX_HAS_ANTIBOT=$([bool]($content -match 'Antibot|fab_chlg|__rr=1|incidentId'))"
-    Write-Host "YANDEX_HAS_PRICE_MARKUP=$([bool]($content -match 'price|currency|RUB|rub'))"
-    $m = [regex]::Match($content,'<title[^>]*>(.*?)</title>',[System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::Singleline)
-    if ($m.Success) { Write-Host "YANDEX_TITLE=$($m.Groups[1].Value)" }
-    $out = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\ozon-yandex-smoke-dom.html'
-    [IO.File]::WriteAllText($out,$content,(New-Object Text.UTF8Encoding($false)))
-    Write-Host "YANDEX_DOM_SAVED=$out"
-  }
-  if (Test-Path $err) {
-    $e = Get-Content $err -Raw -ErrorAction SilentlyContinue
-    Write-Host "YANDEX_ERR_LEN=$($e.Length)"
-    if ($e.Length -gt 0) { $ep=($e -replace '[\r\n]+',' '); if($ep.Length -gt 300){$ep=$ep.Substring(0,300)}; Write-Host "YANDEX_ERR_PREVIEW=$ep" }
-  }
-} catch { Write-Host "YANDEX_ERROR=$($_.Exception.Message)"; exit 3 }
-Write-Host '=== OZON_YANDEX_DIRECT_TEST_END ==='
+foreach ($name in @('python.exe','python','py.exe','py')) {
+    $cmd = Get-Command $name -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd -and $cmd.Source) {
+        $pythonCandidates += $cmd.Source
+    }
+}
+
+Get-ChildItem 'C:\Users\Win10_Game_OS\AppData\Local\Programs\Python' -Directory -ErrorAction SilentlyContinue |
+    ForEach-Object {
+        $candidate = Join-Path $_.FullName 'python.exe'
+        if (Test-Path $candidate) {
+            $pythonCandidates += $candidate
+        }
+    }
+
+$pythonCandidates = $pythonCandidates | Select-Object -Unique
+
+if (-not $pythonCandidates) {
+    Write-Host 'PYTHON_FOUND=NO'
+} else {
+    foreach ($pythonPath in $pythonCandidates) {
+        Write-Host "PYTHON_PATH=$pythonPath"
+        try {
+            & $pythonPath -c "import sys,importlib.util; print('PYTHON_VERSION=' + sys.version.replace(chr(10),' ')); print('PLAYWRIGHT_PRESENT=' + str(importlib.util.find_spec('playwright') is not None))" 2>&1 |
+                ForEach-Object { Write-Host $_ }
+        } catch {
+            Write-Host "PYTHON_CHECK_ERROR=$($_.Exception.Message)"
+        }
+    }
+}
+
+Write-Host '--- GITHUB_CLI ---'
+$gh = Get-Command gh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $gh) {
+    $gh = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+if (-not $gh) {
+    Write-Host 'GH_FOUND=NO'
+} else {
+    Write-Host "GH_PATH=$($gh.Source)"
+    Write-Host 'GH_AUTH_STATUS_BEGIN'
+    & $gh.Source auth status 2>&1 | ForEach-Object { Write-Host $_ }
+    Write-Host 'GH_AUTH_STATUS_END'
+
+    Write-Host 'GH_MARKETPLACE_REPO_CHECK_BEGIN'
+    & $gh.Source repo view alexpmtk-afk/marketplace-card-monitor --json nameWithOwner,defaultBranchRef 2>&1 |
+        ForEach-Object { Write-Host $_ }
+    Write-Host 'GH_MARKETPLACE_REPO_CHECK_END'
+}
+
+Write-Host '=== OZON_USER_NODE_AUDIT_END ==='
