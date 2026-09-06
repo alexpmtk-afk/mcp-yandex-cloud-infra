@@ -1,0 +1,59 @@
+name: PowerShell Admin Bridge
+
+on:
+  push:
+    branches:
+      - tooling/powershell-admin-bridge-v0.1
+    paths:
+      - 'tools/powershell-admin-bridge/command.ps1'
+      - '.github/workflows/powershell-admin-bridge.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: powershell-admin-bridge
+  cancel-in-progress: true
+
+jobs:
+  execute:
+    if: startsWith(github.event.head_commit.message, 'admin-bridge-exec:')
+    runs-on: [self-hosted, Windows, X64, codex-bridge-admin]
+    timeout-minutes: 10
+    steps:
+      - name: Fetch and execute approved elevated PowerShell command
+        shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          Write-Host '=== POWERSHELL_ADMIN_BRIDGE_BEGIN ==='
+          Write-Host "Commit: $env:GITHUB_SHA"
+          Write-Host "Runner: $env:RUNNER_NAME"
+          Write-Host "Computer: $env:COMPUTERNAME"
+          Write-Host ("Identity: " + [Security.Principal.WindowsIdentity]::GetCurrent().Name)
+          $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+          Write-Host "Elevated=$isAdmin"
+          if (-not $isAdmin) { throw 'Admin bridge runner is not elevated.' }
+
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/tools/powershell-admin-bridge/command.ps1?ref=$env:GITHUB_SHA"
+          $headers = @{
+            Authorization = "Bearer $env:GH_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+            'User-Agent' = 'powershell-admin-bridge'
+          }
+          $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+          $raw = ($resp.content -replace '\s','')
+          $tmp = Join-Path $env:RUNNER_TEMP 'admin-bridge-command.ps1'
+          [IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String($raw))
+
+          Write-Host '--- command.ps1 ---'
+          Get-Content $tmp
+          Write-Host '--- output ---'
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp
+          $exit = $LASTEXITCODE
+          if ($null -eq $exit) { $exit = 0 }
+          Write-Host "--- exit_code=$exit ---"
+          Write-Host '=== POWERSHELL_ADMIN_BRIDGE_END ==='
+          if ($exit -ne 0) { exit $exit }
