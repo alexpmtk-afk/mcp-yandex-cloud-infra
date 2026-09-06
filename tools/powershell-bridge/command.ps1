@@ -1,58 +1,47 @@
-$ErrorActionPreference = 'Stop'
-$profile = 'marketplace-card-monitor'
+$ErrorActionPreference = 'Continue'
 $folderId = 'b1g0224nfivl9224dm96'
-$zone = 'ru-central1-d'
-$network = 'marketplace-card-monitor-net'
-$subnet = 'marketplace-card-monitor-subnet-d'
 $vm = 'marketplace-card-monitor-ozon'
 
-Write-Host '=== MARKETPLACE_CARD_MONITOR_YC_DEPLOY_BEGIN ==='
-yc config profile activate $profile
-Write-Host "PROFILE=$profile"
-Write-Host "FOLDER=$folderId"
+Write-Host '=== MARKETPLACE_CARD_MONITOR_DISCOVERY_BEGIN ==='
+Write-Host "RUNNER_USER=$env:USERNAME"
 
-# Network
-$netId = (yc vpc network get $network --folder-id $folderId --format json 2>$null | ConvertFrom-Json).id
-if (-not $netId) {
-  yc vpc network create --name $network --folder-id $folderId | Out-Host
-  $netId = (yc vpc network get $network --folder-id $folderId --format json | ConvertFrom-Json).id
+$ycCandidates = @(
+  'C:\Users\Win10_Game_OS\yandex-cloud\bin\yc.exe',
+  'C:\Users\Win10_Game_OS\AppData\Local\Yandex\Cloud\yc.exe',
+  'C:\Users\Win10_Game_OS\AppData\Local\Yandex\Cloud\bin\yc.exe',
+  'C:\Program Files\Yandex.Cloud\bin\yc.exe'
+)
+$yc = $ycCandidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+if (-not $yc) {
+  $yc = Get-ChildItem 'C:\Users\Win10_Game_OS' -Filter yc.exe -File -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
 }
-Write-Host "NETWORK_ID=$netId"
+if (-not $yc) { throw 'YC_EXE_NOT_FOUND' }
+Write-Host "YC_EXE=$yc"
+& $yc --version
 
-# Subnet
-$subnetId = (yc vpc subnet get $subnet --folder-id $folderId --format json 2>$null | ConvertFrom-Json).id
-if (-not $subnetId) {
-  yc vpc subnet create --name $subnet --folder-id $folderId --zone $zone --network-id $netId --range 10.77.0.0/24 | Out-Host
-  $subnetId = (yc vpc subnet get $subnet --folder-id $folderId --format json | ConvertFrom-Json).id
-}
-Write-Host "SUBNET_ID=$subnetId"
+# Use the already authenticated user profile explicitly, without changing other projects.
+$env:YC_CONFIG_PROFILE = 'marketplace-card-monitor'
+Write-Host '=== YC_CONFIG ==='
+& $yc config list
 
-# Resolve current Ubuntu 24.04 LTS image from public images folder.
-$imageId = yc compute image get-latest-from-family ubuntu-2404-lts --folder-id standard-images --format json | ConvertFrom-Json | Select-Object -ExpandProperty id
-if (-not $imageId) { throw 'Ubuntu 24.04 LTS image not found' }
-Write-Host "IMAGE_ID=$imageId"
-
-# VM: intentionally modest feasibility-gate size. NAT IP only for the first Ozon test.
-$vmId = (yc compute instance get $vm --folder-id $folderId --format json 2>$null | ConvertFrom-Json).id
-if (-not $vmId) {
-  yc compute instance create `
-    --name $vm `
-    --folder-id $folderId `
-    --zone $zone `
-    --platform standard-v3 `
-    --cores 2 `
-    --memory 4GB `
-    --core-fraction 20 `
-    --create-boot-disk "image-id=$imageId,size=20,type=network-hdd" `
-    --network-interface "subnet-id=$subnetId,nat-ip-version=ipv4" `
-    --metadata serial-port-enable=1 `
-    --ssh-key "$env:USERPROFILE\.ssh\id_ed25519.pub" | Out-Host
-}
-
-Write-Host '=== VM ==='
-yc compute instance get $vm --folder-id $folderId --format yaml
+Write-Host '=== VM_IN_PROJECT_FOLDER ==='
+& $yc compute instance list --folder-id $folderId
 Write-Host '=== NETWORKS ==='
-yc vpc network list --folder-id $folderId
+& $yc vpc network list --folder-id $folderId
 Write-Host '=== SUBNETS ==='
-yc vpc subnet list --folder-id $folderId
-Write-Host '=== MARKETPLACE_CARD_MONITOR_YC_DEPLOY_END ==='
+& $yc vpc subnet list --folder-id $folderId
+
+$vmJson = & $yc compute instance get $vm --folder-id $folderId --format json 2>$null
+if ($LASTEXITCODE -eq 0 -and $vmJson) {
+  $obj = $vmJson | ConvertFrom-Json
+  Write-Host "VM_FOUND=YES"
+  Write-Host "VM_ID=$($obj.id)"
+  Write-Host "VM_STATUS=$($obj.status)"
+  Write-Host "VM_ZONE=$($obj.zone_id)"
+  $nic = $obj.network_interfaces | Select-Object -First 1
+  Write-Host "VM_INTERNAL_IP=$($nic.primary_v4_address.address)"
+  Write-Host "VM_EXTERNAL_IP=$($nic.primary_v4_address.one_to_one_nat.address)"
+} else {
+  Write-Host 'VM_FOUND=NO'
+}
+Write-Host '=== MARKETPLACE_CARD_MONITOR_DISCOVERY_END ==='
