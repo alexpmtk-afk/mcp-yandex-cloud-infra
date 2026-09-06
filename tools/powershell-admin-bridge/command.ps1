@@ -87,13 +87,13 @@ if(Test-Path $result){
   try{
     $o=$raw|ConvertFrom-Json
     if($o.status){Write-Host "STATUS=$($o.status)"}
-    if($o.title){Write-Host "TITLE=$($o.title)"}
+    if($o.title){Write-Host "TITLE_BASE64=$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes([string]$o.title)))"}
     if($o.url){Write-Host "URL=$($o.url)"}
     if($o.body){
       Write-Host "HAS_SKU=$([bool]($o.body -match '1420875699'))"
-      Write-Host "HAS_PRICE_TEXT=$([bool]($o.body -match '₽|руб|Р'))"
-      Write-Host "HAS_BLOCK_TEXT=$([bool]($o.body -match 'Похоже, нет соединения|не робот|провер'))"
-      $preview=($o.body -replace '[\r\n]+',' ');if($preview.Length -gt 1200){$preview=$preview.Substring(0,1200)};Write-Host "BODY_PREVIEW=$preview"
+      Write-Host "HAS_PRICE_TOKEN=$([bool]($o.body -match '[0-9][0-9 ]{1,8}'))"
+      Write-Host "HAS_BLOCK_ASCII=$([bool]($o.body -match 'Antibot|incidentId|fab_chlg|__rr=1'))"
+      $preview=($o.body -replace '[\r\n]+',' ');if($preview.Length -gt 1200){$preview=$preview.Substring(0,1200)};Write-Host "BODY_PREVIEW_BASE64=$([Convert]::ToBase64String([Text.Encoding]::UTF8.GetBytes($preview)))"
     }
   }catch{Write-Host "PARSE_ERROR=$($_.Exception.Message)"}
 }else{
