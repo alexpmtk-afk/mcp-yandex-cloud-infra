@@ -1,3 +1,4 @@
+# ADMIN_ROUTE=codex-bridge-admin
 $ErrorActionPreference = 'Stop'
 
 Write-Host '=== MARKETPLACES_NATIVE_E2E_SERVICE_BEGIN ==='
