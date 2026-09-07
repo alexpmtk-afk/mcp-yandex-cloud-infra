@@ -27,19 +27,12 @@ foreach ($name in $targets) {
       Write-Host "PRICE_METHOD=$($j.price.method)"
       Write-Host ("PRICE_CANDIDATES=" + (($j.price.candidates_rub | Select-Object -First 15) -join ','))
     }
-    if ($j.required_text) { Write-Host ("REQUIRED_TEXT=" + ($j.required_text -join '|')) }
-    if ($j.forbidden_text) { Write-Host ("FORBIDDEN_TEXT=" + ($j.forbidden_text -join '|')) }
+    if ($j.required_text) { Write-Host ("REQUIRED_TEXT_COUNT=" + $j.required_text.Count) }
+    if ($j.forbidden_text) { Write-Host ("FORBIDDEN_TEXT_COUNT=" + $j.forbidden_text.Count) }
     if ($j.evidence -and $j.evidence.body_excerpt) {
       $b = [string]$j.evidence.body_excerpt
-      Write-Host ("BODY_HEAD=" + $b.Substring(0,[Math]::Min(3000,$b.Length)))
-      $needles = @('Шип','Нешип','Friction','Вид шин','Тип шин','Cordiant','Formula','195','R16','WB Кошел')
-      foreach ($n in $needles) {
-        $idx = $b.IndexOf($n,[StringComparison]::OrdinalIgnoreCase)
-        if ($idx -ge 0) {
-          $start=[Math]::Max(0,$idx-250); $len=[Math]::Min(900,$b.Length-$start)
-          Write-Host ("CONTEXT[$n]=" + $b.Substring($start,$len))
-        }
-      }
+      Write-Host ("BODY_LEN=" + $b.Length)
+      Write-Host ("BODY_HEAD=" + $b.Substring(0,[Math]::Min(5000,$b.Length)))
     }
   } catch { Write-Host "PARSE_ERROR=$($_.Exception.Message)" }
 }
