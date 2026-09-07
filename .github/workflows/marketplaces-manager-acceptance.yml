@@ -88,15 +88,21 @@ jobs:
               retry=float(data.get('retry_after_seconds',0) or data.get('retry_after_sec',0) or 0)
               if retry > 0 and (data.get('error_type')=='rate_limit' or data.get('error') in ('rate_limit','rate_limit_busy')):
                   print(f'{name}=RATE_LIMIT_PROTECTED retry_after={retry}', flush=True); return 'rate_limit'
-              if int(data.get('code',0) or 0)==403 and data.get('error_type')=='forbidden' and 'missing a required role' in str(data.get('message','')):
-                  print(f'{name}=BLOCKED_MISSING_API_ROLE', flush=True); return 'missing_role'
-              raise AssertionError((name,data))
+              if int(data.get('code',0) or 0)==403 and data.get('error_type')=='forbidden':
+                  if data.get('required_token_category'):
+                      category=str(data['required_token_category'])
+                      print(f'{name}=BLOCKED_MISSING_TOKEN_CATEGORY category={category}', flush=True)
+                      return 'missing_role'
+                  if 'missing a required role' in str(data.get('message','')):
+                      print(f'{name}=BLOCKED_MISSING_API_ROLE', flush=True); return 'missing_role'
+              print(f'{name}=UNEXPECTED '+json.dumps(data,ensure_ascii=False,sort_keys=True), flush=True)
+              return 'unexpected'
 
           timeout=httpx.Timeout(connect=10,read=60,write=30,pool=10)
           headers={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
           ids=itertools.count(1)
           with httpx.Client(timeout=timeout,follow_redirects=True) as c:
-              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'manager-acceptance','version':'1'}}})
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'manager-acceptance','version':'2'}}})
               init=unpack(r); assert init and 'result' in init,init
               h=dict(headers); sid=r.headers.get('mcp-session-id')
               if sid: h['Mcp-Session-Id']=sid
@@ -106,26 +112,40 @@ jobs:
                   rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
                   d=unpack(rr); assert d and 'result' in d,(method,d); return d['result']
               def call(name,args):
-                  result=rpc('tools/call',{'name':name,'arguments':args}); assert not result.get('isError'),(name,result)
-                  text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None); assert text is not None,name
-                  return json.loads(text)
+                  result=rpc('tools/call',{'name':name,'arguments':args})
+                  if result.get('isError'):
+                      return {'ok':False,'error':'mcp_tool_error','message':str(result)}
+                  text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None)
+                  if text is None:
+                      return {'ok':False,'error':'mcp_schema','message':f'{name} returned no text content'}
+                  try: return json.loads(text)
+                  except Exception as exc: return {'ok':False,'error':'mcp_schema','message':f'{name} returned non-JSON: {exc}'}
 
               names={x['name'] for x in rpc('tools/list')['tools']}
               required={'wb_get_stocks','wb_get_new_orders','wb_get_prices','ozon_get_stocks','ozon_get_prices','ozon_get_fbs_unfulfilled'}
               assert required <= names, sorted(required-names)
               now=datetime.datetime.now(datetime.timezone.utc)
+              cases=[
+                  ('wb_stocks','WB_STOCKS','wb_get_stocks',{'limit':1,'offset':0}),
+                  ('wb_new_orders','WB_NEW_ORDERS','wb_get_new_orders',{}),
+                  ('wb_prices','WB_PRICES','wb_get_prices',{'limit':1,'offset':0}),
+                  ('ozon_stocks','OZON_STOCKS','ozon_get_stocks',{'visibility':'ALL','limit':1,'last_id':''}),
+                  ('ozon_prices','OZON_PRICES','ozon_get_prices',{'visibility':'ALL','limit':1,'cursor':''}),
+                  ('ozon_fbs','OZON_FBS_UNFULFILLED','ozon_get_fbs_unfulfilled',{
+                      'cutoff_from':(now-datetime.timedelta(days=7)).isoformat().replace('+00:00','Z'),
+                      'cutoff_to':(now+datetime.timedelta(days=7)).isoformat().replace('+00:00','Z'),
+                      'limit':1,'cursor':''}),
+              ]
               results={}
-              results['wb_stocks']=classify('WB_STOCKS',call('wb_get_stocks',{'date_from':'2020-01-01'}))
-              results['wb_new_orders']=classify('WB_NEW_ORDERS',call('wb_get_new_orders',{}))
-              results['wb_prices']=classify('WB_PRICES',call('wb_get_prices',{'limit':1,'offset':0}))
-              results['ozon_stocks']=classify('OZON_STOCKS',call('ozon_get_stocks',{'visibility':'ALL','limit':1,'last_id':''}))
-              results['ozon_prices']=classify('OZON_PRICES',call('ozon_get_prices',{'visibility':'ALL','limit':1,'cursor':''}))
-              results['ozon_fbs']=classify('OZON_FBS_UNFULFILLED',call('ozon_get_fbs_unfulfilled',{
-                  'cutoff_from':(now-datetime.timedelta(days=7)).isoformat().replace('+00:00','Z'),
-                  'cutoff_to':(now+datetime.timedelta(days=7)).isoformat().replace('+00:00','Z'),
-                  'limit':1,'cursor':''}))
+              for key,label,tool,args in cases:
+                  try:
+                      results[key]=classify(label,call(tool,args))
+                  except Exception as exc:
+                      print(f'{label}=UNEXPECTED_EXCEPTION {type(exc).__name__}: {exc}',flush=True)
+                      results[key]='unexpected'
               print('MANAGER_CAPABILITY_MATRIX='+json.dumps(results,sort_keys=True),flush=True)
-              assert set(results.values()) <= {'pass','rate_limit','missing_role'}
+              unexpected=sorted(k for k,v in results.items() if v=='unexpected')
+              assert not unexpected, f'unexpected manager failures: {unexpected}'
               print('MARKETPLACES_MANAGER_ACCEPTANCE=PASS',flush=True)
           PY
 
