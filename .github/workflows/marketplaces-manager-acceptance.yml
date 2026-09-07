@@ -2,16 +2,24 @@ name: Marketplaces MCP Manager Acceptance
 
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
-    paths:
-      - .github/workflows/marketplaces-manager-acceptance.yml
+  workflow_run:
+    workflows:
+      - Deploy Marketplaces MCP TEST
+    types:
+      - completed
 
 permissions:
   contents: read
 
+concurrency:
+  group: marketplaces-mcp-manager-acceptance
+  cancel-in-progress: true
+
 jobs:
   manager-readonly:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 12
