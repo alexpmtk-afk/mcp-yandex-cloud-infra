@@ -1,9 +1,9 @@
-name: PowerShell Bridge
+name: Marketplaces Native Codex E2E
 
 on:
   push:
     branches:
-      - tooling/powershell-bridge-v0.1
+      - marketplaces-native-e2e-2026-09-07
     paths:
       - 'tools/powershell-bridge/command.ps1'
       - '.github/workflows/powershell-bridge.yml'
@@ -12,22 +12,22 @@ permissions:
   contents: read
 
 concurrency:
-  group: powershell-bridge
-  cancel-in-progress: true
+  group: marketplaces-native-codex-e2e-work
+  cancel-in-progress: false
 
 jobs:
   execute:
-    if: startsWith(github.event.head_commit.message, 'bridge-exec-home:') || startsWith(github.event.head_commit.message, 'bridge-exec-work:') || startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
-    runs-on: [self-hosted, Windows, X64, "${{ startsWith(github.event.head_commit.message, 'bridge-exec-work:') && 'codex-bridge-work' || 'codex-bridge-service' }}"]
-    timeout-minutes: 10
+    if: startsWith(github.event.head_commit.message, 'marketplaces-e2e-run:')
+    runs-on: [self-hosted, Windows, X64, codex-bridge-work]
+    timeout-minutes: 12
     steps:
-      - name: Fetch and execute approved PowerShell command
+      - name: Fetch and execute approved read-only E2E command
         shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host '=== POWERSHELL_BRIDGE_BEGIN ==='
+          Write-Host '=== MARKETPLACES_NATIVE_E2E_BEGIN ==='
           Write-Host "Commit: $env:GITHUB_SHA"
           Write-Host "Runner: $env:RUNNER_NAME"
           Write-Host "Computer: $env:COMPUTERNAME"
@@ -37,19 +37,19 @@ jobs:
             Authorization = "Bearer $env:GH_TOKEN"
             Accept = 'application/vnd.github+json'
             'X-GitHub-Api-Version' = '2022-11-28'
-            'User-Agent' = 'powershell-bridge'
+            'User-Agent' = 'marketplaces-native-e2e'
           }
           $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
           $raw = ($resp.content -replace '\s','')
-          $tmp = Join-Path $env:RUNNER_TEMP 'bridge-command.ps1'
+          $tmp = Join-Path $env:RUNNER_TEMP 'marketplaces-native-e2e.ps1'
           [IO.File]::WriteAllBytes($tmp, [Convert]::FromBase64String($raw))
 
-          Write-Host '--- command.ps1 ---'
+          Write-Host '--- approved command.ps1 ---'
           Get-Content $tmp
           Write-Host '--- output ---'
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $tmp
           $exit = $LASTEXITCODE
           if ($null -eq $exit) { $exit = 0 }
           Write-Host "--- exit_code=$exit ---"
-          Write-Host '=== POWERSHELL_BRIDGE_END ==='
+          Write-Host '=== MARKETPLACES_NATIVE_E2E_END ==='
           if ($exit -ne 0) { exit $exit }
