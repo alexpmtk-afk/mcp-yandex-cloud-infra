@@ -1,0 +1,282 @@
+name: Configure Marketplace Card Monitor TEST
+
+on:
+  workflow_run:
+    workflows:
+      - Deploy Marketplaces MCP TEST
+    types:
+      - completed
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-card-monitor-test
+  cancel-in-progress: false
+
+jobs:
+  configure:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          for attempt in $(seq 1 8); do
+            rm -f "$ARCHIVE"
+            if timeout 90s curl --fail --silent --show-error --retry 2 --retry-all-errors -o "$ARCHIVE" "$URL" \
+              && tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+              break
+            fi
+            [[ "$attempt" -lt 8 ]]
+            sleep 4
+          done
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve TEST runtime resources
+        id: resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          RUNTIME_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
+          GATEWAY_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-gateway")|.id'|head -1)"
+          REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          NETWORK_ID="$(timeout 45s yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-net")|.id'|head -1)"
+          CLUSTER_ID="$(timeout 45s yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
+          REDIS_HOST="$(timeout 45s yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
+          GATEWAY_JSON="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json)"
+          GATEWAY_ID="$(jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].id//.[0].id//empty' <<<"$GATEWAY_JSON")"
+          DOMAIN="$(jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty' <<<"$GATEWAY_JSON")"
+          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA GATEWAY_SA REGISTRY_ID NETWORK_ID REDIS_HOST GATEWAY_ID DOMAIN; do
+            test -n "${!v}"
+          done
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "runtime_sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
+          echo "gateway_sa=$GATEWAY_SA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY_ID" >> "$GITHUB_OUTPUT"
+          echo "network=$NETWORK_ID" >> "$GITHUB_OUTPUT"
+          echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
+          echo "gateway=$GATEWAY_ID" >> "$GITHUB_OUTPUT"
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo 'CARD_MONITOR_RESOURCES=RESOLVED'
+
+      - name: Ensure dedicated Card Monitor ingest secret
+        id: secret
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          BASE_VERSION_ID: ${{ steps.resources.outputs.version }}
+        run: |
+          set -euo pipefail
+          PAYLOAD_FILE="$RUNNER_TEMP/lockbox-payload.json"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION_ID" --format json --no-user-output > "$PAYLOAD_FILE"
+          EXISTING="$(jq -r '.entries[]?|select(.key=="card_monitor_ingest_token")|.text_value // empty' "$PAYLOAD_FILE")"
+          if [[ -n "$EXISTING" ]]; then
+            TOKEN="$EXISTING"
+            VERSION_ID="$BASE_VERSION_ID"
+            echo 'card_monitor_ingest_secret=REUSED'
+          else
+            TOKEN="$(openssl rand -hex 32)"
+            echo "::add-mask::$TOKEN"
+            CHANGE="$(jq -nc --arg value "$TOKEN" '[{"key":"card_monitor_ingest_token","text_value":$value}]')"
+            timeout 60s yc lockbox secret add-version --id "$SECRET_ID" --base-version-id "$BASE_VERSION_ID" \
+              --description 'Marketplace Card Monitor ingest token' --payload "$CHANGE" --format json --no-user-output \
+              > "$RUNNER_TEMP/new-secret-version.json"
+            VERSION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/new-secret-version.json")"
+            test -n "$VERSION_ID"
+            echo 'card_monitor_ingest_secret=CREATED'
+          fi
+          echo "::add-mask::$TOKEN"
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/card-monitor-token"
+          chmod 600 "$RUNNER_TEMP/card-monitor-token"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Resolve MCP bearer and current deploy image
+        id: runtime
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          VERSION_ID: ${{ steps.secret.outputs.version }}
+          REGISTRY_ID: ${{ steps.resources.outputs.registry }}
+        run: |
+          set -euo pipefail
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/current-payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/current-payload.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/mcp-bearer"
+          chmod 600 "$RUNNER_TEMP/mcp-bearer"
+          if [[ "${{ github.event_name }}" == 'workflow_run' ]]; then
+            SOURCE_SHA='${{ github.event.workflow_run.head_sha }}'
+          else
+            SOURCE_SHA='${{ github.sha }}'
+          fi
+          IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:test-${SOURCE_SHA}"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy Card Monitor-enabled runtime revision
+        id: deploy
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resources.outputs.folder }}
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          VERSION_ID: ${{ steps.secret.outputs.version }}
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+          RUNTIME_SA: ${{ steps.resources.outputs.runtime_sa }}
+          NETWORK_ID: ${{ steps.resources.outputs.network }}
+          REDIS_HOST: ${{ steps.resources.outputs.redis_host }}
+          IMAGE: ${{ steps.runtime.outputs.image }}
+        run: |
+          set -euo pipefail
+          timeout 180s yc serverless container revision deploy \
+            --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
+            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 60s --concurrency 8 \
+            --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,WB_GLOBAL_RPS=5,OZON_GLOBAL_RPS=20,OZON_PERF_GLOBAL_RPS=10" \
+            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
+            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
+            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --secret "environment-variable=CARD_MONITOR_INGEST_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=card_monitor_ingest_token" \
+            --format json --no-user-output > "$RUNNER_TEMP/card-monitor-revision.json"
+          REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/card-monitor-revision.json")"
+          test -n "$REVISION_ID"
+          echo "revision=$REVISION_ID" >> "$GITHUB_OUTPUT"
+          echo "CARD_MONITOR_REVISION=$REVISION_ID"
+
+      - name: Update existing API Gateway specification
+        shell: bash
+        env:
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+          GATEWAY_SA: ${{ steps.resources.outputs.gateway_sa }}
+          GATEWAY_ID: ${{ steps.resources.outputs.gateway }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          src = Path('terraform/mcp_gateway.yaml.tftpl').read_text(encoding='utf-8')
+          src = src.replace('${container_id}', os.environ['CONTAINER_ID'])
+          src = src.replace('${service_account_id}', os.environ['GATEWAY_SA'])
+          Path(os.environ['RUNNER_TEMP'], 'card-monitor-gateway.yaml').write_text(src, encoding='utf-8')
+          PY
+          timeout 120s yc serverless api-gateway update --id "$GATEWAY_ID" \
+            --spec "$RUNNER_TEMP/card-monitor-gateway.yaml" --format json --no-user-output \
+            > "$RUNNER_TEMP/gateway-update.json"
+          echo 'CARD_MONITOR_GATEWAY=UPDATED'
+
+      - name: End-to-end Card Monitor acceptance
+        shell: bash
+        timeout-minutes: 5
+        env:
+          DOMAIN: ${{ steps.resources.outputs.domain }}
+          SOURCE_SHA: ${{ steps.runtime.outputs.source_sha }}
+        run: |
+          set -euo pipefail
+          BASE="https://${DOMAIN}"
+          for attempt in $(seq 1 18); do
+            CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
+            [[ "$CODE" == 200 ]] && break
+            sleep 5
+          done
+          test "$CODE" = 200
+          echo 'healthz=PASS'
+
+          UNAUTH="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/ingest-unauth" -w '%{http_code}' \
+            -X POST "$BASE/card-monitor/ingest" -H 'Content-Type: application/json' \
+            --data '{"schema":"MARKETPLACE_CARD_BATCH_V1","results":[]}' || true)"
+          test "$UNAUTH" = 401
+          echo 'ingest_unauthorized_401=PASS'
+
+          TOKEN="$(cat "$RUNNER_TEMP/card-monitor-token")"
+          SMOKE="$(jq -nc --arg run "cloud-deploy-smoke-${SOURCE_SHA}" '{schema:"MARKETPLACE_CARD_BATCH_V1",run_id:$run,started_at:null,finished_at:null,shopper:{region:"Воронеж"},status:"PASS",cards_total:0,cards_pass:0,cards_fail:0,results:[]}')"
+          AUTH="$(curl -sS --max-time 45 -o "$RUNNER_TEMP/ingest-auth" -w '%{http_code}' \
+            -X POST "$BASE/card-monitor/ingest" -H "Authorization: Bearer $TOKEN" \
+            -H 'Content-Type: application/json' --data "$SMOKE" || true)"
+          test "$AUTH" = 202
+          jq -e '.ok==true and .accepted==0' "$RUNNER_TEMP/ingest-auth" >/dev/null
+          echo 'ingest_authenticated_202=PASS'
+
+          export MCP_URL="$BASE/mcp"
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/mcp-bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          python - <<'PY'
+          import itertools, json, os
+          import httpx
+          ids=itertools.count(1)
+          h={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json()
+          with httpx.Client(timeout=45,follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'card-monitor-acceptance','version':'1'}}})
+              init=unpack(r); assert 'result' in init,init
+              sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              def rpc(method,params=None):
+                  d=unpack(c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})); assert 'result' in d,d; return d['result']
+              names={x['name'] for x in rpc('tools/list')['tools']}
+              need={'card_monitor_status','card_monitor_get_latest','card_monitor_get_history','card_monitor_compare_prices'}
+              assert need <= names, sorted(need-names)
+              out=rpc('tools/call',{'name':'card_monitor_status','arguments':{}})
+              assert not out.get('isError'),out
+              text=next(x['text'] for x in out['content'] if x.get('type')=='text')
+              status=json.loads(text)
+              assert status['batch']['run_id'].startswith('cloud-deploy-smoke-'),status
+              print('CARD_MONITOR_MCP_TOOLS=PASS')
+              print('CARD_MONITOR_REDIS_ROUNDTRIP=PASS')
+          PY
+          echo 'CARD_MONITOR_CLOUD_ACCEPTANCE=PASS'
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" \
+            "$RUNNER_TEMP/lockbox-payload.json" "$RUNNER_TEMP/new-secret-version.json" \
+            "$RUNNER_TEMP/current-payload.json" "$RUNNER_TEMP/card-monitor-token" \
+            "$RUNNER_TEMP/mcp-bearer" "$RUNNER_TEMP/card-monitor-revision.json" \
+            "$RUNNER_TEMP/card-monitor-gateway.yaml" "$RUNNER_TEMP/gateway-update.json" \
+            "$RUNNER_TEMP/health" "$RUNNER_TEMP/ingest-unauth" "$RUNNER_TEMP/ingest-auth"
