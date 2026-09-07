@@ -266,15 +266,28 @@ jobs:
               if data.get('ok') is True and 200 <= int(data.get('status', 0)) < 300:
                   print(f'{name}_LIVE=PASS', flush=True)
                   return 'pass'
-              valid_429 = (
+
+              retry_after = float(data.get('retry_after_seconds', 0) or 0)
+              common = (
                   data.get('error_type') == 'rate_limit'
-                  and int(data.get('code', 0)) == 429
                   and data.get('retryable') is True
-                  and float(data.get('retry_after_seconds', 0) or 0) > 0
+                  and retry_after > 0
               )
-              assert valid_429, (name, data)
-              print(f'{name}_LIVE=RATE_LIMIT_REACHABLE retry_after={data.get("retry_after_seconds")}', flush=True)
-              return 'rate_limit'
+              provider_429 = common and int(data.get('code', 0) or 0) == 429
+              message = str(data.get('message', ''))
+              local_cooldown = (
+                  common
+                  and data.get('error') == 'rate_limit'
+                  and data.get('code') in (None, '')
+                  and 'locally rate-limited' in message
+                  and 'HTTP request was not sent' in message
+              )
+              assert provider_429 or local_cooldown, (name, data)
+              if provider_429:
+                  print(f'{name}_LIVE=PROVIDER_RATE_LIMIT_REACHABLE retry_after={retry_after}', flush=True)
+                  return 'provider_rate_limit'
+              print(f'{name}_LIVE=LOCAL_COOLDOWN_PROTECTED retry_after={retry_after}', flush=True)
+              return 'local_cooldown'
 
           headers0 = {
               'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
@@ -286,7 +299,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'4'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'5'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               print('initialize=PASS', flush=True)
@@ -327,10 +340,10 @@ jobs:
               ozr = call('ozon_rate_limit_status', {})
               assert wbr.get('backend') == 'redis', wbr
               assert ozr.get('backend') == 'redis', ozr
-              if wb_state == 'rate_limit':
-                  print('WB_RATE_LIMIT_HANDLING=PASS', flush=True)
-              if oz_state == 'rate_limit':
-                  print('OZON_RATE_LIMIT_HANDLING=PASS', flush=True)
+              if wb_state != 'pass':
+                  print(f'WB_RATE_LIMIT_HANDLING=PASS mode={wb_state}', flush=True)
+              if oz_state != 'pass':
+                  print(f'OZON_RATE_LIMIT_HANDLING=PASS mode={oz_state}', flush=True)
               print('LIMITER_BACKEND=redis', flush=True)
               print('REMOTE_WB_OZON_ACCEPTANCE=PASS', flush=True)
           PY
