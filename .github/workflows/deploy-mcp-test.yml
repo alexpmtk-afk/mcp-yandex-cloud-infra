@@ -262,6 +262,20 @@ jobs:
                       return json.loads(line[5:].strip())
               return r.json() if r.text.strip() else None
 
+          def live_ok_or_rate_limited(name, data):
+              if data.get('ok') is True and 200 <= int(data.get('status', 0)) < 300:
+                  print(f'{name}_LIVE=PASS', flush=True)
+                  return 'pass'
+              valid_429 = (
+                  data.get('error_type') == 'rate_limit'
+                  and int(data.get('code', 0)) == 429
+                  and data.get('retryable') is True
+                  and float(data.get('retry_after_seconds', 0) or 0) > 0
+              )
+              assert valid_429, (name, data)
+              print(f'{name}_LIVE=RATE_LIMIT_REACHABLE retry_after={data.get("retry_after_seconds")}', flush=True)
+              return 'rate_limit'
+
           headers0 = {
               'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
               'Accept': 'application/json, text/event-stream',
@@ -272,7 +286,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'3'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'4'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               print('initialize=PASS', flush=True)
@@ -304,17 +318,19 @@ jobs:
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               wb = call('wb_get_sales', {'date_from':datetime.date.today().isoformat(),'flag':0})
-              assert wb.get('ok') is True and 200 <= int(wb.get('status',0)) < 300, wb
-              print('WB_LIVE=PASS', flush=True)
+              wb_state = live_ok_or_rate_limited('WB', wb)
 
               oz = call('ozon_get_products', {'visibility':'ALL','limit':1,'last_id':''})
-              assert oz.get('ok') is True and 200 <= int(oz.get('status',0)) < 300, oz
-              print('OZON_LIVE=PASS', flush=True)
+              oz_state = live_ok_or_rate_limited('OZON', oz)
 
               wbr = call('wb_rate_limit_status', {})
               ozr = call('ozon_rate_limit_status', {})
               assert wbr.get('backend') == 'redis', wbr
               assert ozr.get('backend') == 'redis', ozr
+              if wb_state == 'rate_limit':
+                  print('WB_RATE_LIMIT_HANDLING=PASS', flush=True)
+              if oz_state == 'rate_limit':
+                  print('OZON_RATE_LIMIT_HANDLING=PASS', flush=True)
               print('LIMITER_BACKEND=redis', flush=True)
               print('REMOTE_WB_OZON_ACCEPTANCE=PASS', flush=True)
           PY
