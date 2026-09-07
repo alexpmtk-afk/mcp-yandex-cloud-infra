@@ -1,10 +1,16 @@
 openapi: "3.0.0"
 info:
   title: Marketplaces MCP TEST
-  version: "1.0"
+  version: "1.1"
 paths:
   /healthz:
     get:
+      x-yc-apigateway-integration:
+        type: serverless_containers
+        container_id: ${container_id}
+        service_account_id: ${service_account_id}
+  /card-monitor/ingest:
+    post:
       x-yc-apigateway-integration:
         type: serverless_containers
         container_id: ${container_id}
