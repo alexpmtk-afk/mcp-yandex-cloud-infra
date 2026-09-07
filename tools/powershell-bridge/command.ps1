@@ -22,7 +22,7 @@ $headers = @{
     Authorization = "Bearer $env:GH_TOKEN"
     Accept = 'application/vnd.github+json'
     'X-GitHub-Api-Version' = '2022-11-28'
-    'User-Agent' = 'powershell-bridge'
+    'User-Agent' = 'powershell-admin-bridge'
 }
 $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
 if ($resp.encoding -ne 'base64') { throw "Unexpected blob encoding: $($resp.encoding)" }
