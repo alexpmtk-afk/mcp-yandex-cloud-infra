@@ -1,50 +1,47 @@
 $ErrorActionPreference = 'Continue'
 $runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-
-Write-Host '=== CARD_MONITOR_HANG_INSPECT_BEGIN ==='
-Write-Host "BRIDGE_IDENTITY=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-
-Write-Host '--- LAUNCHER ---'
-$p = Join-Path $runtimeRoot 'canonical-user-node-launcher.ps1'
-if (Test-Path $p) { Get-Content $p -Raw }
-
-Write-Host '--- PYTHON_MONITOR_PROCESSES ---'
-Get-CimInstance Win32_Process | Where-Object {
-  $_.Name -match 'python|powershell' -and $_.CommandLine -like '*marketplace-card-monitor*'
-} | ForEach-Object {
-  Write-Host ("PID={0} NAME={1} SESSION={2} CMD={3}" -f $_.ProcessId,$_.Name,$_.SessionId,$_.CommandLine)
-}
-
-Write-Host '--- RECENT_RUN_DIRS ---'
 $runs = Join-Path $runtimeRoot 'runs'
-if (Test-Path $runs) {
-  Get-ChildItem $runs -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 5 | ForEach-Object {
-    Write-Host ("RUN_DIR={0} UTC={1:o}" -f $_.FullName,$_.LastWriteTimeUtc)
-    Get-ChildItem $_.FullName -File | Sort-Object LastWriteTimeUtc | ForEach-Object {
-      Write-Host ("  FILE={0} SIZE={1} UTC={2:o}" -f $_.Name,$_.Length,$_.LastWriteTimeUtc)
+Write-Host '=== CARD_MONITOR_RESULT_INSPECT_BEGIN ==='
+$newest = Get-ChildItem $runs -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+Write-Host "RUN=$($newest.FullName)"
+$targets = @('ozon-cordiant-snow-cross-2.json','wb-cordiant-snow-cross-2.json','wb-formula-ice.json')
+foreach ($name in $targets) {
+  $p = Join-Path $newest.FullName $name
+  Write-Host "### $name ###"
+  if (-not (Test-Path $p)) { Write-Host 'NOT_FOUND'; continue }
+  try {
+    $j = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
+    Write-Host "STATUS=$($j.status)"
+    Write-Host "NAME=$($j.name)"
+    Write-Host "SKU=$($j.sku)"
+    Write-Host "REGION_OK=$($j.region_ok)"
+    Write-Host "NAME_OK=$($j.name_ok)"
+    Write-Host "REQUIRED_OK=$($j.required_ok)"
+    Write-Host "FORBIDDEN_OK=$($j.forbidden_ok)"
+    Write-Host "BLOCKED=$($j.blocked)"
+    Write-Host "AVAILABILITY=$($j.availability)"
+    Write-Host "SELLER=$($j.seller)"
+    if ($j.price) {
+      Write-Host "PRICE_BUYER=$($j.price.buyer_price_rub)"
+      Write-Host "PRICE_SECONDARY=$($j.price.secondary_price_rub)"
+      Write-Host "PRICE_METHOD=$($j.price.method)"
+      Write-Host ("PRICE_CANDIDATES=" + (($j.price.candidates_rub | Select-Object -First 15) -join ','))
     }
-  }
-}
-
-Write-Host '--- NEWEST_PARTIAL_JSONS ---'
-if (Test-Path $runs) {
-  $newest = Get-ChildItem $runs -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
-  if ($newest) {
-    foreach ($f in (Get-ChildItem $newest.FullName -File -Filter '*.json' | Sort-Object LastWriteTimeUtc)) {
-      Write-Host "### $($f.Name) ###"
-      try {
-        $j = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
-        if ($j.status) { Write-Host "STATUS=$($j.status)" }
-        if ($j.marketplace) { Write-Host "MARKETPLACE=$($j.marketplace)" }
-        if ($j.query) { Write-Host "QUERY=$($j.query)" }
-        if ($null -ne $j.raw_product_links) { Write-Host "RAW_PRODUCT_LINKS=$($j.raw_product_links)" }
-        if ($j.error) { Write-Host "ERROR=$($j.error)" }
-        if ($j.selected) { Write-Host ("SELECTED_SKU={0} URL={1}" -f $j.selected.sku,$j.selected.url) }
-        if ($j.body_excerpt) { Write-Host ("BODY_EXCERPT=" + ([string]$j.body_excerpt).Substring(0,[Math]::Min(1200,([string]$j.body_excerpt).Length))) }
-        if ($j.resource_samples) { Write-Host ("RESOURCES=" + (($j.resource_samples | Select-Object -First 12) -join ' | ')) }
-      } catch { Write-Host "PARSE_ERROR=$($_.Exception.Message)" }
+    if ($j.required_text) { Write-Host ("REQUIRED_TEXT=" + ($j.required_text -join '|')) }
+    if ($j.forbidden_text) { Write-Host ("FORBIDDEN_TEXT=" + ($j.forbidden_text -join '|')) }
+    if ($j.evidence -and $j.evidence.body_excerpt) {
+      $b = [string]$j.evidence.body_excerpt
+      Write-Host ("BODY_HEAD=" + $b.Substring(0,[Math]::Min(3000,$b.Length)))
+      $needles = @('Шип','Нешип','Friction','Вид шин','Тип шин','Cordiant','Formula','195','R16','WB Кошел')
+      foreach ($n in $needles) {
+        $idx = $b.IndexOf($n,[StringComparison]::OrdinalIgnoreCase)
+        if ($idx -ge 0) {
+          $start=[Math]::Max(0,$idx-250); $len=[Math]::Min(900,$b.Length-$start)
+          Write-Host ("CONTEXT[$n]=" + $b.Substring($start,$len))
+        }
+      }
     }
-  }
+  } catch { Write-Host "PARSE_ERROR=$($_.Exception.Message)" }
 }
-Write-Host '=== CARD_MONITOR_HANG_INSPECT_END ==='
+Write-Host '=== CARD_MONITOR_RESULT_INSPECT_END ==='
 exit 0
