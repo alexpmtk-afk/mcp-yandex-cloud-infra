@@ -12,12 +12,12 @@ $taskExitFile = Join-Path $runtimeRoot 'canonical-task-exit.json'
 $resultFile = Join-Path $runtimeRoot 'plain-cdp-canonical.json'
 $screenshotFile = Join-Path $runtimeRoot 'plain-cdp-canonical.png'
 $taskName = 'MarketplaceCardMonitor-UserNode-Canonical'
-$payloadPath = 'tools/powershell-bridge/payloads/ozon_plain_cdp_probe_25af2c9.py'
+$blobSha = '1d8eac0d6cd208431da5b2457ad59be57162d6e2'
 
 if (-not (Test-Path $python)) { throw "Python not found: $python" }
 if (-not (Test-Path $browser)) { throw "Yandex Browser not found: $browser" }
 
-$uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$payloadPath?ref=$env:GITHUB_SHA"
+$uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/git/blobs/$blobSha"
 $headers = @{
     Authorization = "Bearer $env:GH_TOKEN"
     Accept = 'application/vnd.github+json'
@@ -25,6 +25,7 @@ $headers = @{
     'User-Agent' = 'powershell-bridge'
 }
 $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
+if ($resp.encoding -ne 'base64') { throw "Unexpected blob encoding: $($resp.encoding)" }
 $raw = ($resp.content -replace '\s','')
 [IO.File]::WriteAllBytes($probe, [Convert]::FromBase64String($raw))
 
