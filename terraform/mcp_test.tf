@@ -52,6 +52,10 @@ resource "yandex_lockbox_secret" "marketplace_credentials" {
   labels              = local.labels
 }
 
+# Terraform owns the stable container identity/foundation. Runtime revisions are
+# deliberately deployed by the CI workflow because they also carry VPC,
+# Redis/rate-limit environment and Lockbox secret bindings. Ignoring revision
+# fields prevents a routine Terraform apply from stripping that runtime config.
 resource "yandex_serverless_container" "mcp" {
   count              = var.mcp_image_url == null ? 0 : 1
   folder_id          = yandex_resourcemanager_folder.mcp_test.id
@@ -65,6 +69,10 @@ resource "yandex_serverless_container" "mcp" {
     url = var.mcp_image_url
   }
   labels = local.labels
+
+  lifecycle {
+    ignore_changes = [image, connectivity]
+  }
 }
 
 resource "yandex_serverless_container_iam_member" "gateway_invoker" {
