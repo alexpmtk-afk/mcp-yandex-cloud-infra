@@ -209,6 +209,36 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bearer"
           echo 'bearer=RESOLVED'
 
+      - name: Gate MCP security and readiness
+        shell: bash
+        timeout-minutes: 3
+        env:
+          GATEWAY_URL: ${{ steps.deploy.outputs.gateway_url }}
+        run: |
+          set -euo pipefail
+          BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          UNAUTH="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/unauth" -w '%{http_code}' -X POST "$GATEWAY_URL/mcp" \
+            -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+            --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"unauth-readiness","version":"1"}}}' || true)"
+          test "$UNAUTH" = 401
+          echo 'unauthorized_401=PASS'
+
+          AUTH=000
+          for attempt in $(seq 1 18); do
+            AUTH="$(curl -sS --max-time 60 -o "$RUNNER_TEMP/auth" -w '%{http_code}' -X POST "$GATEWAY_URL/mcp" \
+              -H "Authorization: Bearer $BEARER" \
+              -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' \
+              --data '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"auth-readiness","version":"1"}}}' || true)"
+            if [[ "$AUTH" == 200 ]]; then
+              break
+            fi
+            echo "mcp readiness attempt $attempt/18 status=$AUTH"
+            sleep 5
+          done
+          test "$AUTH" = 200
+          echo 'authenticated_initialize_200=PASS'
+          echo 'MCP_READINESS=PASS'
+
       - name: Remote MCP and live WB/Ozon acceptance
         shell: bash
         timeout-minutes: 8
@@ -242,7 +272,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'2'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'3'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               print('initialize=PASS', flush=True)
@@ -307,4 +337,4 @@ jobs:
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/unauth" "$RUNNER_TEMP/auth"
