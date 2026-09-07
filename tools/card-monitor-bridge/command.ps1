@@ -1,57 +1,50 @@
 $ErrorActionPreference = 'Continue'
 $runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$taskName = '\MarketplaceCardMonitor-UserNode-Canonical'
 
-Write-Host '=== CARD_MONITOR_STATE_BEGIN ==='
+Write-Host '=== CARD_MONITOR_HANG_INSPECT_BEGIN ==='
 Write-Host "BRIDGE_IDENTITY=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-Write-Host "COMPUTER=$env:COMPUTERNAME"
 
-Write-Host '--- TASK_QUERY ---'
-& schtasks.exe /Query /TN $taskName /V /FO LIST
-Write-Host "TASK_QUERY_EXIT=$LASTEXITCODE"
-
-Write-Host '--- TASK_XML ---'
-& schtasks.exe /Query /TN $taskName /XML
-Write-Host "TASK_XML_EXIT=$LASTEXITCODE"
-
-Write-Host '--- RUNTIME_FILES ---'
-$names = @('canonical-user-node-launcher.ps1','canonical-task.started','canonical-task-exit.json','latest.json','resolved-targets.json','card_collector.py','target_discovery.py','batch_monitor.py','tires-195-55-r16.json')
-foreach ($name in $names) {
-  $p = Join-Path $runtimeRoot $name
-  if (Test-Path $p) {
-    $i = Get-Item $p
-    Write-Host ("FILE={0} SIZE={1} UTC={2:o}" -f $name,$i.Length,$i.LastWriteTimeUtc)
-  } else { Write-Host "FILE=$name NOT_FOUND" }
-}
-
-Write-Host '--- START_MARKER ---'
-$p = Join-Path $runtimeRoot 'canonical-task.started'
+Write-Host '--- LAUNCHER ---'
+$p = Join-Path $runtimeRoot 'canonical-user-node-launcher.ps1'
 if (Test-Path $p) { Get-Content $p -Raw }
-Write-Host '--- TASK_EXIT ---'
-$p = Join-Path $runtimeRoot 'canonical-task-exit.json'
-if (Test-Path $p) { Get-Content $p -Raw -Encoding UTF8 }
 
-Write-Host '--- LATEST_SUMMARY ---'
-$p = Join-Path $runtimeRoot 'latest.json'
-if (Test-Path $p) {
-  try {
-    $j = Get-Content $p -Raw -Encoding UTF8 | ConvertFrom-Json
-    Write-Host ("RUN_ID={0} STATUS={1} TOTAL={2} PASS={3} FAIL={4} FINISHED={5}" -f $j.run_id,$j.status,$j.cards_total,$j.cards_pass,$j.cards_fail,$j.finished_at)
-    foreach ($r in $j.results) {
-      $price = $null; if ($r.price) { $price = $r.price.buyer_price_rub }
-      $ds = $null; $raw = $null; if ($r.discovery) { $ds = $r.discovery.status; $raw = $r.discovery.raw_product_links }
-      Write-Host ("CARD={0} MP={1} STATUS={2} SKU={3} PRICE={4} DISC={5} RAWLINKS={6}" -f $r.id,$r.marketplace,$r.status,$r.sku,$price,$ds,$raw)
+Write-Host '--- PYTHON_MONITOR_PROCESSES ---'
+Get-CimInstance Win32_Process | Where-Object {
+  $_.Name -match 'python|powershell' -and $_.CommandLine -like '*marketplace-card-monitor*'
+} | ForEach-Object {
+  Write-Host ("PID={0} NAME={1} SESSION={2} CMD={3}" -f $_.ProcessId,$_.Name,$_.SessionId,$_.CommandLine)
+}
+
+Write-Host '--- RECENT_RUN_DIRS ---'
+$runs = Join-Path $runtimeRoot 'runs'
+if (Test-Path $runs) {
+  Get-ChildItem $runs -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 5 | ForEach-Object {
+    Write-Host ("RUN_DIR={0} UTC={1:o}" -f $_.FullName,$_.LastWriteTimeUtc)
+    Get-ChildItem $_.FullName -File | Sort-Object LastWriteTimeUtc | ForEach-Object {
+      Write-Host ("  FILE={0} SIZE={1} UTC={2:o}" -f $_.Name,$_.Length,$_.LastWriteTimeUtc)
     }
-  } catch { Write-Host "LATEST_PARSE_ERROR=$($_.Exception.Message)" }
+  }
 }
 
-Write-Host '--- RESOLVED_TARGETS ---'
-$p = Join-Path $runtimeRoot 'resolved-targets.json'
-if (Test-Path $p) { Get-Content $p -Raw -Encoding UTF8 }
-
-Write-Host '--- YANDEX_MONITOR_PROCESSES ---'
-Get-CimInstance Win32_Process -Filter "Name='browser.exe'" | Where-Object { $_.CommandLine -like '*marketplace-card-monitor*' } | ForEach-Object {
-  Write-Host ("PID={0} CMD={1}" -f $_.ProcessId,$_.CommandLine)
+Write-Host '--- NEWEST_PARTIAL_JSONS ---'
+if (Test-Path $runs) {
+  $newest = Get-ChildItem $runs -Directory | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1
+  if ($newest) {
+    foreach ($f in (Get-ChildItem $newest.FullName -File -Filter '*.json' | Sort-Object LastWriteTimeUtc)) {
+      Write-Host "### $($f.Name) ###"
+      try {
+        $j = Get-Content $f.FullName -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j.status) { Write-Host "STATUS=$($j.status)" }
+        if ($j.marketplace) { Write-Host "MARKETPLACE=$($j.marketplace)" }
+        if ($j.query) { Write-Host "QUERY=$($j.query)" }
+        if ($null -ne $j.raw_product_links) { Write-Host "RAW_PRODUCT_LINKS=$($j.raw_product_links)" }
+        if ($j.error) { Write-Host "ERROR=$($j.error)" }
+        if ($j.selected) { Write-Host ("SELECTED_SKU={0} URL={1}" -f $j.selected.sku,$j.selected.url) }
+        if ($j.body_excerpt) { Write-Host ("BODY_EXCERPT=" + ([string]$j.body_excerpt).Substring(0,[Math]::Min(1200,([string]$j.body_excerpt).Length))) }
+        if ($j.resource_samples) { Write-Host ("RESOURCES=" + (($j.resource_samples | Select-Object -First 12) -join ' | ')) }
+      } catch { Write-Host "PARSE_ERROR=$($_.Exception.Message)" }
+    }
+  }
 }
-Write-Host '=== CARD_MONITOR_STATE_END ==='
+Write-Host '=== CARD_MONITOR_HANG_INSPECT_END ==='
 exit 0
