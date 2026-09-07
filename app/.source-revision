@@ -1,3 +1,3 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@3bdcf4810e09341b497518cb223ad77773c60bd6
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@9e3ac8e1b2da90b322020cc6634a91b5f3feaea0
 Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.
-Synced: 2026-09-07 after migration of WB stocks to the current Seller Analytics API.
+Synced: 2026-09-07 after live WB stocks migration plus runtime catalog/workflow cleanup.
