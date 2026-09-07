@@ -1,92 +1,87 @@
+$ErrorActionPreference = 'Stop'
+
+Write-Host '=== USER_CONTEXT_PROBE_BEGIN ==='
+
+$user = 'Win10_Game_OS'
+$probeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\interactive-probe-v1'
+$probeScript = Join-Path $probeRoot 'probe.ps1'
+$resultFile = Join-Path $probeRoot 'result.json'
+$taskName = 'MarketplaceCardMonitor-UserContextProbe'
+
+New-Item -ItemType Directory -Force -Path $probeRoot | Out-Null
+if (Test-Path $resultFile) {
+    Remove-Item $resultFile -Force
+}
+
+& icacls.exe $probeRoot /grant "${user}:(OI)(CI)M" /T /C | Out-Null
+
+$script = @'
 $ErrorActionPreference = 'Continue'
 
-Write-Host '=== OZON_USER_NODE_AUDIT_BEGIN ==='
-Write-Host "RUNNER=$env:RUNNER_NAME"
-Write-Host "COMPUTER=$env:COMPUTERNAME"
-Write-Host "SERVICE_USER=$env:USERNAME"
+$env:GH_TOKEN = $null
+$env:GITHUB_TOKEN = $null
+$env:GIT_TERMINAL_PROMPT = '0'
+$env:GCM_INTERACTIVE = 'Never'
 
-Write-Host '--- INTERACTIVE_SESSIONS ---'
-try {
-    quser 2>&1 | ForEach-Object { Write-Host $_ }
-} catch {
-    Write-Host "QUSER_ERROR=$($_.Exception.Message)"
+$result = [ordered]@{
+    timestamp = (Get-Date).ToString('o')
+    user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    username = $env:USERNAME
+    userprofile = $env:USERPROFILE
+    session_id = (Get-Process -Id $PID).SessionId
+    chrome_path = $null
+    gh_path = $null
+    gh_auth_ok = $false
+    gh_repo_access = $false
+    git_path = $null
+    git_repo_access = $false
+    winget_path = $null
+    python_paths = @()
 }
 
-Write-Host '--- MARKETPLACE_SCHEDULED_TASKS ---'
-try {
-    $tasks = Get-ScheduledTask -ErrorAction Stop |
-        Where-Object {
-            $_.TaskName -match '(?i)ozon|marketplace|card.monitor' -or
-            $_.TaskPath -match '(?i)ozon|marketplace|card.monitor'
-        }
+$chrome = 'C:\Program Files\Google\Chrome\Application\chrome.exe'
+if (Test-Path $chrome) {
+    $result.chrome_path = $chrome
+}
 
-    if (-not $tasks) {
-        Write-Host 'SCHEDULED_TASKS_FOUND=NO'
-    } else {
-        Write-Host 'SCHEDULED_TASKS_FOUND=YES'
-        foreach ($task in $tasks) {
-            Write-Host "TASK_NAME=$($task.TaskName)"
-            Write-Host "TASK_PATH=$($task.TaskPath)"
-            Write-Host "TASK_STATE=$($task.State)"
-            Write-Host "TASK_USER=$($task.Principal.UserId)"
-            Write-Host "TASK_LOGON_TYPE=$($task.Principal.LogonType)"
-            foreach ($action in $task.Actions) {
-                Write-Host "TASK_EXECUTE=$($action.Execute)"
-                Write-Host "TASK_ARGUMENTS=$($action.Arguments)"
-                Write-Host "TASK_WORKDIR=$($action.WorkingDirectory)"
-            }
-            try {
-                $info = Get-ScheduledTaskInfo -TaskName $task.TaskName -TaskPath $task.TaskPath
-                Write-Host "TASK_LAST_RUN=$($info.LastRunTime)"
-                Write-Host "TASK_LAST_RESULT=$($info.LastTaskResult)"
-            } catch {}
-            Write-Host '---'
+$gh = Get-Command gh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $gh) {
+    $gh = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -First 1
+}
+
+if ($gh) {
+    $result.gh_path = $gh.Source
+
+    & $gh.Source auth status --hostname github.com *> $null
+    $result.gh_auth_ok = ($LASTEXITCODE -eq 0)
+
+    if ($result.gh_auth_ok) {
+        $repoName = & $gh.Source repo view alexpmtk-afk/marketplace-card-monitor --json nameWithOwner --jq '.nameWithOwner' 2>$null
+        if ($LASTEXITCODE -eq 0 -and $repoName -eq 'alexpmtk-afk/marketplace-card-monitor') {
+            $result.gh_repo_access = $true
         }
     }
-} catch {
-    Write-Host "SCHEDULED_TASK_ERROR=$($_.Exception.Message)"
 }
 
-Write-Host '--- EXISTING_MONITOR_FILES ---'
-$root = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor'
-Write-Host "MONITOR_ROOT_EXISTS=$(Test-Path $root)"
-if (Test-Path $root) {
-    Get-ChildItem -Path $root -Force -Recurse -ErrorAction SilentlyContinue |
-        Where-Object {
-            $_.FullName -notmatch '(?i)\\profile|\\user data|\\cache'
-        } |
-        Select-Object -First 200 |
-        ForEach-Object {
-            Write-Host ("ITEM={0}|TYPE={1}|SIZE={2}|MODIFIED={3}" -f
-                $_.FullName,
-                $(if ($_.PSIsContainer) {'DIR'} else {'FILE'}),
-                $(if ($_.PSIsContainer) {''} else {$_.Length}),
-                $_.LastWriteTime.ToString('s'))
-        }
+$git = Get-Command git.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if (-not $git) {
+    $git = Get-Command git -ErrorAction SilentlyContinue | Select-Object -First 1
 }
 
-Write-Host '--- CHROME ---'
-$chromeCandidates = @(
-    'C:\Program Files\Google\Chrome\Application\chrome.exe',
-    'C:\Program Files (x86)\Google\Chrome\Application\chrome.exe',
-    'C:\Users\Win10_Game_OS\AppData\Local\Google\Chrome\Application\chrome.exe'
-)
+if ($git) {
+    $result.git_path = $git.Source
 
-$chromeFound = $false
-foreach ($path in $chromeCandidates) {
-    if (Test-Path $path) {
-        $chromeFound = $true
-        Write-Host "CHROME_PATH=$path"
-        try {
-            Write-Host "CHROME_VERSION=$((Get-Item $path).VersionInfo.ProductVersion)"
-        } catch {}
+    $probe = & $git.Source ls-remote https://github.com/alexpmtk-afk/marketplace-card-monitor.git HEAD 2>$null
+    if ($LASTEXITCODE -eq 0 -and $probe) {
+        $result.git_repo_access = $true
     }
 }
-if (-not $chromeFound) {
-    Write-Host 'CHROME_FOUND=NO'
+
+$winget = Get-Command winget.exe -ErrorAction SilentlyContinue | Select-Object -First 1
+if ($winget) {
+    $result.winget_path = $winget.Source
 }
 
-Write-Host '--- PYTHON_AND_PLAYWRIGHT ---'
 $pythonCandidates = @()
 
 foreach ($name in @('python.exe','python','py.exe','py')) {
@@ -96,7 +91,7 @@ foreach ($name in @('python.exe','python','py.exe','py')) {
     }
 }
 
-Get-ChildItem 'C:\Users\Win10_Game_OS\AppData\Local\Programs\Python' -Directory -ErrorAction SilentlyContinue |
+Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Directory -ErrorAction SilentlyContinue |
     ForEach-Object {
         $candidate = Join-Path $_.FullName 'python.exe'
         if (Test-Path $candidate) {
@@ -104,39 +99,64 @@ Get-ChildItem 'C:\Users\Win10_Game_OS\AppData\Local\Programs\Python' -Directory 
         }
     }
 
-$pythonCandidates = $pythonCandidates | Select-Object -Unique
+$result.python_paths = @($pythonCandidates | Select-Object -Unique)
 
-if (-not $pythonCandidates) {
-    Write-Host 'PYTHON_FOUND=NO'
+$result |
+    ConvertTo-Json -Depth 6 |
+    Set-Content -Path 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\interactive-probe-v1\result.json' -Encoding UTF8
+'@
+
+[IO.File]::WriteAllText(
+    $probeScript,
+    $script,
+    (New-Object Text.UTF8Encoding($false))
+)
+
+try {
+    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
+} catch {}
+
+$action = New-ScheduledTaskAction `
+    -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$probeScript`""
+
+$principal = New-ScheduledTaskPrincipal `
+    -UserId $user `
+    -LogonType Interactive `
+    -RunLevel Limited
+
+$settings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask `
+    -TaskName $taskName `
+    -Action $action `
+    -Principal $principal `
+    -Settings $settings `
+    -Force | Out-Null
+
+Start-ScheduledTask -TaskName $taskName
+
+$deadline = (Get-Date).AddSeconds(60)
+
+while ((Get-Date) -lt $deadline -and -not (Test-Path $resultFile)) {
+    Start-Sleep -Seconds 2
+}
+
+if (Test-Path $resultFile) {
+    Write-Host '--- USER_CONTEXT_RESULT ---'
+    Get-Content $resultFile -Raw
 } else {
-    foreach ($pythonPath in $pythonCandidates) {
-        Write-Host "PYTHON_PATH=$pythonPath"
-        try {
-            & $pythonPath -c "import sys,importlib.util; print('PYTHON_VERSION=' + sys.version.replace(chr(10),' ')); print('PLAYWRIGHT_PRESENT=' + str(importlib.util.find_spec('playwright') is not None))" 2>&1 |
-                ForEach-Object { Write-Host $_ }
-        } catch {
-            Write-Host "PYTHON_CHECK_ERROR=$($_.Exception.Message)"
-        }
-    }
+    Write-Host 'USER_CONTEXT_RESULT=TIMEOUT'
 }
 
-Write-Host '--- GITHUB_CLI ---'
-$gh = Get-Command gh.exe -ErrorAction SilentlyContinue | Select-Object -First 1
-if (-not $gh) {
-    $gh = Get-Command gh -ErrorAction SilentlyContinue | Select-Object -First 1
-}
-if (-not $gh) {
-    Write-Host 'GH_FOUND=NO'
-} else {
-    Write-Host "GH_PATH=$($gh.Source)"
-    Write-Host 'GH_AUTH_STATUS_BEGIN'
-    & $gh.Source auth status 2>&1 | ForEach-Object { Write-Host $_ }
-    Write-Host 'GH_AUTH_STATUS_END'
+try {
+    $info = Get-ScheduledTaskInfo -TaskName $taskName
+    Write-Host "TASK_LAST_RESULT=$($info.LastTaskResult)"
+} catch {}
 
-    Write-Host 'GH_MARKETPLACE_REPO_CHECK_BEGIN'
-    & $gh.Source repo view alexpmtk-afk/marketplace-card-monitor --json nameWithOwner,defaultBranchRef 2>&1 |
-        ForEach-Object { Write-Host $_ }
-    Write-Host 'GH_MARKETPLACE_REPO_CHECK_END'
-}
+Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
 
-Write-Host '=== OZON_USER_NODE_AUDIT_END ==='
+Write-Host '=== USER_CONTEXT_PROBE_END ==='
