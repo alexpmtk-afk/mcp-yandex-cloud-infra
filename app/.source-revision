@@ -1,2 +1,3 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@07a3408eab9a2abe4ba1e9dbcfdd8c67bed0458d
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@0d1bd268a1237b4e8355669b8447358b5fd6eb5e
 Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.
+Synced: 2026-09-07 after API registry/Ozon runtime/rate-limit acceptance fixes.
