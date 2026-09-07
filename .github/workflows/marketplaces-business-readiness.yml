@@ -2,11 +2,6 @@ name: Marketplaces MCP Business Readiness
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/marketplaces-business-readiness.yml
   workflow_run:
     workflows:
       - Deploy Marketplaces MCP TEST
@@ -41,10 +36,7 @@ jobs:
           for attempt in $(seq 1 6); do
             echo "yc download attempt $attempt/6"
             if timeout 75s wget --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
-              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
-                ok=1
-                break
-              fi
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
               rm -f "$ARCHIVE"
             fi
             sleep 3
@@ -67,19 +59,14 @@ jobs:
           chmod 600 "$KEY_FILE"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
-
           CLOUD_ID=b1gi4pr9msenirafh2c7
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
-
           DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
           VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
-          test -n "$DOMAIN"
-          test -n "$SECRET_ID"
-          test -n "$VERSION_ID"
-
+          test -n "$DOMAIN" && test -n "$SECRET_ID" && test -n "$VERSION_ID"
           timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
           BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
           test -n "$BEARER"
@@ -101,64 +88,34 @@ jobs:
           timeout 120s python -u - <<'PY'
           import itertools, json, os
           import httpx
-
           required = {
-              'wb_get_sales',
-              'wb_get_stocks',
-              'wb_get_orders_summary',
-              'ozon_get_products',
-              'ozon_get_prices',
-              'wb_rate_limit_status',
-              'ozon_rate_limit_status',
+              'wb_get_sales','wb_get_stocks','wb_get_orders_summary',
+              'ozon_get_products','ozon_get_prices',
+              'wb_get_realization_report','ozon_get_accrual_types',
+              'ozon_get_accruals_by_day','ozon_get_realization',
+              'wb_rate_limit_status','ozon_rate_limit_status',
           }
-
           def unpack(response):
               response.raise_for_status()
               for line in response.text.splitlines():
-                  if line.startswith('data:'):
-                      return json.loads(line[5:].strip())
+                  if line.startswith('data:'): return json.loads(line[5:].strip())
               return response.json() if response.text.strip() else None
-
-          headers = {
-              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
-              'Accept': 'application/json, text/event-stream',
-              'Content-Type': 'application/json',
-          }
-          ids = itertools.count(1)
-          timeout = httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0)
-          with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-              init_response = client.post(os.environ['MCP_URL'], headers=headers, json={
-                  'jsonrpc': '2.0',
-                  'id': next(ids),
-                  'method': 'initialize',
-                  'params': {
-                      'protocolVersion': '2025-06-18',
-                      'capabilities': {},
-                      'clientInfo': {'name': 'business-readiness', 'version': '1'},
-                  },
-              })
-              init = unpack(init_response)
-              assert init and 'result' in init, init
-              session_headers = dict(headers)
-              session_id = init_response.headers.get('mcp-session-id')
-              if session_id:
-                  session_headers['Mcp-Session-Id'] = session_id
-              session_headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion', '2025-06-18')
-              notice = client.post(os.environ['MCP_URL'], headers=session_headers, json={
-                  'jsonrpc': '2.0', 'method': 'notifications/initialized'
-              })
-              assert notice.status_code in (200, 202), notice.status_code
-
-              listed = client.post(os.environ['MCP_URL'], headers=session_headers, json={
-                  'jsonrpc': '2.0', 'id': next(ids), 'method': 'tools/list', 'params': {}
-              })
-              payload = unpack(listed)
-              assert payload and 'result' in payload, payload
-              names = {tool['name'] for tool in payload['result']['tools']}
-              missing = sorted(required - names)
-              assert not missing, f'missing business-critical tools: {missing}'
+          headers={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          ids=itertools.count(1)
+          timeout=httpx.Timeout(connect=10.0,read=45.0,write=30.0,pool=10.0)
+          with httpx.Client(timeout=timeout,follow_redirects=True) as client:
+              init_response=client.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'business-readiness','version':'2'}}})
+              init=unpack(init_response); assert init and 'result' in init,init
+              h=dict(headers); sid=init_response.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              notice=client.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'}); assert notice.status_code in (200,202)
+              listed=client.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'tools/list','params':{}})
+              payload=unpack(listed); assert payload and 'result' in payload,payload
+              names={tool['name'] for tool in payload['result']['tools']}
+              missing=sorted(required-names); assert not missing,f'missing business-critical tools: {missing}'
               print(f'MCP_TOOL_COUNT={len(names)}')
-              print('BUSINESS_CRITICAL_TOOLS=' + ','.join(sorted(required)))
+              print('BUSINESS_CRITICAL_TOOLS='+','.join(sorted(required)))
               print('MARKETPLACES_BUSINESS_READINESS=PASS')
           PY
 
