@@ -1,0 +1,166 @@
+name: Sync exact Marketplaces MCP runtime and deploy TEST once
+
+on:
+  push:
+    branches:
+      - marketplaces-rollout-2026-09-07
+    paths:
+      - .github/workflows/marketplaces-sync-deploy-once.yml
+
+permissions:
+  contents: write
+
+concurrency:
+  group: marketplaces-mcp-test-terraform
+  cancel-in-progress: false
+
+jobs:
+  sync-and-deploy:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - name: Checkout rollout branch
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Apply exact PR4 runtime patch to source 07a3408 snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git apply --check --directory=app scripts/marketplaces-pr4-runtime.patch
+          git apply --directory=app scripts/marketplaces-pr4-runtime.patch
+          printf '%s\n' \
+            'Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@0d1bd268a1237b4e8355669b8447358b5fd6eb5e' \
+            'Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.' \
+            'Synced: 2026-09-07 after API registry/Ozon runtime/rate-limit acceptance fixes.' \
+            > app/.source-revision
+
+      - name: Prove runtime files are byte-identical to source main
+        shell: bash
+        run: |
+          set -euo pipefail
+          check_blob() {
+            local path="$1" expected="$2" got
+            got="$(git hash-object "$path")"
+            echo "$path  $got"
+            test "$got" = "$expected"
+          }
+          check_blob app/core/client.py 6220d5fb3eec35589c3bd5d4f426ef102b6b26f5
+          check_blob app/core/paginate.py 7cb575e6573b686ea2ad8c016290407c4d7cb280
+          check_blob app/ozon_mcp/endpoints.yaml 35c9a00aa7d4aef1caff5c48c7fc79a019ee816c
+          check_blob app/ozon_mcp/server.py e0989b31f588f8692fcd3c3200191c8ac79d904e
+          check_blob app/ozon_mcp/workflows.yaml 8f6bad5f5565b144aa45c5451d97e77dfb81b5c7
+          ! grep -q '/v3/posting/fbs/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v3/posting/fbs/unfulfilled/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v2/posting/fbo/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v3/finance/transaction/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v3/finance/transaction/totals' app/ozon_mcp/endpoints.yaml
+          grep -q 'cabinet_key=f"{key}:oauth"' app/core/client.py
+          ! grep -q 'rate_controller.acquire(' app/core/client.py
+          git diff --check
+
+      - name: Validate application image locally
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m compileall -q app
+          docker build --tag marketplaces-mcp:sync-check app
+
+      - name: Commit clean source snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'marketplaces-rollout-bot'
+          git config user.email 'marketplaces-rollout-bot@users.noreply.github.com'
+          git rm .github/workflows/marketplaces-sync-deploy-once.yml scripts/marketplaces-pr4-runtime.patch
+          git add app
+          git commit -m 'sync(TEST): marketplaces runtime snapshot 0d1bd268'
+          git push origin HEAD:marketplaces-rollout-2026-09-07
+          echo "DEPLOY_COMMIT=$(git rev-parse HEAD)" >> "$GITHUB_ENV"
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_SERVICE_ACCOUNT_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+
+      - name: Create or import TEST foundation
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id')"
+          if [[ -n "$FOLDER_ID" && "$FOLDER_ID" != "null" ]]; then
+            terraform -chdir=terraform import yandex_resourcemanager_folder.mcp_test "$FOLDER_ID" || true
+          fi
+          terraform -chdir=terraform import yandex_iam_service_account.runtime ajems6nusv4frv6f29vt || true
+          terraform -chdir=terraform import yandex_iam_service_account.gateway aje1rm15eom0se5ivo2o || true
+          terraform -chdir=terraform apply -auto-approve -input=false \
+            -target=yandex_resourcemanager_folder.mcp_test \
+            -target=yandex_container_registry.mcp \
+            -target=yandex_iam_service_account.runtime \
+            -target=yandex_iam_service_account.gateway \
+            -target=yandex_resourcemanager_folder_iam_member.runtime_registry_pull \
+            -target=yandex_resourcemanager_folder_iam_member.runtime_lockbox_viewer \
+            -target=yandex_lockbox_secret.marketplace_credentials
+
+      - name: Build and push exact MCP image
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY_ID="$(terraform -chdir=terraform output -raw container_registry_id)"
+          yc container registry configure-docker
+          IMAGE="cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$DEPLOY_COMMIT"
+          docker build --tag "$IMAGE" app
+          docker push "$IMAGE"
+          echo "MCP_IMAGE_URL=$IMAGE" >> "$GITHUB_ENV"
+
+      - name: Deploy private MCP and verify gateway health
+        id: deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform apply -auto-approve -input=false -var="mcp_image_url=$MCP_IMAGE_URL"
+          GATEWAY_URL="$(terraform -chdir=terraform output -raw mcp_gateway_url)"
+          echo "gateway_url=$GATEWAY_URL" >> "$GITHUB_OUTPUT"
+          curl --fail --show-error --retry 12 --retry-delay 5 "$GATEWAY_URL/healthz"
+          echo "MCP TEST endpoint: $GATEWAY_URL/mcp"
+          echo "Deployed source: marketplaces-mcp-ru@0d1bd268a1237b4e8355669b8447358b5fd6eb5e"
+          echo "Infra rollout commit: $DEPLOY_COMMIT"
+
+      - name: Remove ephemeral CI key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
