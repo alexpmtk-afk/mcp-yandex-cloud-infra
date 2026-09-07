@@ -1,105 +1,151 @@
 $ErrorActionPreference = 'Stop'
 
-Write-Host '=== OZON_HOME_YANDEX_SMOKE_BEGIN ==='
+Write-Host '=== OZON_HOME_YANDEX_PLAIN_CONTROL_BEGIN ==='
 
 $user = "$env:COMPUTERNAME\Win10_Game_OS"
 $runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$repoRoot = Join-Path $runtimeRoot 'repo'
 $browser = 'C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
-$launcher = Join-Path $runtimeRoot 'launch-ozon-yandex-smoke.ps1'
-$taskName = 'MarketplaceCardMonitor-Ozon-Yandex-Smoke'
-
-$exitFile = Join-Path $runtimeRoot 'task-exit.json'
-$gateFile = Join-Path $runtimeRoot 'latest-gate.json'
-$bootstrapFile = Join-Path $runtimeRoot 'bootstrap-status.json'
-$logFile = Join-Path $runtimeRoot 'task-latest.log'
+$profile = Join-Path $runtimeRoot 'profiles\MarketplaceMonitor\Ozon-Yandex-Plain'
+$scriptPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control.ps1'
+$resultPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control.json'
+$taskName = 'MarketplaceCardMonitor-Ozon-Yandex-PlainControl'
 
 if (-not (Test-Path $browser)) {
     throw "Yandex Browser not found: $browser"
 }
 
-if (-not (Test-Path (Join-Path $repoRoot '.git'))) {
-    throw "Marketplace Card Monitor repo not found: $repoRoot"
-}
-
-foreach ($path in @(
-    $exitFile,
-    $gateFile,
-    $bootstrapFile,
-    $logFile
-)) {
-    if (Test-Path $path) {
-        Remove-Item $path -Force
-    }
+if (Test-Path $resultPath) {
+    Remove-Item $resultPath -Force
 }
 
 $script = @'
-$ErrorActionPreference = 'Stop'
-$env:GH_TOKEN = $null
-$env:GITHUB_TOKEN = $null
-$env:GIT_TERMINAL_PROMPT = '0'
-$env:PYTHONUTF8 = '1'
+$ErrorActionPreference = 'Continue'
 
-$runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$repoRoot = Join-Path $runtimeRoot 'repo'
-$branch = 'implementation/ozon-user-node-gate'
-$git = 'C:\Program Files\Git\cmd\git.exe'
 $browser = 'C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
+$runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
+$profile = Join-Path $runtimeRoot 'profiles\MarketplaceMonitor\Ozon-Yandex-Plain'
+$resultPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control.json'
 
-if (-not (Test-Path $git)) {
-    throw "Git not found: $git"
+$target = 'https://www.ozon.ru/product/nippel-dlya-beskamernyh-shin-ventil-sosok-avtomobilnyy-rezinovyy-1420875699/'
+
+function Get-ControlProcesses {
+    @(
+        Get-CimInstance Win32_Process `
+            -Filter "Name='browser.exe'" `
+            -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine.IndexOf(
+                $profile,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -ge 0
+        }
+    )
 }
 
-if (-not (Test-Path $browser)) {
-    throw "Yandex Browser not found: $browser"
+function Stop-ControlProcesses {
+    Get-ControlProcesses |
+        ForEach-Object {
+            Stop-Process `
+                -Id $_.ProcessId `
+                -Force `
+                -ErrorAction SilentlyContinue
+        }
 }
 
-& $git -C $repoRoot fetch origin $branch
-if ($LASTEXITCODE -ne 0) {
-    throw "git fetch failed: $LASTEXITCODE"
+Stop-ControlProcesses
+Start-Sleep -Seconds 2
+
+New-Item -ItemType Directory -Force -Path $profile | Out-Null
+
+$result = [ordered]@{
+    timestamp = (Get-Date).ToString('o')
+    user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    session_id = (Get-Process -Id $PID).SessionId
+    browser = $browser
+    profile = $profile
+    target = $target
+    launch_ok = $false
+    process_ids = @()
+    window_titles = @()
+    blocked_title_seen = $false
+    target_process_seen = $false
+    error = $null
 }
 
-& $git -C $repoRoot checkout $branch
-if ($LASTEXITCODE -ne 0) {
-    throw "git checkout failed: $LASTEXITCODE"
+try {
+    $arguments = @(
+        "--user-data-dir=$profile",
+        '--new-window',
+        '--no-first-run',
+        '--no-default-browser-check',
+        $target
+    )
+
+    Start-Process `
+        -FilePath $browser `
+        -ArgumentList $arguments | Out-Null
+
+    $result.launch_ok = $true
+
+    Start-Sleep -Seconds 20
+
+    $processes = Get-ControlProcesses
+
+    $result.process_ids = @(
+        $processes |
+        Select-Object -ExpandProperty ProcessId
+    )
+
+    $result.target_process_seen = ($processes.Count -gt 0)
+
+    $titles = @()
+
+    foreach ($process in $processes) {
+        try {
+            $p = Get-Process `
+                -Id $process.ProcessId `
+                -ErrorAction Stop
+
+            if ($p.MainWindowTitle) {
+                $titles += $p.MainWindowTitle
+            }
+        }
+        catch {}
+    }
+
+    $result.window_titles = @(
+        $titles |
+        Select-Object -Unique
+    )
+
+    foreach ($title in $result.window_titles) {
+        if (
+            $title -match
+            '(?i)похоже.*нет соединения|access denied|captcha|антибот'
+        ) {
+            $result.blocked_title_seen = $true
+        }
+    }
+}
+catch {
+    $result.error = $_.Exception.Message
+}
+finally {
+    $result |
+        ConvertTo-Json -Depth 6 |
+        Set-Content `
+            -Path $resultPath `
+            -Encoding UTF8
+
+    Stop-ControlProcesses
 }
 
-& $git -C $repoRoot pull --ff-only origin $branch
-if ($LASTEXITCODE -ne 0) {
-    throw "git pull failed: $LASTEXITCODE"
-}
-
-$entry = Join-Path $repoRoot 'scripts\user_node_task_entry.ps1'
-$config = Join-Path $repoRoot 'config\ozon-user-node-smoke-home-yandex.json'
-
-if (-not (Test-Path $entry)) {
-    throw "Task entry not found: $entry"
-}
-
-if (-not (Test-Path $config)) {
-    throw "Yandex smoke config not found: $config"
-}
-
-& powershell.exe `
-    -NoProfile `
-    -ExecutionPolicy Bypass `
-    -File $entry `
-    -RepoRoot $repoRoot `
-    -RuntimeRoot $runtimeRoot `
-    -ConfigPath $config `
-    -BrowserPath $browser `
-    -Runs 1
-
-$exit = $LASTEXITCODE
-if ($null -eq $exit) {
-    $exit = 0
-}
-
-exit $exit
+exit 0
 '@
 
 [IO.File]::WriteAllText(
-    $launcher,
+    $scriptPath,
     $script,
     (New-Object Text.UTF8Encoding($false))
 )
@@ -114,7 +160,7 @@ catch {}
 
 $action = New-ScheduledTaskAction `
     -Execute 'powershell.exe' `
-    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$launcher`""
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
 
 $principal = New-ScheduledTaskPrincipal `
     -UserId $user `
@@ -122,7 +168,7 @@ $principal = New-ScheduledTaskPrincipal `
     -RunLevel Limited
 
 $settings = New-ScheduledTaskSettingsSet `
-    -ExecutionTimeLimit (New-TimeSpan -Minutes 4) `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
     -AllowStartIfOnBatteries `
     -DontStopIfGoingOnBatteries
 
@@ -134,46 +180,26 @@ try {
         -Settings $settings `
         -Force | Out-Null
 
-    Write-Host "TASK_REGISTERED=YES"
-    Write-Host "TASK_USER=$user"
-    Write-Host "BROWSER=$browser"
+    Write-Host 'TASK_REGISTERED=YES'
 
     Start-ScheduledTask -TaskName $taskName
     Write-Host 'TASK_STARTED=YES'
 
-    $deadline = (Get-Date).AddMinutes(3)
+    $deadline = (Get-Date).AddSeconds(70)
 
     while (
         (Get-Date) -lt $deadline -and
-        -not (Test-Path $exitFile)
+        -not (Test-Path $resultPath)
     ) {
-        Start-Sleep -Seconds 3
+        Start-Sleep -Seconds 2
     }
 
-    if (Test-Path $exitFile) {
-        Write-Host '--- TASK_EXIT_JSON ---'
-        Get-Content $exitFile -Raw
+    if (Test-Path $resultPath) {
+        Write-Host '--- PLAIN_YANDEX_RESULT ---'
+        Get-Content $resultPath -Raw
     }
     else {
-        Write-Host 'TASK_EXIT_JSON=TIMEOUT'
-    }
-
-    if (Test-Path $bootstrapFile) {
-        Write-Host '--- BOOTSTRAP_STATUS_JSON ---'
-        Get-Content $bootstrapFile -Raw
-    }
-
-    if (Test-Path $gateFile) {
-        Write-Host '--- LATEST_GATE_JSON ---'
-        Get-Content $gateFile -Raw
-    }
-    else {
-        Write-Host 'LATEST_GATE_JSON=NOT_FOUND'
-    }
-
-    if (Test-Path $logFile) {
-        Write-Host '--- TASK_LOG_TAIL ---'
-        Get-Content $logFile -Tail 160
+        Write-Host 'PLAIN_YANDEX_RESULT=TIMEOUT'
     }
 }
 finally {
@@ -183,4 +209,4 @@ finally {
         -ErrorAction SilentlyContinue
 }
 
-Write-Host '=== OZON_HOME_YANDEX_SMOKE_END ==='
+Write-Host '=== OZON_HOME_YANDEX_PLAIN_CONTROL_END ==='
