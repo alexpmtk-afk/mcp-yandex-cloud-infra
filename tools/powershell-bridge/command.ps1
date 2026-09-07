@@ -1,59 +1,59 @@
-$ErrorActionPreference = 'Stop'
-$runtimeRoot='C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$taskName='MarketplaceCardMonitor-UserNode-Canonical'
-$python=Join-Path $runtimeRoot '.venv\Scripts\python.exe'
-$browser='C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
-$collector=Join-Path $runtimeRoot 'card_collector.py'
-$discovery=Join-Path $runtimeRoot 'target_discovery.py'
-$batch=Join-Path $runtimeRoot 'batch_monitor.py'
-$config=Join-Path $runtimeRoot 'tires-195-55-r16.json'
-$launcher=Join-Path $runtimeRoot 'canonical-user-node-launcher.ps1'
-$taskExitFile=Join-Path $runtimeRoot 'canonical-task-exit.json'
-$latestFile=Join-Path $runtimeRoot 'latest.json'
+$ErrorActionPreference = 'Continue'
+Write-Host '=== MARKETPLACES_CODEX_DIAG_BEGIN ==='
+Write-Host ("IDENTITY={0}" -f [System.Security.Principal.WindowsIdentity]::GetCurrent().Name)
+Write-Host ("COMPUTER={0}" -f $env:COMPUTERNAME)
+Write-Host ("SESSION={0}" -f (Get-Process -Id $PID).SessionId)
 
-$downloads=@(
- @{url='https://raw.githubusercontent.com/alexpmtk-afk/marketplace-card-monitor/implementation/ozon-user-node-gate/src/card_collector.py?token=CJWMU2X34EUODZGSJIY6V3DKT4EM7AA';path=$collector},
- @{url='https://raw.githubusercontent.com/alexpmtk-afk/marketplace-card-monitor/implementation/ozon-user-node-gate/src/target_discovery.py?token=CJWMU2SQ3LKZYWO7RLGBNGTKT4EM7AA';path=$discovery},
- @{url='https://raw.githubusercontent.com/alexpmtk-afk/marketplace-card-monitor/implementation/ozon-user-node-gate/src/batch_monitor.py?token=CJWMU2QYBQ36BMXEYHNJKADKT4EM7AA';path=$batch},
- @{url='https://raw.githubusercontent.com/alexpmtk-afk/marketplace-card-monitor/implementation/ozon-user-node-gate/config/tires-195-55-r16.json?token=CJWMU2WTM5ZY3PVCA2KW6MTKT4EOBAA';path=$config}
-)
-foreach($item in $downloads){Invoke-WebRequest -Uri $item.url -OutFile $item.path -UseBasicParsing; Write-Host "DEPLOYED=$($item.path) SIZE=$((Get-Item $item.path).Length)"}
-& $python -m py_compile $collector $discovery $batch
-if($LASTEXITCODE -ne 0){throw "PY_COMPILE_FAIL=$LASTEXITCODE"}
-Write-Host 'PY_COMPILE=PASS'
+$tokenUser = [Environment]::GetEnvironmentVariable('MARKETPLACES_MCP_TOKEN','User')
+Write-Host ("TOKEN_USER_PRESENT={0}" -f (-not [string]::IsNullOrWhiteSpace($tokenUser)))
+$tokenUser = $null
 
-# Purge only invalid pre-fix observations; run evidence folders remain preserved.
-$history=Join-Path $runtimeRoot 'history'
-if(Test-Path $history){Remove-Item $history -Recurse -Force}
-Write-Host 'INVALID_HISTORY_PURGED=YES'
+$configPath = Join-Path $HOME '.codex\config.toml'
+Write-Host ("CODEX_CONFIG_PATH={0}" -f $configPath)
+Write-Host ("CODEX_CONFIG_EXISTS={0}" -f (Test-Path $configPath))
+if (Test-Path $configPath) {
+  $cfg = Get-Content -Raw -Path $configPath
+  $hasRemote = $cfg -match '(?m)^\[mcp_servers\.marketplaces-yandex\]'
+  $hasEnv = $cfg -match '(?m)^bearer_token_env_var\s*=\s*"MARKETPLACES_MCP_TOKEN"'
+  $hasHttps = $cfg -match '(?m)^url\s*=\s*"https://[^\"]+/mcp"'
+  Write-Host ("MCP_REMOTE_CONFIGURED={0}" -f $hasRemote)
+  Write-Host ("MCP_TOKEN_ENV_REFERENCE_OK={0}" -f $hasEnv)
+  Write-Host ("MCP_HTTPS_URL_PRESENT={0}" -f $hasHttps)
+  foreach ($name in @('wildberries','ozon','ozon-perf')) {
+    $present = $cfg -match ("(?m)^\[mcp_servers\." + [regex]::Escape($name) + "\]")
+    Write-Host ("LOCAL_MCP_{0}_PRESENT={1}" -f ($name -replace '-','_').ToUpperInvariant(),$present)
+  }
+}
 
-$launcherCode=@'
-$ErrorActionPreference='Continue'
-$runtimeRoot='C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$python=Join-Path $runtimeRoot '.venv\Scripts\python.exe'
-$browser='C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
-$batch=Join-Path $runtimeRoot 'batch_monitor.py'
-$collector=Join-Path $runtimeRoot 'card_collector.py'
-$discovery=Join-Path $runtimeRoot 'target_discovery.py'
-$config=Join-Path $runtimeRoot 'tires-195-55-r16.json'
-$exitFile=Join-Path $runtimeRoot 'canonical-task-exit.json'
-"STARTED $(Get-Date -Format o) USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) SESSION=$((Get-Process -Id $PID).SessionId)" | Set-Content (Join-Path $runtimeRoot 'canonical-task.started') -Encoding UTF8
-& $python $batch --config $config --runtime-root $runtimeRoot --browser-path $browser --collector $collector --discovery $discovery --base-port 9231 --settle-seconds 12 --discovery-settle-seconds 10
-$ec=$LASTEXITCODE;if($null -eq $ec){$ec=0}
-[ordered]@{timestamp=(Get-Date).ToString('o');exit_code=$ec;user=[System.Security.Principal.WindowsIdentity]::GetCurrent().Name;session_id=(Get-Process -Id $PID).SessionId}|ConvertTo-Json|Set-Content $exitFile -Encoding UTF8
-exit $ec
-'@
-[IO.File]::WriteAllText($launcher,$launcherCode,(New-Object System.Text.UnicodeEncoding($false,$true)))
-foreach($p in @($taskExitFile,(Join-Path $runtimeRoot 'canonical-task.started'))){if(Test-Path $p){Remove-Item $p -Force}}
-$before=if(Test-Path $latestFile){(Get-Item $latestFile).LastWriteTimeUtc}else{[datetime]::MinValue}
-& schtasks.exe /Run /TN "\$taskName"
-if($LASTEXITCODE -ne 0){throw "TASK_TRIGGER_FAIL=$LASTEXITCODE"}
-Write-Host 'BATCH_TASK_TRIGGERED=YES'
-$deadline=(Get-Date).AddMinutes(9)
-while((Get-Date)-lt $deadline){$done=Test-Path $taskExitFile;$fresh=(Test-Path $latestFile)-and((Get-Item $latestFile).LastWriteTimeUtc -gt $before);if($done-and$fresh){break};Start-Sleep 5}
-Write-Host '--- BATCH_SUMMARY ---'
-$j=Get-Content $latestFile -Raw -Encoding UTF8|ConvertFrom-Json
-Write-Host "STATUS=$($j.status) TOTAL=$($j.cards_total) PASS=$($j.cards_pass) FAIL=$($j.cards_fail)"
-foreach($r in $j.results){$price=if($r.price){$r.price.buyer_price_rub}else{$null};$raw=if($r.discovery){$r.discovery.raw_product_links}else{$null};Write-Host ("CARD={0} MP={1} STATUS={2} SKU={3} PRICE={4} REGION={5} RAWLINKS={6} NAME={7}" -f $r.id,$r.marketplace,$r.status,$r.sku,$price,$r.region_ok,$raw,$r.name);if($r.discovery){Write-Host ("DISCOVERY={0}:{1}" -f $r.id,$r.discovery.status)}}
-Write-Host '--- TASK_EXIT ---'
-Get-Content $taskExitFile -Raw -Encoding UTF8
+$codex = Get-Command codex -ErrorAction SilentlyContinue
+Write-Host ("CODEX_COMMAND_PRESENT={0}" -f [bool]$codex)
+if ($codex) {
+  Write-Host ("CODEX_PATH={0}" -f $codex.Source)
+  & $codex.Source --version 2>&1 | ForEach-Object { Write-Host ("CODEX_VERSION={0}" -f $_) }
+  Write-Host '--- CODEX_MCP_LIST ---'
+  & $codex.Source mcp list 2>&1 | ForEach-Object {
+    $line = [string]$_
+    if ($line -match '(?i)token|bearer|secret') { $line = '[REDACTED_SENSITIVE_LINE]' }
+    Write-Host $line
+  }
+}
+
+$roots = @(
+  (Join-Path $env:USERPROFILE 'Google Drive'),
+  (Join-Path $env:USERPROFILE 'My Drive'),
+  'G:\My Drive',
+  'G:\Мой диск',
+  'G:\Shared drives'
+) | Where-Object { $_ -and (Test-Path $_) }
+$target = $null
+foreach ($root in $roots) {
+  $candidate = Get-ChildItem -Path $root -Directory -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.Name -eq 'marketplaces-mcp-only' } | Select-Object -First 1
+  if ($candidate) { $target = $candidate.FullName; break }
+}
+Write-Host ("MCP_ONLY_PROJECT_FOUND={0}" -f [bool]$target)
+if ($target) {
+  Write-Host ("MCP_ONLY_PROJECT_PATH={0}" -f $target)
+  Write-Host ("AGENTS_PRESENT={0}" -f (Test-Path (Join-Path $target 'AGENTS.md')))
+}
+Write-Host '=== MARKETPLACES_CODEX_DIAG_END ==='
+exit 0
