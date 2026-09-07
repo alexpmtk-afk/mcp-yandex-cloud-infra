@@ -1,3 +1,4 @@
+# Card Monitor admin deploy/smoke command.
 $ErrorActionPreference = 'Stop'
 $runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
 $repoRoot = Join-Path $runtimeRoot 'repo'
