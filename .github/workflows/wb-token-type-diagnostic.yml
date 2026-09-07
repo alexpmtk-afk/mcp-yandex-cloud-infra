@@ -1,0 +1,81 @@
+name: WB Token Type Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/wb-token-type-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  type-readonly:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 6); do
+            if timeout 75s wget -q --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 3
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Decode only WB token type metadata
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          jq -r '.entries[]|select(.key=="cabinets_json")|.text_value' "$RUNNER_TEMP/sec.json" > "$RUNNER_TEMP/cabinets.json"
+          test -s "$RUNNER_TEMP/cabinets.json"
+          python - <<'PY'
+          import base64, json, os
+          from pathlib import Path
+          data=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('cabinets.json').read_text())
+          wb=data.get('wb') or {}; cabs=wb.get('cabinets') or {}; active=wb.get('active')
+          if active not in cabs: active=next(iter(cabs),None)
+          assert active and active in cabs, 'no WB cabinet found'
+          token=(cabs[active] or {}).get('token',''); assert token and token.count('.')>=2
+          p=token.split('.')[1]; p += '=' * (-len(p)%4)
+          claims=json.loads(base64.urlsafe_b64decode(p.encode()).decode())
+          acc=int(claims.get('acc',0) or 0)
+          names={1:'Base',2:'Test',3:'Personal',4:'Service'}
+          print('WB_TOKEN_ACC='+str(acc))
+          print('WB_TOKEN_TYPE='+names.get(acc,'Unknown'))
+          print('WB_TOKEN_FOR_CLASS=' + ('self' if claims.get('for')=='self' else ('service' if str(claims.get('for','')).startswith('asid:') else 'absent_or_other')))
+          print('WB_TOKEN_T='+str(bool(claims.get('t',False))).upper())
+          print('WB_TOKEN_TYPE_DIAGNOSTIC=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/cabinets.json"
