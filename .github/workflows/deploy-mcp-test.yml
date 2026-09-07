@@ -86,7 +86,7 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
-      - name: Create or import TEST foundation
+      - name: Reconcile TEST foundation only
         shell: bash
         env:
           YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
@@ -98,12 +98,6 @@ jobs:
           terraform -chdir=terraform init -reconfigure -input=false \
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
-          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
-          if [[ -n "$FOLDER_ID" && "$FOLDER_ID" != "null" ]]; then
-            terraform -chdir=terraform import yandex_resourcemanager_folder.mcp_test "$FOLDER_ID" || true
-          fi
-          terraform -chdir=terraform import yandex_iam_service_account.runtime ajems6nusv4frv6f29vt || true
-          terraform -chdir=terraform import yandex_iam_service_account.gateway aje1rm15eom0se5ivo2o || true
           terraform -chdir=terraform apply -auto-approve -input=false \
             -target=yandex_resourcemanager_folder.mcp_test \
             -target=yandex_container_registry.mcp \
@@ -113,39 +107,102 @@ jobs:
             -target=yandex_resourcemanager_folder_iam_member.runtime_lockbox_viewer \
             -target=yandex_lockbox_secret.marketplace_credentials
 
-      - name: Build and push exact MCP image
+      - name: Resolve existing TEST runtime resources
+        id: resources
         shell: bash
         run: |
           set -euo pipefail
-          REGISTRY_ID="$(terraform -chdir=terraform output -raw container_registry_id)"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          RUNTIME_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
+          REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          NETWORK_ID="$(timeout 45s yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-net")|.id'|head -1)"
+          CLUSTER_ID="$(timeout 45s yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
+          REDIS_HOST="$(timeout 45s yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN; do
+            test -n "${!v}"
+          done
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY_ID" >> "$GITHUB_OUTPUT"
+          echo "network=$NETWORK_ID" >> "$GITHUB_OUTPUT"
+          echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo 'test_resources=RESOLVED'
+
+      - name: Build and push exact MCP image
+        id: image
+        shell: bash
+        env:
+          REGISTRY_ID: ${{ steps.resources.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:test-${GITHUB_SHA}"
           yc container registry configure-docker
           test -f app/Dockerfile
-          docker build --tag "cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA" app
-          docker push "cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA"
-          echo "MCP_IMAGE_URL=cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA" >> "$GITHUB_ENV"
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "$IMAGE" app
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo 'image_publish=PASS'
 
-      - name: Deploy private MCP and API Gateway
+      - name: Deploy authenticated networked runtime revision
         id: deploy
         shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resources.outputs.folder }}
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          VERSION_ID: ${{ steps.resources.outputs.version }}
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+          RUNTIME_SA: ${{ steps.resources.outputs.sa }}
+          NETWORK_ID: ${{ steps.resources.outputs.network }}
+          REDIS_HOST: ${{ steps.resources.outputs.redis_host }}
+          DOMAIN: ${{ steps.resources.outputs.domain }}
+          IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -euo pipefail
-          terraform -chdir=terraform apply -auto-approve -input=false -var="mcp_image_url=$MCP_IMAGE_URL"
-          GATEWAY_URL="$(terraform -chdir=terraform output -raw mcp_gateway_url)"
-          curl --fail --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 30 "$GATEWAY_URL/healthz"
-          echo "gateway_url=$GATEWAY_URL" >> "$GITHUB_OUTPUT"
-          echo "MCP TEST endpoint: $GATEWAY_URL/mcp"
+          timeout 180s yc serverless container revision deploy \
+            --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
+            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 60s --concurrency 8 \
+            --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,WB_GLOBAL_RPS=5,OZON_GLOBAL_RPS=20,OZON_PERF_GLOBAL_RPS=10" \
+            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
+            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
+            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --format json --no-user-output > "$RUNNER_TEMP/revision.json"
+          REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"
+          test -n "$REVISION_ID"
+          BASE="https://${DOMAIN}"
+          CODE=000
+          for attempt in $(seq 1 18); do
+            CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
+            [[ "$CODE" == 200 ]] && break
+            echo "health attempt $attempt/18 status=$CODE"
+            sleep 5
+          done
+          test "$CODE" = 200
+          echo "gateway_url=$BASE" >> "$GITHUB_OUTPUT"
+          echo "revision_id=$REVISION_ID" >> "$GITHUB_OUTPUT"
+          echo "deployed_revision=$REVISION_ID"
           echo 'healthz=PASS'
 
       - name: Resolve MCP bearer
         shell: bash
+        env:
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          VERSION_ID: ${{ steps.resources.outputs.version }}
         run: |
           set -euo pipefail
-          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
-          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-api-credentials") | .id' | head -1)"
-          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[] | select(.status == "ACTIVE")][0].id')"
-          test -n "$SECRET_ID"; test -n "$VERSION_ID"
           timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
-          BEARER="$(jq -r '.entries[] | select(.key == "mcp_bearer_token") | .text_value' "$RUNNER_TEMP/sec.json")"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
           test -n "$BEARER"
           echo "::add-mask::$BEARER"
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
@@ -163,7 +220,7 @@ jobs:
           export MCP_URL="${GATEWAY_URL}/mcp"
           export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
           timeout 300s python -u - <<'PY'
-          import itertools, json, os
+          import datetime, itertools, json, os
           import httpx
 
           timeout = httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0)
@@ -185,7 +242,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'1'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'2'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               print('initialize=PASS', flush=True)
@@ -213,10 +270,10 @@ jobs:
               tools = rpc('tools/list')['tools']
               names = {x['name'] for x in tools}
               need = {'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status'}
-              assert need <= names, sorted(need - names)
+              assert need <= names, sorted(need-names)
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
-              wb = call('wb_get_sales', {'date_from':'2026-09-07','flag':0})
+              wb = call('wb_get_sales', {'date_from':datetime.date.today().isoformat(),'flag':0})
               assert wb.get('ok') is True and 200 <= int(wb.get('status',0)) < 300, wb
               print('WB_LIVE=PASS', flush=True)
 
@@ -236,11 +293,10 @@ jobs:
         continue-on-error: true
         shell: bash
         timeout-minutes: 2
+        env:
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
         run: |
           set -euo pipefail
-          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
-          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
-          test -n "$CONTAINER_ID"
           if timeout 45s yc logging read --resource-ids="$CONTAINER_ID" --since '20m ago' --limit 100 --format json > "$RUNNER_TEMP/logs.json"; then
             LOG_COUNT="$(jq 'length' "$RUNNER_TEMP/logs.json")"
             echo "yandex_runtime_logs=$LOG_COUNT"
@@ -251,4 +307,4 @@ jobs:
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health"
