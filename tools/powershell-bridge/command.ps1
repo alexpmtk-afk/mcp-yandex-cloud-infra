@@ -27,12 +27,12 @@ if (-not (Test-Path (Join-Path $repoRoot '.git'))) { throw "Repo not found: $rep
 if (-not (Test-Path $python)) { throw "Python not found: $python" }
 if (-not (Test-Path $browser)) { throw "Yandex Browser not found: $browser" }
 
-& $git -C $repoRoot cat-file -e "$commit`:$sourcePath"
+& $git -c "safe.directory=$repoRoot" -C $repoRoot cat-file -e "$commit`:$sourcePath"
 if ($LASTEXITCODE -ne 0) { throw "Frozen probe not found in local git object: $commit`:$sourcePath" }
 
 $psi = New-Object System.Diagnostics.ProcessStartInfo
 $psi.FileName = $git
-$psi.Arguments = "-C `"$repoRoot`" show $commit`:$sourcePath"
+$psi.Arguments = "-c `"safe.directory=$repoRoot`" -C `"$repoRoot`" show $commit`:$sourcePath"
 $psi.UseShellExecute = $false
 $psi.RedirectStandardOutput = $true
 $psi.CreateNoWindow = $true
@@ -65,6 +65,8 @@ $taskExitFile = Join-Path $runtimeRoot 'canonical-task-exit.json'
 $resultFile = Join-Path $runtimeRoot 'plain-cdp-canonical.json'
 $screenshotFile = Join-Path $runtimeRoot 'plain-cdp-canonical.png'
 
+$expectedRegion = ([string][char]0x0412) + ([string][char]0x043E) + ([string][char]0x0440) + ([string][char]0x043E) + ([string][char]0x043D) + ([string][char]0x0435) + ([string][char]0x0436)
+
 "STARTED $(Get-Date -Format o) USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) SESSION=$((Get-Process -Id $PID).SessionId)" |
     Set-Content -Path $startedFile -Encoding UTF8
 
@@ -74,7 +76,7 @@ $screenshotFile = Join-Path $runtimeRoot 'plain-cdp-canonical.png'
     --profile-dir $profile `
     --target-url 'https://www.ozon.ru/product/nippel-dlya-beskamernyh-shin-ventil-sosok-avtomobilnyy-rezinovyy-1420875699/' `
     --expected-sku '1420875699' `
-    --expected-region 'Воронеж' `
+    --expected-region $expectedRegion `
     --output $resultFile `
     --screenshot $screenshotFile `
     --port 9231 `
@@ -107,7 +109,6 @@ foreach ($path in @($startedFile, $taskExitFile, $resultFile, $screenshotFile)) 
 if ($LASTEXITCODE -ne 0) { throw "schtasks /Run failed: $LASTEXITCODE" }
 
 $deadline = (Get-Date).AddSeconds(90)
-
 while ((Get-Date) -lt $deadline -and -not (Test-Path $resultFile)) {
     Start-Sleep -Seconds 2
 }
