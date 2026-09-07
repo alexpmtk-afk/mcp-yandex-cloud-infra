@@ -1,0 +1,200 @@
+name: Accept deployed Marketplaces MCP 0d1bd268 v2
+
+on:
+  push:
+    branches:
+      - marketplaces-rollout-2026-09-07
+    paths:
+      - .github/workflows/marketplaces-accept-0d1bd268-v2.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-mcp-test-acceptance-v2
+  cancel-in-progress: true
+
+jobs:
+  acceptance:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 35
+    env:
+      SOURCE_SHA: 0d1bd268a1237b4e8355669b8447358b5fd6eb5e
+    steps:
+      - name: Checkout rollout snapshot
+        uses: actions/checkout@v4
+
+      - name: Prove deployed source snapshot marker
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "@$SOURCE_SHA" app/.source-revision
+          test -z "$(find app -type d -name __pycache__ -print -quit)"
+          test -z "$(find app -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+          echo 'snapshot_marker=PASS'
+
+      - name: Install Yandex Cloud CLI with bounded resumable retries
+        shell: bash
+        timeout-minutes: 18
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          rm -f "$ARCHIVE"
+          ok=0
+          for attempt in $(seq 1 15); do
+            echo "yc download attempt $attempt/15"
+            if timeout 75s wget --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              echo 'archive validation failed; restarting download'
+              rm -f "$ARCHIVE"
+            fi
+            sleep 4
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
+      - name: Resolve TEST endpoint and bearer
+        id: r
+        shell: bash
+        timeout-minutes: 5
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create marketplace-accept-v2 || true
+          yc config set service-account-key "$KEY"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$SECRET_ID"; test -n "$VERSION_ID"; test -n "$DOMAIN"; test -n "$CONTAINER_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo 'test_resources=RESOLVED'
+
+      - name: Bounded remote MCP and real WB/Ozon acceptance
+        shell: bash
+        timeout-minutes: 8
+        env:
+          DOMAIN: ${{ steps.r.outputs.domain }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          export MCP_URL="https://${DOMAIN}/mcp"
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          timeout 300s python -u - <<'PY'
+          import itertools, json, os, sys, time
+          import httpx
+
+          def mark(s):
+              print(s, flush=True)
+
+          timeout = httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0)
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          headers0 = {
+              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+          ids = itertools.count(1)
+          with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+              mark('initialize:start')
+              r = c.post(os.environ['MCP_URL'], headers=headers0, json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'bounded-acceptance-v2','version':'1'}
+                  }})
+              init = unpack(r); assert init and 'result' in init, init
+              mark('initialize:PASS')
+              h = dict(headers0)
+              sid = r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id'] = sid
+              h['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
+              n = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert n.status_code in (200,202), n.status_code
+
+              def rpc(method, params=None):
+                  r = c.post(os.environ['MCP_URL'], headers=h, json={
+                      'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  d = unpack(r)
+                  assert d and 'result' in d, (method, d)
+                  return d['result']
+
+              def call(name, args):
+                  mark(name + ':start')
+                  result = rpc('tools/call', {'name':name,'arguments':args})
+                  assert not result.get('isError'), (name, result)
+                  text = next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'), None)
+                  assert text is not None, name
+                  data = json.loads(text)
+                  mark(name + ':returned')
+                  return data
+
+              mark('tools_list:start')
+              names = {x['name'] for x in rpc('tools/list')['tools']}
+              need = {'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status'}
+              assert need <= names, sorted(need-names)
+              mark(f'tools_list:PASS count={len(names)}')
+
+              wb = call('wb_get_sales', {'date_from':'2026-09-07','flag':0})
+              assert wb.get('ok') is True and 200 <= int(wb.get('status',0)) < 300, wb
+              mark('WB_LIVE=PASS')
+
+              oz = call('ozon_get_products', {'visibility':'ALL','limit':1,'last_id':''})
+              assert oz.get('ok') is True and 200 <= int(oz.get('status',0)) < 300, oz
+              mark('OZON_LIVE=PASS')
+
+              wbr = call('wb_rate_limit_status', {})
+              ozr = call('ozon_rate_limit_status', {})
+              assert wbr.get('backend') == 'redis', wbr
+              assert ozr.get('backend') == 'redis', ozr
+              mark('LIMITER_BACKEND=redis')
+              mark('REMOTE_WB_OZON_ACCEPTANCE=PASS')
+          PY
+
+      - name: Bounded Yandex runtime-log proof
+        shell: bash
+        timeout-minutes: 2
+        env:
+          CONTAINER_ID: ${{ steps.r.outputs.container }}
+        run: |
+          set -euo pipefail
+          timeout 45s yc logging read --resource-ids="$CONTAINER_ID" --since '20m ago' --limit 100 --format json > "$RUNNER_TEMP/logs.json"
+          LOG_COUNT="$(jq 'length' "$RUNNER_TEMP/logs.json")"
+          test "$LOG_COUNT" -gt 0
+          echo "yandex_runtime_logs=$LOG_COUNT"
+          echo 'DEPLOYED_0D1BD268_ACCEPTANCE=PASS'
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json"
