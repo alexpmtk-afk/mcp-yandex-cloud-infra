@@ -108,6 +108,10 @@ jobs:
               'wb_get_orders_summary',
               'ozon_get_products',
               'ozon_get_prices',
+              'wb_get_realization_report',
+              'ozon_get_accrual_types',
+              'ozon_get_accruals_by_day',
+              'ozon_get_realization',
               'wb_rate_limit_status',
               'ozon_rate_limit_status',
           }
@@ -134,7 +138,7 @@ jobs:
                   'params': {
                       'protocolVersion': '2025-06-18',
                       'capabilities': {},
-                      'clientInfo': {'name': 'business-readiness', 'version': '1'},
+                      'clientInfo': {'name': 'business-readiness', 'version': '2'},
                   },
               })
               init = unpack(init_response)
