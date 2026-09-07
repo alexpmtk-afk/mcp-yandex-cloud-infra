@@ -1,0 +1,124 @@
+name: Ozon API Key Roles Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ozon-key-roles-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  roles-readonly:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 6); do
+            if timeout 75s wget -q --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 3
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve TEST MCP
+        id: target
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$DOMAIN" && test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Read roles and methods available to current Ozon API key
+        shell: bash
+        timeout-minutes: 3
+        env:
+          MCP_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          timeout 120s python -u - <<'PY'
+          import itertools, json, os
+          import httpx
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          headers={
+              'Authorization':'Bearer '+os.environ['MCP_BEARER'],
+              'Accept':'application/json, text/event-stream',
+              'Content-Type':'application/json',
+          }
+          ids=itertools.count(1)
+          timeout=httpx.Timeout(connect=10,read=45,write=30,pool=10)
+          with httpx.Client(timeout=timeout,follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize',
+                  'params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'ozon-key-roles-diagnostic','version':'1'}}})
+              init=unpack(r); assert init and 'result' in init, init
+              h=dict(headers); sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              n=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'}); assert n.status_code in (200,202)
+              rr=c.post(os.environ['MCP_URL'],headers=h,json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'tools/call','params':{
+                      'name':'ozon_call_raw','arguments':{
+                          'method':'POST','path':'/v1/roles','body':{},
+                          'confirm_write':True,
+                          'i_understand_this_modifies_data':False,
+                      }}})
+              payload=unpack(rr); assert payload and 'result' in payload, payload
+              result=payload['result']; assert not result.get('isError'), result
+              text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None)
+              assert text is not None, result
+              data=json.loads(text)
+              print('OZON_ROLES_HTTP_STATUS='+str(data.get('status','')))
+              print('OZON_ROLES_OK='+str(bool(data.get('ok'))).upper())
+              print('OZON_ROLES_RESPONSE='+json.dumps(data.get('data',{}),ensure_ascii=False,sort_keys=True))
+              assert data.get('ok') is True and 200 <= int(data.get('status',0)) < 300, data
+              print('OZON_KEY_ROLES_DIAGNOSTIC=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer"
