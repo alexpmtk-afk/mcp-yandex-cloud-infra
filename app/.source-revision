@@ -1,3 +1,3 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@1aa82b59f96a33c833f8be033edc84ce5acb281b
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@fd62fc32d3f3d035adcb02af792496ee35b5d612
 Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.
-Synced: 2026-09-07 after bounded short local pacing absorption in the WB Base-token warehouse-remains workflow and full app CI/security acceptance.
+Synced: 2026-09-07 after public Ozon/Wildberries Card Monitor MCP tools and authenticated ingest were merged; existing WB/rate-limit runtime fixes were verified byte-identical before deployment.
