@@ -14,6 +14,10 @@ crash.*.log
 .terraformrc
 terraform.rc
 
+# Python generated files
+__pycache__/
+*.py[cod]
+
 # OS/editor noise
 .DS_Store
 Thumbs.db
