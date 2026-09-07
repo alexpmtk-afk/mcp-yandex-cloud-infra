@@ -5,7 +5,8 @@ on:
     branches:
       - tooling/powershell-bridge-v0.1
     paths:
-      - 'tools/powershell-admin-bridge/command.ps1'
+      - 'tools/powershell-bridge/command.ps1'
+      - '.github/workflows/powershell-admin-bridge.yml'
 
 permissions:
   contents: read
@@ -31,7 +32,7 @@ jobs:
           Write-Host "Runner: $env:RUNNER_NAME"
           Write-Host "Computer: $env:COMPUTERNAME"
 
-          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/tools/powershell-admin-bridge/command.ps1?ref=$env:GITHUB_SHA"
+          $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/tools/powershell-bridge/command.ps1?ref=$env:GITHUB_SHA"
           $headers = @{
             Authorization = "Bearer $env:GH_TOKEN"
             Accept = 'application/vnd.github+json'
