@@ -1,4 +1,4 @@
-name: WB Token Categories Diagnostic
+name: WB Token and Stocks 403 Diagnostic
 
 on:
   workflow_dispatch:
@@ -11,7 +11,7 @@ permissions:
   contents: read
 
 jobs:
-  categories-readonly:
+  wb-readonly:
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 10
@@ -36,7 +36,8 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Decode current WB token category mask without exposing token
+      - name: Resolve TEST credentials and decode WB category mask
+        id: target
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -51,42 +52,70 @@ jobs:
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
           VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
           timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
           jq -r '.entries[]|select(.key=="cabinets_json")|.text_value' "$RUNNER_TEMP/sec.json" > "$RUNNER_TEMP/cabinets.json"
-          test -s "$RUNNER_TEMP/cabinets.json"
+          test -n "$DOMAIN" && test -n "$BEARER" && test -s "$RUNNER_TEMP/cabinets.json"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
           python - <<'PY'
-          import base64, json
+          import base64, json, os
           from pathlib import Path
-
-          data=json.loads(Path('/tmp/placeholder').read_text()) if False else json.loads(Path(__import__('os').environ['RUNNER_TEMP']).joinpath('cabinets.json').read_text())
-          wb=data.get('wb') or {}
-          cabs=wb.get('cabinets') or {}
-          active=wb.get('active')
-          if active not in cabs:
-              active=next(iter(cabs),None)
+          data=json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('cabinets.json').read_text())
+          wb=data.get('wb') or {}; cabs=wb.get('cabinets') or {}; active=wb.get('active')
+          if active not in cabs: active=next(iter(cabs),None)
           assert active and active in cabs, 'no WB cabinet found'
-          token=(cabs[active] or {}).get('token','')
-          assert token and token.count('.')>=2, 'WB token is not JWT-shaped'
-          payload=token.split('.')[1]
-          payload += '=' * (-len(payload)%4)
-          claims=json.loads(base64.urlsafe_b64decode(payload.encode()).decode())
-          mask=int(claims.get('s',0))
-          bit_names={
-              1:'Контент',2:'Аналитика',3:'Цены и скидки',4:'Маркетплейс',5:'Статистика',
-              6:'Продвижение',7:'Вопросы и отзывы',9:'Чат с покупателями',10:'Поставки',
-              11:'Возвраты покупателями',12:'Документы',13:'Финансы',16:'Пользователи'
-          }
-          categories=[name for bit,name in bit_names.items() if mask & (1<<bit)]
-          read_only=bool(mask & (1<<30))
-          print('WB_TOKEN_CATEGORIES='+json.dumps(categories,ensure_ascii=False))
-          print('WB_TOKEN_READ_ONLY='+str(read_only).upper())
+          token=(cabs[active] or {}).get('token',''); assert token and token.count('.')>=2
+          p=token.split('.')[1]; p += '=' * (-len(p)%4)
+          claims=json.loads(base64.urlsafe_b64decode(p.encode()).decode()); mask=int(claims.get('s',0))
+          bits={1:'Контент',2:'Аналитика',3:'Цены и скидки',4:'Маркетплейс',5:'Статистика',6:'Продвижение',7:'Вопросы и отзывы',9:'Чат с покупателями',10:'Поставки',11:'Возвраты покупателями',12:'Документы',13:'Финансы',16:'Пользователи'}
+          print('WB_TOKEN_CATEGORIES='+json.dumps([n for b,n in bits.items() if mask & (1<<b)],ensure_ascii=False))
+          print('WB_TOKEN_READ_ONLY='+str(bool(mask & (1<<30))).upper())
           print('WB_TOKEN_HAS_ANALYTICS='+str(bool(mask & (1<<2))).upper())
-          print('WB_TOKEN_CATEGORY_DIAGNOSTIC=PASS')
+          PY
+
+      - name: Call current WB stocks endpoint through raw MCP path
+        shell: bash
+        timeout-minutes: 3
+        env:
+          MCP_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          timeout 120s python -u - <<'PY'
+          import itertools, json, os
+          import httpx
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'): return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+          headers={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          ids=itertools.count(1)
+          with httpx.Client(timeout=httpx.Timeout(connect=10,read=45,write=30,pool=10),follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'wb-stocks-403-diagnostic','version':'1'}}})
+              init=unpack(r); assert init and 'result' in init,init
+              h=dict(headers); sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              n=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'}); assert n.status_code in (200,202)
+              rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'tools/call','params':{'name':'wb_call_raw','arguments':{'method':'POST','host':'seller-analytics-api.wildberries.ru','path':'/api/analytics/v1/stocks-report/wb-warehouses','body':{'limit':1,'offset':0},'confirm_write':True,'i_understand_this_modifies_data':False}}})
+              payload=unpack(rr); assert payload and 'result' in payload,payload
+              result=payload['result']; assert not result.get('isError'),result
+              text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None); assert text is not None
+              data=json.loads(text)
+              safe={k:v for k,v in data.items() if k not in {'headers','request_headers'}}
+              print('WB_STOCKS_RAW_RESPONSE='+json.dumps(safe,ensure_ascii=False,sort_keys=True))
+              print('WB_STOCKS_RAW_DIAGNOSTIC=PASS')
           PY
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/cabinets.json"
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/cabinets.json" "$RUNNER_TEMP/bearer"
