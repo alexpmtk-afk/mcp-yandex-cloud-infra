@@ -1,0 +1,285 @@
+name: Deploy exact Marketplaces MCP 0d1bd268 to TEST once
+
+on:
+  push:
+    branches:
+      - marketplaces-rollout-2026-09-07
+    paths:
+      - .github/workflows/marketplaces-deploy-0d1bd268-once.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-mcp-test-rollout
+  cancel-in-progress: false
+
+jobs:
+  deploy-and-accept:
+    runs-on: ubuntu-latest
+    environment: test
+    env:
+      SOURCE_SHA: 0d1bd268a1237b4e8355669b8447358b5fd6eb5e
+    steps:
+      - name: Checkout exact rollout snapshot
+        uses: actions/checkout@v4
+
+      - name: Prove clean exact runtime before cloud mutation
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q "@$SOURCE_SHA" app/.source-revision
+          test -z "$(find app -type d -name __pycache__ -print -quit)"
+          test -z "$(find app -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+          check_blob() {
+            local path="$1" expected="$2" got
+            got="$(git hash-object "$path")"
+            echo "$path  $got"
+            test "$got" = "$expected"
+          }
+          check_blob app/core/client.py 6220d5fb3eec35589c3bd5d4f426ef102b6b26f5
+          check_blob app/core/paginate.py 7cb575e6573b686ea2ad8c016290407c4d7cb280
+          check_blob app/ozon_mcp/endpoints.yaml 35c9a00aa7d4aef1caff5c48c7fc79a019ee816c
+          check_blob app/ozon_mcp/server.py e0989b31f588f8692fcd3c3200191c8ac79d904e
+          check_blob app/ozon_mcp/workflows.yaml 8f6bad5f5565b144aa45c5451d97e77dfb81b5c7
+          check_blob app/core/rate_limit.py 73ec2cb4bf771e922d6dda87f158705f8a6c7a04
+          check_blob app/core/remote.py 6b3d9344ea4dfed44afb59d91852921d1e11b197
+          check_blob app/wb_mcp/server.py ff158942c369ab3d76a4b0f18f26d10873d51682
+          check_blob app/pyproject.toml e76bb141da01e1bee4afd619613a1e6f116f2c62
+          ! grep -q '/v3/posting/fbs/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v3/posting/fbs/unfulfilled/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v2/posting/fbo/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v3/finance/transaction/list' app/ozon_mcp/endpoints.yaml
+          ! grep -q '/v3/finance/transaction/totals' app/ozon_mcp/endpoints.yaml
+          grep -q 'cabinet_key=f"{key}:oauth"' app/core/client.py
+          ! grep -q 'rate_controller.acquire(' app/core/client.py
+          git diff --check
+          docker build --label "org.opencontainers.image.revision=$SOURCE_SHA" -t marketplaces-mcp:predeploy-check app
+          echo 'exact_runtime_predeploy=PASS'
+
+      - name: Install Yandex Cloud CLI with resumable retries
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          rm -f "$ARCHIVE"
+          ok=0
+          for attempt in $(seq 1 20); do
+            echo "yc download attempt $attempt/20"
+            if wget --continue --timeout=60 --tries=3 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              echo 'download completed but archive validation failed; restarting'
+              rm -f "$ARCHIVE"
+            fi
+            sleep 5
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
+      - name: Authenticate and resolve existing TEST resources
+        id: r
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create marketplace-runtime-rollout || true
+          yc config set service-account-key "$KEY"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          RUNTIME_SA="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
+          REGISTRY_ID="$(yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          NETWORK_ID="$(yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-net")|.id'|head -1)"
+          CLUSTER_ID="$(yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
+          REDIS_HOST="$(yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN; do
+            test -n "${!v}"
+          done
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY_ID" >> "$GITHUB_OUTPUT"
+          echo "network=$NETWORK_ID" >> "$GITHUB_OUTPUT"
+          echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo 'existing_test_resources=RESOLVED'
+
+      - name: Build and publish exact image
+        id: image
+        shell: bash
+        env:
+          REGISTRY_ID: ${{ steps.r.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:${SOURCE_SHA:0:12}"
+          docker build --label "org.opencontainers.image.revision=$SOURCE_SHA" -t "$IMAGE" app
+          yc iam create-token | docker login --username iam --password-stdin cr.yandex
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo "published_source=$SOURCE_SHA"
+
+      - name: Deploy new authenticated networked revision
+        id: d
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.r.outputs.folder }}
+          SECRET_ID: ${{ steps.r.outputs.secret }}
+          VERSION_ID: ${{ steps.r.outputs.version }}
+          CONTAINER_ID: ${{ steps.r.outputs.container }}
+          RUNTIME_SA: ${{ steps.r.outputs.sa }}
+          NETWORK_ID: ${{ steps.r.outputs.network }}
+          REDIS_HOST: ${{ steps.r.outputs.redis_host }}
+          IMAGE: ${{ steps.image.outputs.image }}
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
+            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 60s --concurrency 8 \
+            --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,WB_GLOBAL_RPS=5,OZON_GLOBAL_RPS=20,OZON_PERF_GLOBAL_RPS=10" \
+            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
+            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
+            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --format json --no-user-output > "$RUNNER_TEMP/revision.json"
+          REV="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"
+          test -n "$REV"
+          echo "revision=$REV" >> "$GITHUB_OUTPUT"
+          echo "deployed_revision=$REV"
+
+      - name: Basic remote security and MCP proof
+        shell: bash
+        env:
+          DOMAIN: ${{ steps.r.outputs.domain }}
+          SECRET_ID: ${{ steps.r.outputs.secret }}
+          VERSION_ID: ${{ steps.r.outputs.version }}
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          BASE="https://$DOMAIN"
+          CODE=000
+          for i in $(seq 1 18); do
+            CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
+            [[ "$CODE" == 200 ]] && break
+            sleep 5
+          done
+          test "$CODE" = 200
+          UNAUTH="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/unauth" -w '%{http_code}' -X POST "$BASE/mcp" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"unauth","version":"1"}}}')"
+          test "$UNAUTH" = 401
+          AUTH="$(curl -sS --max-time 60 -o "$RUNNER_TEMP/auth" -w '%{http_code}' -X POST "$BASE/mcp" -H "Authorization: Bearer $BEARER" -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data '{"jsonrpc":"2.0","id":2,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"auth","version":"1"}}}')"
+          test "$AUTH" = 200
+          echo 'health_200=true'
+          echo 'unauthorized_401=true'
+          echo 'authenticated_initialize_200=true'
+
+      - name: Real WB and Ozon remote acceptance
+        shell: bash
+        env:
+          DOMAIN: ${{ steps.r.outputs.domain }}
+          SECRET_ID: ${{ steps.r.outputs.secret }}
+          VERSION_ID: ${{ steps.r.outputs.version }}
+          CONTAINER_ID: ${{ steps.r.outputs.container }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec-accept.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec-accept.json")"
+          echo "::add-mask::$BEARER"
+          export MCP_URL="https://${DOMAIN}/mcp" MCP_BEARER="$BEARER"
+          python - <<'PY'
+          import itertools, json, os
+          import httpx
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          base_headers = {
+              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+          ids = itertools.count(1)
+          with httpx.Client(timeout=120, follow_redirects=True) as c:
+              r = c.post(os.environ['MCP_URL'], headers=base_headers, json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'rollout-acceptance','version':'1'}
+                  }})
+              init = unpack(r)
+              assert init and 'result' in init
+              sid = r.headers.get('mcp-session-id')
+              h = dict(base_headers)
+              if sid:
+                  h['Mcp-Session-Id'] = sid
+              h['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
+              n = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert n.status_code in (200,202)
+
+              def rpc(method, params=None):
+                  d = unpack(c.post(os.environ['MCP_URL'], headers=h, json={
+                      'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}}))
+                  assert d and 'result' in d, method
+                  return d['result']
+
+              def call(name, args):
+                  result = rpc('tools/call', {'name':name,'arguments':args})
+                  assert not result.get('isError'), name
+                  text = next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'), None)
+                  assert text is not None, name
+                  return json.loads(text)
+
+              names = {x['name'] for x in rpc('tools/list')['tools']}
+              need = {'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status'}
+              assert need <= names, sorted(need-names)
+              print(f'mcp_tools={len(names)}')
+
+              wb = call('wb_get_sales', {'date_from':'2026-08-30','flag':0})
+              assert wb.get('ok') is True and 200 <= int(wb.get('status',0)) < 300, wb
+              print('wb_live=PASS')
+
+              oz = call('ozon_get_products', {'visibility':'ALL','limit':1,'last_id':''})
+              assert oz.get('ok') is True and 200 <= int(oz.get('status',0)) < 300, oz
+              print('ozon_live=PASS')
+
+              wbr = call('wb_rate_limit_status', {})
+              ozr = call('ozon_rate_limit_status', {})
+              assert wbr.get('backend') == 'redis', wbr
+              assert ozr.get('backend') == 'redis', ozr
+              print('limiter_backend=redis')
+              print('REMOTE_WB_OZON_ACCEPTANCE=PASS')
+          PY
+          LOG_COUNT="$(yc logging read --resource-ids="$CONTAINER_ID" --since '15m ago' --limit 100 --format json 2>/dev/null | jq 'length')"
+          test "$LOG_COUNT" -gt 0
+          echo 'yandex_runtime_logs=true'
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/sec-accept.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/unauth" "$RUNNER_TEMP/auth"
