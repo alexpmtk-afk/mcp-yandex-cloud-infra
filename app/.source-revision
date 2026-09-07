@@ -1,3 +1,3 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@9e3ac8e1b2da90b322020cc6634a91b5f3feaea0
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@1b7f70d3c9e764f3f2b4cbbc93b4a4e5947602f4
 Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.
-Synced: 2026-09-07 after live WB stocks migration plus runtime catalog/workflow cleanup.
+Synced: 2026-09-07 after WB Base-token warehouse-remains fallback and regression/CI acceptance.
