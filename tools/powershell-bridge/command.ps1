@@ -1,171 +1,199 @@
 $ErrorActionPreference = 'Stop'
 
-Write-Host '=== MARKETPLACES_NATIVE_E2E_WORK_BEGIN ==='
+Write-Host '=== OZON_HOME_YANDEX_PLAIN_CONTROL_V2_BEGIN ==='
 
-$interactiveUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
-if ([string]::IsNullOrWhiteSpace($interactiveUser)) {
-    throw 'No interactive Windows user is logged on.'
-}
-Write-Host "INTERACTIVE_USER=$interactiveUser"
-Write-Host "BRIDGE_IDENTITY=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
+$user = 'Win10_Game_OS'
+$runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
+$browser = 'C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
+$profile = Join-Path $runtimeRoot 'profiles\MarketplaceMonitor\Ozon-Yandex-Plain-V2'
+$scriptPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control-v2.ps1'
+$startedPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control-v2.started'
+$resultPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control-v2.json'
+$taskName = 'MarketplaceCardMonitor-Ozon-Yandex-PlainControl-V2'
 
-$runtimeRoot = Join-Path $env:ProgramData 'ChatGPT-PK\marketplaces-native-e2e'
-New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
-$childScript = Join-Path $runtimeRoot 'run.ps1'
-$resultPath = Join-Path $runtimeRoot 'result.txt'
-$taskName = 'ChatGPT-Marketplaces-Native-E2E-Once'
-
-if (Test-Path $resultPath) { Remove-Item $resultPath -Force }
-
-$child = @'
-$ErrorActionPreference = 'Stop'
-$ProgressPreference = 'SilentlyContinue'
-
-$resultPath = 'C:\ProgramData\ChatGPT-PK\marketplaces-native-e2e\result.txt'
-$lines = New-Object System.Collections.Generic.List[string]
-function Add-Line([string]$s) { $lines.Add($s) }
-function Flush-Result {
-    $safe = $lines -join "`r`n"
-    $token = [Environment]::GetEnvironmentVariable('MARKETPLACES_MCP_TOKEN','User')
-    if (-not [string]::IsNullOrWhiteSpace($token)) {
-        $safe = $safe.Replace($token, '[REDACTED_MARKETPLACES_MCP_TOKEN]')
+foreach ($path in @($startedPath,$resultPath)) {
+    if (Test-Path $path) {
+        Remove-Item $path -Force
     }
-    [IO.File]::WriteAllText($resultPath, $safe, (New-Object Text.UTF8Encoding($false)))
+}
+
+New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+& icacls.exe $runtimeRoot /grant "${user}:(OI)(CI)M" /T /C | Out-Null
+
+$script = @'
+$ErrorActionPreference = 'Continue'
+
+$browser = 'C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
+$runtimeRoot = 'C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
+$profile = Join-Path $runtimeRoot 'profiles\MarketplaceMonitor\Ozon-Yandex-Plain-V2'
+$startedPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control-v2.started'
+$resultPath = Join-Path $runtimeRoot 'ozon-yandex-plain-control-v2.json'
+$target = 'https://www.ozon.ru/product/nippel-dlya-beskamernyh-shin-ventil-sosok-avtomobilnyy-rezinovyy-1420875699/'
+
+"STARTED $(Get-Date -Format o) USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) SESSION=$((Get-Process -Id $PID).SessionId)" |
+    Set-Content -Path $startedPath -Encoding UTF8
+
+New-Item -ItemType Directory -Force -Path $profile | Out-Null
+
+$result = [ordered]@{
+    timestamp = (Get-Date).ToString('o')
+    user = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+    session_id = (Get-Process -Id $PID).SessionId
+    browser = $browser
+    profile = $profile
+    target = $target
+    launch_ok = $false
+    process_ids = @()
+    window_titles = @()
+    error = $null
 }
 
 try {
-    Add-Line "EXEC_IDENTITY=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-    Add-Line "EXEC_SESSION=$((Get-Process -Id $PID).SessionId)"
+    Start-Process `
+        -FilePath $browser `
+        -ArgumentList @(
+            "--user-data-dir=$profile",
+            '--new-window',
+            '--no-first-run',
+            '--no-default-browser-check',
+            $target
+        ) | Out-Null
 
-    $token = [Environment]::GetEnvironmentVariable('MARKETPLACES_MCP_TOKEN','User')
-    Add-Line ("TOKEN_USER_ENV_PRESENT=" + [bool](-not [string]::IsNullOrWhiteSpace($token)))
+    $result.launch_ok = $true
 
-    $globalConfig = Join-Path $HOME '.codex\config.toml'
-    Add-Line "GLOBAL_CODEX_CONFIG_EXISTS=$(Test-Path $globalConfig)"
-    if (Test-Path $globalConfig) {
-        $cfg = Get-Content -Raw -LiteralPath $globalConfig
-        Add-Line ("GLOBAL_HAS_MARKETPLACES_YANDEX=" + [bool]($cfg -match '(?m)^\[mcp_servers\.marketplaces-yandex\]'))
-        Add-Line ("GLOBAL_USES_TOKEN_ENV=" + [bool]($cfg -match 'bearer_token_env_var\s*=\s*"MARKETPLACES_MCP_TOKEN"'))
-    }
+    Start-Sleep -Seconds 20
 
-    $candidates = @(
-        'G:\Мой диск\Marketplaces\MCP отчеты МП\marketplaces-mcp-only',
-        'G:\My Drive\Marketplaces\MCP отчеты МП\marketplaces-mcp-only',
-        (Join-Path $HOME 'My Drive\Marketplaces\MCP отчеты МП\marketplaces-mcp-only'),
-        (Join-Path $HOME 'Google Drive\My Drive\Marketplaces\MCP отчеты МП\marketplaces-mcp-only')
-    )
-    $project = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-    if (-not $project) {
-        foreach ($drive in (Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Root })) {
-            $root = $drive.Root
-            foreach ($name in @('Мой диск','My Drive')) {
-                $p = Join-Path $root "$name\Marketplaces\MCP отчеты МП\marketplaces-mcp-only"
-                if (Test-Path $p) { $project = $p; break }
-            }
-            if ($project) { break }
+    $processes = @(
+        Get-CimInstance Win32_Process `
+            -Filter "Name='browser.exe'" `
+            -ErrorAction SilentlyContinue |
+        Where-Object {
+            $_.CommandLine -and
+            $_.CommandLine.IndexOf(
+                $profile,
+                [System.StringComparison]::OrdinalIgnoreCase
+            ) -ge 0
         }
-    }
-    Add-Line "PROJECT_FOUND=$([bool]$project)"
-    if (-not $project) { throw 'marketplaces-mcp-only project was not found on the synchronized Google Drive.' }
-    Add-Line "PROJECT_PATH=$project"
+    )
 
-    $agents = Join-Path $project 'AGENTS.md'
-    Add-Line "AGENTS_EXISTS=$(Test-Path $agents)"
-    if (Test-Path $agents) {
-        $a = Get-Content -Raw -LiteralPath $agents
-        Add-Line ("AGENTS_MCP_ONLY=" + [bool]($a -match 'marketplaces-yandex'))
-        Add-Line ("AGENTS_FAIL_CLOSED=" + [bool]($a -match 'Fail-closed'))
-    }
+    $result.process_ids = @(
+        $processes | Select-Object -ExpandProperty ProcessId
+    )
 
-    $projectCfg = Join-Path $project '.codex\config.toml'
-    Add-Line "PROJECT_CODEX_CONFIG_EXISTS=$(Test-Path $projectCfg)"
-    if (Test-Path $projectCfg) {
-        $pc = Get-Content -Raw -LiteralPath $projectCfg
-        Add-Line ("PROJECT_REMOTE_ENABLED=" + [bool]($pc -match '(?ms)\[mcp_servers\.marketplaces-yandex\].*?enabled\s*=\s*true'))
-        Add-Line ("PROJECT_WB_LOCAL_DISABLED=" + [bool]($pc -match '(?ms)\[mcp_servers\.wildberries\].*?enabled\s*=\s*false'))
-        Add-Line ("PROJECT_OZON_LOCAL_DISABLED=" + [bool]($pc -match '(?ms)\[mcp_servers\.ozon\].*?enabled\s*=\s*false'))
-        Add-Line ("PROJECT_OZON_PERF_LOCAL_DISABLED=" + [bool]($pc -match '(?ms)\[mcp_servers\.ozon-perf\].*?enabled\s*=\s*false'))
+    $titles = @()
+
+    foreach ($item in $processes) {
+        try {
+            $p = Get-Process -Id $item.ProcessId -ErrorAction Stop
+            if ($p.MainWindowTitle) {
+                $titles += $p.MainWindowTitle
+            }
+        }
+        catch {}
     }
 
-    $codex = Get-Command codex -ErrorAction SilentlyContinue
-    if (-not $codex) {
-        $possible = @(
-            (Join-Path $HOME 'AppData\Roaming\npm\codex.cmd'),
-            (Join-Path $HOME 'AppData\Local\Programs\codex\codex.exe')
-        ) | Where-Object { Test-Path $_ } | Select-Object -First 1
-        if ($possible) { $codexPath = $possible } else { throw 'Codex CLI was not found for the interactive user.' }
-    } else {
-        $codexPath = $codex.Source
-    }
-    Add-Line "CODEX_FOUND=True"
-    Add-Line "CODEX_PATH=$codexPath"
-
-    Push-Location $project
-    try {
-        $prompt = 'Покажи один существующий товар Ozon из моего кабинета. Используй только разрешённый remote MCP marketplaces-yandex и в конце укажи фактически использованный MCP tool.'
-        Add-Line 'PROMPT=Покажи один существующий товар Ozon из моего кабинета.'
-        $output = & $codexPath exec --skip-git-repo-check --sandbox read-only --color never $prompt 2>&1 | Out-String
-        $exit = $LASTEXITCODE
-        if ($null -eq $exit) { $exit = 0 }
-        Add-Line "CODEX_EXIT=$exit"
-        Add-Line '--- CODEX_OUTPUT_BEGIN ---'
-        Add-Line $output.Trim()
-        Add-Line '--- CODEX_OUTPUT_END ---'
-        Add-Line ("OUTPUT_MENTIONS_MARKETPLACES_YANDEX=" + [bool]($output -match 'marketplaces-yandex'))
-        Add-Line ("OUTPUT_MENTIONS_OZON_GET_PRODUCTS=" + [bool]($output -match 'ozon_get_products'))
-        Add-Line ("OUTPUT_HAS_SOURCE_LINE=" + [bool]($output -match '(?i)Источник\s*:\s*MCP\s+marketplaces-yandex'))
-        Add-Line ("OUTPUT_LOOKS_SUCCESSFUL=" + [bool]($exit -eq 0 -and $output -notmatch '(?i)error|ошибк|failed'))
-        if ($exit -ne 0) { throw "Codex exec failed with exit code $exit." }
-    }
-    finally {
-        Pop-Location
-    }
-
-    Add-Line 'NATIVE_E2E_EXECUTION=PASS'
+    $result.window_titles = @($titles | Select-Object -Unique)
 }
 catch {
-    Add-Line "NATIVE_E2E_EXECUTION=FAIL"
-    Add-Line "ERROR=$($_.Exception.Message)"
+    $result.error = $_.Exception.Message
 }
 finally {
-    Flush-Result
+    $result |
+        ConvertTo-Json -Depth 6 |
+        Set-Content -Path $resultPath -Encoding UTF8
 }
+
+exit 0
 '@
 
-[IO.File]::WriteAllText($childScript, $child, (New-Object Text.UTF8Encoding($false)))
+[IO.File]::WriteAllText(
+    $scriptPath,
+    $script,
+    (New-Object Text.UTF8Encoding($false))
+)
+
+& icacls.exe $scriptPath /grant "${user}:RX" /C | Out-Null
 
 try {
-    Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue
-} catch {}
-
-$action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$childScript`""
-$principal = New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive -RunLevel Limited
-$settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 6) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-
-try {
-    Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force | Out-Null
-    Write-Host 'TASK_REGISTERED=YES'
-    Start-ScheduledTask -TaskName $taskName
-    Write-Host 'TASK_STARTED=YES'
-
-    $deadline = (Get-Date).AddMinutes(6)
-    while ((Get-Date) -lt $deadline -and -not (Test-Path $resultPath)) {
-        Start-Sleep -Seconds 3
-    }
-
-    if (-not (Test-Path $resultPath)) {
-        throw 'Timed out waiting for native Codex E2E result.'
-    }
-
-    Write-Host '--- NATIVE_E2E_RESULT_BEGIN ---'
-    Get-Content -Raw -LiteralPath $resultPath
-    Write-Host '--- NATIVE_E2E_RESULT_END ---'
+    Unregister-ScheduledTask `
+        -TaskName $taskName `
+        -Confirm:$false `
+        -ErrorAction SilentlyContinue
 }
-finally {
-    try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
-    Remove-Item $childScript -Force -ErrorAction SilentlyContinue
-    Remove-Item $resultPath -Force -ErrorAction SilentlyContinue
-    try { Remove-Item $runtimeRoot -Force -ErrorAction SilentlyContinue } catch {}
+catch {}
+
+$action = New-ScheduledTaskAction `
+    -Execute 'powershell.exe' `
+    -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$scriptPath`""
+
+$principal = New-ScheduledTaskPrincipal `
+    -UserId $user `
+    -LogonType Interactive `
+    -RunLevel Limited
+
+$settings = New-ScheduledTaskSettingsSet `
+    -ExecutionTimeLimit (New-TimeSpan -Minutes 2) `
+    -AllowStartIfOnBatteries `
+    -DontStopIfGoingOnBatteries
+
+Register-ScheduledTask `
+    -TaskName $taskName `
+    -Action $action `
+    -Principal $principal `
+    -Settings $settings `
+    -Force | Out-Null
+
+Write-Host 'TASK_REGISTERED=YES'
+
+Start-ScheduledTask -TaskName $taskName
+Write-Host 'TASK_START_REQUESTED=YES'
+
+foreach ($delay in @(2,5,10)) {
+    Start-Sleep -Seconds $delay
+
+    $task = Get-ScheduledTask -TaskName $taskName
+    $info = Get-ScheduledTaskInfo -TaskName $taskName
+
+    Write-Host "CHECK_AFTER_${delay}S_STATE=$($task.State)"
+    Write-Host "CHECK_AFTER_${delay}S_LAST_RESULT=$($info.LastTaskResult)"
+    Write-Host "CHECK_AFTER_${delay}S_STARTED_FILE=$(Test-Path $startedPath)"
 }
 
-Write-Host '=== MARKETPLACES_NATIVE_E2E_WORK_END ==='
+$deadline = (Get-Date).AddSeconds(50)
+
+while (
+    (Get-Date) -lt $deadline -and
+    -not (Test-Path $resultPath)
+) {
+    Start-Sleep -Seconds 2
+}
+
+Write-Host '--- START_MARKER ---'
+if (Test-Path $startedPath) {
+    Get-Content $startedPath -Raw
+}
+else {
+    Write-Host 'NOT_FOUND'
+}
+
+Write-Host '--- RESULT ---'
+if (Test-Path $resultPath) {
+    Get-Content $resultPath -Raw
+}
+else {
+    Write-Host 'NOT_FOUND'
+}
+
+$finalTask = Get-ScheduledTask -TaskName $taskName
+$finalInfo = Get-ScheduledTaskInfo -TaskName $taskName
+
+Write-Host "FINAL_STATE=$($finalTask.State)"
+Write-Host "FINAL_LAST_RESULT=$($finalInfo.LastTaskResult)"
+Write-Host "FINAL_LAST_RUN=$($finalInfo.LastRunTime)"
+
+Unregister-ScheduledTask `
+    -TaskName $taskName `
+    -Confirm:$false `
+    -ErrorAction SilentlyContinue
+
+Write-Host '=== OZON_HOME_YANDEX_PLAIN_CONTROL_V2_END ==='
