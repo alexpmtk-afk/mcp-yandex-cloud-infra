@@ -1,3 +1,3 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@f759fb004040a64a562d0738824b30cc3cff439e
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@a9a7354e52feb9425546b12fa0fd1e42aa1bb1f6
 Purpose: reproducible TEST MCP production-runtime image build without anonymous cross-repository cloning.
-Synced: 2026-09-07 after scoped upstream 429 cooldown hardening and full app CI/security acceptance.
+Synced: 2026-09-07 after safe startup repair for legacy WB global limiter contamination and full app CI/security acceptance.
