@@ -2,6 +2,13 @@ name: Deploy Marketplaces MCP TEST
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - app/**
+      - terraform/**
+      - .github/workflows/deploy-mcp-test.yml
 
 permissions:
   contents: read
@@ -14,18 +21,51 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: test
+    timeout-minutes: 45
     steps:
       - name: Checkout infrastructure
         uses: actions/checkout@v4
-      - name: Install Yandex Cloud CLI
+
+      - name: Prove vendored runtime snapshot
         shell: bash
         run: |
           set -euo pipefail
+          test -f app/.source-revision
+          grep -Eq 'alexpmtk-afk/marketplaces-mcp-ru@[0-9a-f]{40}' app/.source-revision
+          test -z "$(find app -type d -name __pycache__ -print -quit)"
+          test -z "$(find app -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
+          git diff --check
+          echo "source_revision=$(head -1 app/.source-revision)"
+          echo 'snapshot_gate=PASS'
+
+      - name: Install Yandex Cloud CLI with bounded resumable retries
+        shell: bash
+        timeout-minutes: 18
+        run: |
+          set -euo pipefail
           mkdir -p "$RUNNER_TEMP/yc"
-          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
-          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          rm -f "$ARCHIVE"
+          ok=0
+          for attempt in $(seq 1 15); do
+            echo "yc download attempt $attempt/15"
+            if timeout 75s wget --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
+              echo 'archive validation failed; restarting download'
+              rm -f "$ARCHIVE"
+            fi
+            sleep 4
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
       - name: Authenticate CI service account
         shell: bash
         env:
@@ -40,10 +80,12 @@ jobs:
           echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
+
       - name: Set up Terraform
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
+
       - name: Create or import TEST foundation
         shell: bash
         env:
@@ -53,10 +95,10 @@ jobs:
           set -euo pipefail
           test -n "$YC_TFSTATE_ACCESS_KEY"
           test -n "$YC_TFSTATE_SECRET_KEY"
-          terraform -chdir=terraform init -reconfigure -input=false \\
-            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \\
+          terraform -chdir=terraform init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
-          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id')"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
           if [[ -n "$FOLDER_ID" && "$FOLDER_ID" != "null" ]]; then
             terraform -chdir=terraform import yandex_resourcemanager_folder.mcp_test "$FOLDER_ID" || true
           fi
@@ -70,7 +112,8 @@ jobs:
             -target=yandex_resourcemanager_folder_iam_member.runtime_registry_pull \
             -target=yandex_resourcemanager_folder_iam_member.runtime_lockbox_viewer \
             -target=yandex_lockbox_secret.marketplace_credentials
-      - name: Build and push MCP image
+
+      - name: Build and push exact MCP image
         shell: bash
         run: |
           set -euo pipefail
@@ -80,15 +123,132 @@ jobs:
           docker build --tag "cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA" app
           docker push "cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA"
           echo "MCP_IMAGE_URL=cr.yandex/$REGISTRY_ID/marketplaces-mcp:test-$GITHUB_SHA" >> "$GITHUB_ENV"
+
       - name: Deploy private MCP and API Gateway
+        id: deploy
         shell: bash
         run: |
           set -euo pipefail
           terraform -chdir=terraform apply -auto-approve -input=false -var="mcp_image_url=$MCP_IMAGE_URL"
           GATEWAY_URL="$(terraform -chdir=terraform output -raw mcp_gateway_url)"
-          curl --fail --retry 8 --retry-delay 5 "$GATEWAY_URL/healthz"
+          curl --fail --retry 8 --retry-all-errors --retry-delay 5 --connect-timeout 10 --max-time 30 "$GATEWAY_URL/healthz"
+          echo "gateway_url=$GATEWAY_URL" >> "$GITHUB_OUTPUT"
           echo "MCP TEST endpoint: $GATEWAY_URL/mcp"
-      - name: Remove ephemeral CI key
+          echo 'healthz=PASS'
+
+      - name: Resolve MCP bearer
+        shell: bash
+        run: |
+          set -euo pipefail
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-api-credentials") | .id' | head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[] | select(.status == "ACTIVE")][0].id')"
+          test -n "$SECRET_ID"; test -n "$VERSION_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[] | select(.key == "mcp_bearer_token") | .text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo 'bearer=RESOLVED'
+
+      - name: Remote MCP and live WB/Ozon acceptance
+        shell: bash
+        timeout-minutes: 8
+        env:
+          GATEWAY_URL: ${{ steps.deploy.outputs.gateway_url }}
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          export MCP_URL="${GATEWAY_URL}/mcp"
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          timeout 300s python -u - <<'PY'
+          import itertools, json, os
+          import httpx
+
+          timeout = httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0)
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          headers0 = {
+              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+          ids = itertools.count(1)
+          with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+              r = c.post(os.environ['MCP_URL'], headers=headers0, json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'1'}
+                  }})
+              init = unpack(r); assert init and 'result' in init, init
+              print('initialize=PASS', flush=True)
+              h = dict(headers0)
+              sid = r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id'] = sid
+              h['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
+              n = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert n.status_code in (200,202), n.status_code
+
+              def rpc(method, params=None):
+                  rr = c.post(os.environ['MCP_URL'], headers=h, json={
+                      'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  d = unpack(rr)
+                  assert d and 'result' in d, (method, d)
+                  return d['result']
+
+              def call(name, args):
+                  result = rpc('tools/call', {'name':name,'arguments':args})
+                  assert not result.get('isError'), (name, result)
+                  text = next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'), None)
+                  assert text is not None, name
+                  return json.loads(text)
+
+              tools = rpc('tools/list')['tools']
+              names = {x['name'] for x in tools}
+              need = {'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status'}
+              assert need <= names, sorted(need - names)
+              print(f'tools_list=PASS count={len(names)}', flush=True)
+
+              wb = call('wb_get_sales', {'date_from':'2026-09-07','flag':0})
+              assert wb.get('ok') is True and 200 <= int(wb.get('status',0)) < 300, wb
+              print('WB_LIVE=PASS', flush=True)
+
+              oz = call('ozon_get_products', {'visibility':'ALL','limit':1,'last_id':''})
+              assert oz.get('ok') is True and 200 <= int(oz.get('status',0)) < 300, oz
+              print('OZON_LIVE=PASS', flush=True)
+
+              wbr = call('wb_rate_limit_status', {})
+              ozr = call('ozon_rate_limit_status', {})
+              assert wbr.get('backend') == 'redis', wbr
+              assert ozr.get('backend') == 'redis', ozr
+              print('LIMITER_BACKEND=redis', flush=True)
+              print('REMOTE_WB_OZON_ACCEPTANCE=PASS', flush=True)
+          PY
+
+      - name: Best-effort Yandex runtime-log evidence
+        continue-on-error: true
+        shell: bash
+        timeout-minutes: 2
+        run: |
+          set -euo pipefail
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[] | select(.name == "marketplaces-mcp-test") | .id' | head -1)"
+          test -n "$CONTAINER_ID"
+          if timeout 45s yc logging read --resource-ids="$CONTAINER_ID" --since '20m ago' --limit 100 --format json > "$RUNNER_TEMP/logs.json"; then
+            LOG_COUNT="$(jq 'length' "$RUNNER_TEMP/logs.json")"
+            echo "yandex_runtime_logs=$LOG_COUNT"
+          else
+            echo 'runtime_log_read=TIMEOUT_OR_UNAVAILABLE'
+          fi
+
+      - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json"
