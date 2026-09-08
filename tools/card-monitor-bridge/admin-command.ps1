@@ -1,46 +1,17 @@
-$ErrorActionPreference='Stop'
+$ErrorActionPreference='Continue'
 $root='C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$repo=Join-Path $root 'repo'
-$git='C:\Program Files\Git\cmd\git.exe'
-$python=Join-Path $root '.venv\Scripts\python.exe'
-$browser='C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
-$taskName='MarketplaceCardMonitor-Daily-OnDemand-Hidden'
-$child=Join-Path $root 'daily-ondemand-hidden.ps1'
-$result=Join-Path $root 'daily-history\latest.json'
-$interactiveUser=(Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
-if([string]::IsNullOrWhiteSpace($interactiveUser)){throw 'No interactive user'}
-function Get-MonitorBrowserProcesses {@(Get-CimInstance Win32_Process|Where-Object{($_.Name-match'^(browser|yandex|chrome)\.exe$')-and([string]$_.CommandLine).Contains('--user-data-dir=C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1')})}
-function Kill-MonitorBrowsers {Get-MonitorBrowserProcesses|ForEach-Object{Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue};Start-Sleep -Milliseconds 500}
-Add-Type @'
-using System;using System.Runtime.InteropServices;public static class Win32VisibleDaily{[DllImport("user32.dll")]public static extern bool IsWindowVisible(IntPtr hWnd);}
-'@
-Kill-MonitorBrowsers
-$before=if(Test-Path $result){(Get-Item $result).LastWriteTimeUtc}else{[datetime]::MinValue}
-$childCode=@'
-$ErrorActionPreference='Stop'
-$root='C:\ProgramData\ChatGPT-PK\marketplace-card-monitor\user-node-v1'
-$repo=Join-Path $root 'repo';$git='C:\Program Files\Git\cmd\git.exe';$python=Join-Path $root '.venv\Scripts\python.exe';$browser='C:\Program Files\Yandex\YandexBrowser\Application\browser.exe'
-function GitBytes([string]$spec,[string]$dest){$psi=New-Object Diagnostics.ProcessStartInfo;$psi.FileName=$git;$psi.Arguments="-C `"$repo`" show `"$spec`"";$psi.UseShellExecute=$false;$psi.RedirectStandardOutput=$true;$psi.RedirectStandardError=$true;$psi.CreateNoWindow=$true;$p=[Diagnostics.Process]::Start($psi);$ms=New-Object IO.MemoryStream;$p.StandardOutput.BaseStream.CopyTo($ms);$err=$p.StandardError.ReadToEnd();$p.WaitForExit();if($p.ExitCode-ne0){$ms.Dispose();throw$err};[IO.File]::WriteAllBytes($dest,$ms.ToArray());$ms.Dispose()}
-& $git -C $repo fetch origin implementation/ozon-user-node-gate --prune;if($LASTEXITCODE-ne0){throw "git fetch failed: $LASTEXITCODE"}
-$ref='origin/implementation/ozon-user-node-gate'
-$map=@{'src/browser_lifecycle.py'='browser_lifecycle.py';'src/card_collector.py'='card_collector.py';'src/direct_acceptance.py'='direct_acceptance.py';'src/daily_monitor.py'='daily_monitor.py';'config/direct-acceptance-5x2.json'='direct-acceptance-5x2.json';'config/history-seed-2026-09-07.json'='history-seed-2026-09-07.json'}
-foreach($e in $map.GetEnumerator()){GitBytes "$ref`:$($e.Key)" (Join-Path $root $e.Value)}
-& $python -m py_compile (Join-Path $root 'browser_lifecycle.py') (Join-Path $root 'card_collector.py') (Join-Path $root 'direct_acceptance.py') (Join-Path $root 'daily_monitor.py');if($LASTEXITCODE-ne0){throw "compile failed: $LASTEXITCODE"}
-$history=Join-Path $root 'daily-history';New-Item -ItemType Directory -Path $history -Force|Out-Null
-& $python (Join-Path $root 'daily_monitor.py') --config (Join-Path $root 'direct-acceptance-5x2.json') --acceptance (Join-Path $root 'direct_acceptance.py') --collector (Join-Path $root 'card_collector.py') --browser-path $browser --runtime-root $root --history-root $history --seed-file (Join-Path $root 'history-seed-2026-09-07.json') --timeout-seconds 65 --settle-seconds 9
-exit $LASTEXITCODE
-'@
-[IO.File]::WriteAllText($child,$childCode,(New-Object Text.UTF8Encoding($false)))
-try{Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue}catch{}
-$action=New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$child`""
-$principal=New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive -RunLevel Limited
-$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 8) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force|Out-Null
-$maxProc=0;$maxVisible=0;Start-ScheduledTask -TaskName $taskName;$deadline=(Get-Date).AddMinutes(8)
-while((Get-Date)-lt$deadline){$fresh=(Test-Path $result)-and((Get-Item $result).LastWriteTimeUtc-gt$before);if($fresh){break};$procs=Get-MonitorBrowserProcesses;if($procs.Count-gt$maxProc){$maxProc=$procs.Count};$vis=0;foreach($p in $procs){try{$gp=Get-Process -Id $p.ProcessId -ErrorAction Stop;if($gp.MainWindowHandle-ne0-and[Win32VisibleDaily]::IsWindowVisible($gp.MainWindowHandle)){$vis++}}catch{}};if($vis-gt$maxVisible){$maxVisible=$vis};Start-Sleep -Milliseconds 350}
-if(-not((Test-Path $result)-and((Get-Item $result).LastWriteTimeUtc-gt$before))){throw 'daily snapshot timeout'}
-Start-Sleep -Seconds 2;Kill-MonitorBrowsers;$remaining=(Get-MonitorBrowserProcesses).Count;$j=Get-Content $result -Raw -Encoding UTF8|ConvertFrom-Json
-Write-Host '--- DAILY_SNAPSHOT ---';Write-Host "RUN_ID=$($j.run_id) STATUS=$($j.status) OZON=$($j.ozon_valid_price_count) WB=$($j.wb_valid_price_count) APPENDED=$($j.history_records_appended) HISTORY_TOTAL=$($j.history_total_records)";Write-Host "MAX_VISIBLE=$maxVisible REMAINING=$remaining"
-foreach($r in $j.rows){Write-Host ("ROW={0} MP={1} STATUS={2} PRICE={3} PREV={4} CHANGE={5} CHANGE_PCT={6} BASE={7} FROM_BASE={8} REGION={9} VALID={10}" -f $r.id,$r.marketplace,$r.status,$r.buyer_price_rub,$r.previous_price_rub,$r.change_rub,$r.change_pct,$r.baseline_price_rub,$r.from_baseline_rub,$r.region_ok,$r.valid_price)}
-try{Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue}catch{};Remove-Item $child -Force -ErrorAction SilentlyContinue
-if($remaining-ne0){exit 9};if($maxVisible-ne0){exit 8};exit 0
+Write-Host '--- DAILY_FAILURE_INSPECT ---'
+$evidence=Join-Path $root 'daily-history\runs\20260908T151601Z\raw-evidence'
+foreach($name in @('ozon-cordiant.json','ozon-nexen.json')){
+ $p=Join-Path $evidence $name
+ Write-Host "FILE=$p EXISTS=$(Test-Path $p)"
+ if(Test-Path $p){
+  try{$j=Get-Content $p -Raw -Encoding UTF8|ConvertFrom-Json;$p1=if($j.price){$j.price.buyer_price_rub}else{$null};$p2=if($j.price){$j.price.secondary_price_rub}else{$null};Write-Host ("STATUS={0} ERROR={1} FINAL={2} SKU={3} PRICE={4}/{5} REGION={6} NAME_OK={7} REQUIRED_OK={8} FORBIDDEN_OK={9} BLOCKED={10} NAME={11}" -f $j.status,$j.error,$j.final_url,$j.sku,$p1,$p2,$j.region_ok,$j.name_ok,$j.required_ok,$j.forbidden_ok,$j.blocked,$j.name);if($j.evidence){Write-Host ('BODY=' + (($j.evidence.body_excerpt -replace "`r|`n",' ') -replace '\s+',' ').Substring(0,[Math]::Min(2500,(($j.evidence.body_excerpt -replace "`r|`n",' ') -replace '\s+',' ').Length)))}}catch{Write-Host "PARSE_ERROR=$($_.Exception.Message)"}
+ }
+}
+Write-Host '--- WB_PARTIAL_FILES ---'
+foreach($name in @('wb-region-probe.json','wb-discovery-kumho.json','wb-discovery-viatti.json')){
+ $p=Join-Path $root $name;Write-Host "FILE=$name EXISTS=$(Test-Path $p)"
+ if(Test-Path $p){try{$j=Get-Content $p -Raw -Encoding UTF8|ConvertFrom-Json;Write-Host "STATUS=$($j.status) SOURCE=$($j.discovery_source) RAW=$($j.raw_product_links) ERROR=$($j.error)";if($name-eq'wb-region-probe.json'){if($j.before){Write-Host ('BEFORE='+(($j.before.body-replace"`r|`n",' ')-replace'\s+',' ').Substring(0,[Math]::Min(1800,(($j.before.body-replace"`r|`n",' ')-replace'\s+',' ').Length)))};if($j.after_click){Write-Host ('AFTER='+(($j.after_click.body-replace"`r|`n",' ')-replace'\s+',' ').Substring(0,[Math]::Min(3000,(($j.after_click.body-replace"`r|`n",' ')-replace'\s+',' ').Length)));foreach($i in $j.after_click.inputs){Write-Host ("INPUT placeholder={0} value={1} aria={2} cls={3}"-f$i.placeholder,$i.value,$i.aria,$i.cls)}}}else{foreach($c in @($j.candidates|Select-Object -First 10)){Write-Host ("CAND SKU={0} SCORE={1} URL={2} TEXT={3}"-f$c.sku,$c.score,$c.url,(($c.text-replace"`r|`n",' ')-replace'\s+',' '))}}}catch{Write-Host "PARSE_ERROR=$($_.Exception.Message)"}}
+}
+exit 0
