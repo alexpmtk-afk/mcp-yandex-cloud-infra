@@ -1,84 +1,67 @@
-# MANAGER_MP2_DIAGNOSTIC_ASCII_V2=YES
+# MANAGER_MP2_USER_LAUNCH_PROBE=YES
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
-Write-Host '=== MARKETPLACES_MANAGER_MP2_DIAGNOSTIC_V2_BEGIN ==='
-Write-Host "COMPUTER=$env:COMPUTERNAME"
-Write-Host "RUNNER_NAME=$env:RUNNER_NAME"
-Write-Host "BRIDGE_IDENTITY=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
-
+Write-Host '=== MANAGER_MP2_USER_LAUNCH_PROBE_BEGIN ==='
 $interactiveUser = (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).UserName
 Write-Host "INTERACTIVE_USER=$interactiveUser"
-if ([string]::IsNullOrWhiteSpace($interactiveUser)) { throw 'No interactive user is logged on.' }
+Write-Host "BRIDGE_IDENTITY=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name)"
 
-$nt = New-Object System.Security.Principal.NTAccount($interactiveUser)
-$sid = $nt.Translate([System.Security.Principal.SecurityIdentifier]).Value
-Write-Host "INTERACTIVE_SID=$sid"
+Write-Host '--- CODEX_DISCOVERY ---'
+try {
+  $c = Get-Command codex -ErrorAction Stop
+  Write-Host "SERVICE_CODEX_FOUND=True PATH=$($c.Source)"
+} catch { Write-Host 'SERVICE_CODEX_FOUND=False' }
+foreach ($p in @(
+  'C:\Program Files\nodejs\codex.cmd',
+  'C:\Program Files\Codex\codex.exe',
+  'C:\Users\user\AppData\Local\Microsoft\WindowsApps\codex.exe',
+  'C:\Users\user\AppData\Roaming\npm\codex.ps1',
+  'C:\Users\user\AppData\Roaming\npm\codex.cmd'
+)) {
+  try { $e = Test-Path -LiteralPath $p -ErrorAction Stop } catch { $e = $false }
+  Write-Host "CODEX_CANDIDATE=$p EXISTS=$e"
+}
 
-$profile = Get-CimInstance Win32_UserProfile | Where-Object { $_.SID -eq $sid } | Select-Object -First 1
-$profilePath = if ($profile) { $profile.LocalPath } else { $null }
-Write-Host "USER_PROFILE=$profilePath"
-Write-Host "USER_PROFILE_LOADED=$([bool]($profile -and $profile.Loaded))"
+$runtimeRoot = Join-Path $env:ProgramData 'ChatGPT-PK\manager-mp2-user-probe'
+New-Item -ItemType Directory -Force -Path $runtimeRoot | Out-Null
+$marker = Join-Path $runtimeRoot 'marker.txt'
+$script = Join-Path $runtimeRoot 'probe.ps1'
+$taskName = 'ChatGPT-Manager-MP2-User-Probe'
+if (Test-Path $marker) { Remove-Item $marker -Force }
+$code = @'
+$ErrorActionPreference = 'Stop'
+$marker = 'C:\ProgramData\ChatGPT-PK\manager-mp2-user-probe\marker.txt'
+"USER=$([System.Security.Principal.WindowsIdentity]::GetCurrent().Name) SESSION=$((Get-Process -Id $PID).SessionId) HOME=$HOME" | Set-Content -LiteralPath $marker -Encoding ASCII
+'@
+[IO.File]::WriteAllText($script,$code,(New-Object System.Text.ASCIIEncoding))
 
-Write-Host '--- FILESYSTEM_DRIVES ---'
-Get-PSDrive -PSProvider FileSystem | ForEach-Object { Write-Host ("DRIVE={0} ROOT={1}" -f $_.Name,$_.Root) }
-
-foreach ($r in @('X:\','G:\','D:\','C:\')) {
+try {
+  try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+  $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument "-NoProfile -ExecutionPolicy Bypass -File `"$script`""
+  $principal = New-ScheduledTaskPrincipal -UserId $interactiveUser -LogonType Interactive -RunLevel Limited
+  $settings = New-ScheduledTaskSettingsSet -ExecutionTimeLimit (New-TimeSpan -Minutes 2) -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
   try {
-    $ok = Test-Path -LiteralPath $r -ErrorAction Stop
-    Write-Host "ROOT_ACCESS=$r EXISTS=$ok"
+    Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal -Settings $settings -Force -ErrorAction Stop | Out-Null
+    Write-Host 'USER_TASK_REGISTER=PASS'
+    Start-ScheduledTask -TaskName $taskName -ErrorAction Stop
+    Write-Host 'USER_TASK_START=PASS'
+    $deadline=(Get-Date).AddSeconds(30)
+    while((Get-Date)-lt $deadline -and -not (Test-Path $marker)){ Start-Sleep -Seconds 2 }
+    if(Test-Path $marker){
+      Write-Host 'USER_TASK_MARKER=PASS'
+      Get-Content -Raw -LiteralPath $marker
+    } else {
+      $ti=Get-ScheduledTaskInfo -TaskName $taskName -ErrorAction SilentlyContinue
+      Write-Host "USER_TASK_MARKER=FAIL LAST_RESULT=$($ti.LastTaskResult)"
+    }
   } catch {
-    Write-Host "ROOT_ACCESS=$r ERROR=$($_.Exception.GetType().Name)"
+    Write-Host "USER_TASK_REGISTER_OR_START=FAIL TYPE=$($_.Exception.GetType().Name) MESSAGE=$($_.Exception.Message)"
   }
+} finally {
+  try { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction SilentlyContinue } catch {}
+  Remove-Item $script -Force -ErrorAction SilentlyContinue
+  Remove-Item $marker -Force -ErrorAction SilentlyContinue
+  try { Remove-Item $runtimeRoot -Force -ErrorAction SilentlyContinue } catch {}
 }
-
-if ($profilePath) {
-  foreach ($p in @(
-    (Join-Path $profilePath 'AppData\Roaming\npm\codex.cmd'),
-    (Join-Path $profilePath 'AppData\Local\Programs\codex\codex.exe'),
-    (Join-Path $profilePath '.codex\config.toml'),
-    (Join-Path $profilePath '.codex\auth.json')
-  )) {
-    try { $exists = Test-Path -LiteralPath $p -ErrorAction Stop } catch { $exists = $false }
-    Write-Host "CHECK_PATH=$p EXISTS=$exists"
-  }
-}
-
-$userEnvTokenPresent = $false
-try {
-  $envKey = "Registry::HKEY_USERS\$sid\Environment"
-  $v = (Get-ItemProperty -LiteralPath $envKey -Name 'MARKETPLACES_MCP_TOKEN' -ErrorAction Stop).MARKETPLACES_MCP_TOKEN
-  $userEnvTokenPresent = -not [string]::IsNullOrWhiteSpace($v)
-} catch {}
-Write-Host "USER_TOKEN_REGISTRY_PRESENT=$userEnvTokenPresent"
-
-if ($profilePath) {
-  $cfg = Join-Path $profilePath '.codex\config.toml'
-  try { $cfgExists = Test-Path -LiteralPath $cfg -ErrorAction Stop } catch { $cfgExists = $false }
-  if ($cfgExists) {
-    try {
-      $text = Get-Content -Raw -LiteralPath $cfg -ErrorAction Stop
-      Write-Host 'GLOBAL_CONFIG_READABLE=True'
-      Write-Host "GLOBAL_HAS_MARKETPLACES_YANDEX=$([bool]($text -match '(?m)^\[mcp_servers\.marketplaces-yandex\]'))"
-      Write-Host "GLOBAL_USES_TOKEN_ENV=$([bool]($text -match 'bearer_token_env_var\s*=\s*"MARKETPLACES_MCP_TOKEN"'))"
-    } catch {
-      Write-Host 'GLOBAL_CONFIG_READABLE=False'
-    }
-  } else { Write-Host 'GLOBAL_CONFIG_READABLE=False' }
-}
-
-Write-Host '--- USER_SCHEDULED_TASKS ---'
-try {
-  Get-ScheduledTask -ErrorAction Stop |
-    Where-Object { $_.Principal.UserId -eq $interactiveUser -or $_.Principal.UserId -eq $sid -or $_.Principal.UserId -match '\\user$' } |
-    Select-Object -First 80 |
-    ForEach-Object {
-      $cmd = $null
-      try { $cmd = ($_.Actions | Select-Object -First 1).Execute } catch {}
-      Write-Host ("TASK={0} USER={1} LOGON={2} RUNLEVEL={3} STATE={4} EXEC={5}" -f $_.TaskName,$_.Principal.UserId,$_.Principal.LogonType,$_.Principal.RunLevel,$_.State,$cmd)
-    }
-} catch {
-  Write-Host "TASK_ENUM_ERROR=$($_.Exception.Message)"
-}
-
-Write-Host '=== MARKETPLACES_MANAGER_MP2_DIAGNOSTIC_V2_END ==='
+Write-Host '=== MANAGER_MP2_USER_LAUNCH_PROBE_END ==='
