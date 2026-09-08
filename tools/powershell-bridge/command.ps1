@@ -1,4 +1,4 @@
-# ADMIN_ROUTE=codex-bridge-admin
+# SERVICE_ROUTE=codex-bridge-service
 $ErrorActionPreference = 'Stop'
 $ProgressPreference = 'SilentlyContinue'
 
@@ -137,7 +137,6 @@ finally {
 }
 '@
 
-# UTF-16LE with BOM is deliberate: preserve Cyrillic paths/prompt under Windows PowerShell 5.1.
 [IO.File]::WriteAllText($childScript, $child, (New-Object System.Text.UnicodeEncoding($false, $true)))
 
 try {
