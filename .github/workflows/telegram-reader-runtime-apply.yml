@@ -1,0 +1,178 @@
+name: Deploy Telegram Reader Runtime
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-runtime-apply.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-reader-runtime
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 45
+    steps:
+      - name: Checkout exact branch commit
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          url='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          wget --quiet --timeout=45 --tries=4 -O "$RUNNER_TEMP/yc/yc.tgz" "$url"
+          tar -tzf "$RUNNER_TEMP/yc/yc.tgz" >/dev/null
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          ci_sa="$(jq -r '.service_account_id // empty' "$key")"
+          test -n "$ci_sa"
+          echo "TF_VAR_yc_service_account_key_file=$key" >> "$GITHUB_ENV"
+          echo "TF_VAR_ci_service_account_id=$ci_sa" >> "$GITHUB_ENV"
+          yc config profile create telegram-reader-runtime || true
+          yc config set service-account-key "$key"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Initialize isolated state
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build and publish immutable image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry="$(terraform -chdir=terraform/telegram_reader output -raw registry_id)"
+          image="cr.yandex/$registry/telegram-news-reader:$GITHUB_SHA"
+          yc container registry configure-docker
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            -t "$image" telegram-news-reader
+          docker push "$image"
+          echo "url=$image" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$image" > "$RUNNER_TEMP/runtime-image.txt"
+
+      - name: Build saved runtime plan
+        env:
+          IMAGE_URL: ${{ steps.image.outputs.url }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader plan \
+            -input=false -no-color -out=runtime.tfplan \
+            -var='runtime_enabled=true' \
+            -var="image_url=$IMAGE_URL"
+          terraform -chdir=terraform/telegram_reader show -json runtime.tfplan \
+            > "$RUNNER_TEMP/runtime-plan.json"
+          terraform -chdir=terraform/telegram_reader show -no-color runtime.tfplan \
+            > "$RUNNER_TEMP/runtime-plan.txt"
+
+      - name: Assert runtime plan is additive only
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ["RUNNER_TEMP"]).joinpath("runtime-plan.json").read_text())
+          allowed_create = (
+              "yandex_compute_instance.runtime",
+              "yandex_compute_disk.state",
+              "yandex_vpc_address.public",
+              "yandex_vpc_security_group.runtime",
+              "yandex_lockbox_secret_iam_member.runtime_credentials_setup_editor",
+          )
+          bad = []
+          for item in plan.get("resource_changes", []):
+              address = item.get("address", "")
+              actions = item.get("change", {}).get("actions", [])
+              if actions == ["no-op"]:
+                  continue
+              if actions == ["create"] and address.startswith(allowed_create):
+                  continue
+              bad.append((address, actions))
+          if bad:
+              raise SystemExit(f"Unsafe runtime plan: {bad!r}")
+          print("RUNTIME_SAFETY_GATE=PASS")
+          PY
+
+      - name: Apply reviewed runtime plan
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader apply \
+            -input=false -no-color runtime.tfplan |
+            tee "$RUNNER_TEMP/runtime-apply.txt"
+
+      - name: Resolve endpoint
+        id: endpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          ip="$(terraform -chdir=terraform/telegram_reader output -raw runtime_public_ip)"
+          host="$(printf '%s' "$ip" | tr . -).sslip.io"
+          setup="https://$host/setup/"
+          mcp="https://$host/mcp/"
+          printf 'public_ip=%s\nsetup_url=%s\nmcp_url=%s\n' \
+            "$ip" "$setup" "$mcp" > "$RUNNER_TEMP/runtime-endpoints.txt"
+          echo "setup=$setup" >> "$GITHUB_OUTPUT"
+          echo "mcp=$mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for one-time setup endpoint
+        env:
+          SETUP_URL: ${{ steps.endpoint.outputs.setup }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          health="${SETUP_URL}healthz"
+          for attempt in $(seq 1 60); do
+            if body="$(curl -fsS --max-time 10 "$health" 2>/dev/null)" &&
+               printf '%s' "$body" | grep -q 'setup_required'; then
+              echo "SETUP_ENDPOINT=READY"
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "Setup endpoint did not become ready" >&2
+          exit 1
+
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-runtime-evidence
+          path: |
+            ${{ runner.temp }}/runtime-image.txt
+            ${{ runner.temp }}/runtime-plan.txt
+            ${{ runner.temp }}/runtime-apply.txt
+            ${{ runner.temp }}/runtime-endpoints.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
