@@ -1,0 +1,96 @@
+name: Diagnose BIRZHA history on self-hosted runner
+
+on:
+  push:
+    branches: [diag-birzha-history-selfhosted]
+    paths:
+      - ".github/workflows/diag-birzha-history-selfhosted.yml"
+
+permissions:
+  contents: read
+
+env:
+  MCP_ENDPOINT: https://d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net/mcp
+  MCP_AUTH_SECRET_ID: e6q98dsvire45t1tiko7
+  MCP_AUTH_VERSION_ID: e6qlatpatlko5l44r60t
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Prepare Python dependencies
+        shell: powershell
+        run: |
+          py -3.13 -m pip install --disable-pip-version-check --user "mcp==2.1.1" "yandexcloud==0.406.0"
+
+      - name: Write ephemeral Yandex key
+        shell: powershell
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:YC_SERVICE_ACCOUNT_KEY_JSON)) { throw 'YC_SERVICE_ACCOUNT_KEY_JSON missing' }
+          $keyPath = Join-Path $env:RUNNER_TEMP 'yc-key.json'
+          [IO.File]::WriteAllText($keyPath, $env:YC_SERVICE_ACCOUNT_KEY_JSON, [Text.UTF8Encoding]::new($false))
+          "YC_KEY_FILE=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Probe MCP history dependencies
+        shell: powershell
+        run: |
+          @'
+          import asyncio, json, os
+          from pathlib import Path
+          import httpx2
+          import yandexcloud
+          from yandex.cloud.lockbox.v1.payload_service_pb2 import GetPayloadRequest
+          from yandex.cloud.lockbox.v1.payload_service_pb2_grpc import PayloadServiceStub
+          from mcp import Client
+          from mcp.client.streamable_http import streamable_http_client
+
+          key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text(encoding='utf-8-sig'))
+          sdk=yandexcloud.SDK(service_account_key=key)
+          service=sdk.client(PayloadServiceStub)
+          payload=service.Get(GetPayloadRequest(secret_id=os.environ['MCP_AUTH_SECRET_ID'],version_id=os.environ['MCP_AUTH_VERSION_ID']))
+          vals=[e.text_value for e in payload.entries if e.key=='bearer_token']
+          assert len(vals)==1
+          token=vals[0]
+
+          async def call(client,name,args):
+              r=await client.call_tool(name,args)
+              return {'is_error':bool(r.is_error),'structured':r.structured_content,'text':[getattr(x,'text',None) for x in r.content]}
+
+          async def main():
+              timeout=httpx2.Timeout(30.0,read=180.0)
+              async with httpx2.AsyncClient(headers={'Authorization':f'Bearer {token}'},timeout=timeout,follow_redirects=True) as hc:
+                  async with Client(streamable_http_client(os.environ['MCP_ENDPOINT'],http_client=hc)) as client:
+                      probes={}
+                      probes['resolve']=await call(client,'market.resolve_instrument',{'symbol':'SBER'})
+                      probes['candles']=await call(client,'market.candles',{'symbol':'SBER','timeframe':'D1','from_date':'2026-09-01','till_date':'2026-09-05','completed_only':True})
+                      probes['coverage']=await call(client,'history.coverage',{'secid':'SBER','timeframe':'D1'})
+                      probes['sync']=await call(client,'history.sync',{'symbol':'SBER','timeframe':'D1','from_date':'2026-09-01','till_date':'2026-09-05'})
+                      safe={}
+                      for k,v in probes.items():
+                          s=v['structured']
+                          if k=='candles' and isinstance(s,dict):
+                              safe[k]={'is_error':v['is_error'],'count':s.get('count'),'secid':(s.get('instrument') or {}).get('secid'),'text':v['text']}
+                          else:
+                              safe[k]=v
+                      print('BIRZHA_HISTORY_PROBES='+json.dumps(safe,ensure_ascii=False,sort_keys=True))
+          asyncio.run(main())
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\probe_history.py" -Encoding UTF8
+          py -3.13 "$env:RUNNER_TEMP\probe_history.py"
+
+      - name: Probe raw MOEX calendar endpoint
+        shell: powershell
+        run: |
+          $url = 'https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/SBER.json?iss.meta=off&iss.only=history,history.cursor&history.columns=TRADEDATE&from=2026-09-01&till=2026-09-05'
+          $r = Invoke-RestMethod -Uri $url -TimeoutSec 30
+          if (-not $r.history.data) { throw 'MOEX calendar returned no rows' }
+          Write-Output ("MOEX_CALENDAR_ROWS=" + $r.history.data.Count)
+
+      - name: Cleanup
+        if: always()
+        shell: powershell
+        run: |
+          Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\yc-key.json","$env:RUNNER_TEMP\probe_history.py"
