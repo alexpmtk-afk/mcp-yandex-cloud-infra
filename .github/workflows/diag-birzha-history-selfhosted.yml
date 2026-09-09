@@ -5,7 +5,6 @@ on:
     branches: [diag-birzha-history-selfhosted]
     paths:
       - ".github/workflows/diag-birzha-history-selfhosted.yml"
-      - "scripts/diag_birzha_history.mjs"
 
 permissions:
   contents: read
@@ -21,22 +20,60 @@ jobs:
     environment: test
     timeout-minutes: 20
     steps:
-      - name: Checkout diagnostic script
-        uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8
+      - name: Set up isolated Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
         with:
-          persist-credentials: false
+          python-version: "3.12"
 
-      - name: Prepare Node MCP SDK
+      - name: Install diagnostic dependencies
         shell: cmd
-        run: npm install --no-save --no-audit --no-fund @modelcontextprotocol/sdk
+        run: python -m pip install --disable-pip-version-check "mcp==2.1.1" "yandexcloud==0.406.0"
 
       - name: Probe MCP history dependencies
-        shell: cmd
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
-        run: node scripts\diag_birzha_history.mjs
+        run: |
+          @'
+          import asyncio, json, os
+          from pathlib import Path
+          import httpx2
+          import yandexcloud
+          from yandex.cloud.lockbox.v1.payload_service_pb2 import GetPayloadRequest
+          from yandex.cloud.lockbox.v1.payload_service_pb2_grpc import PayloadServiceStub
+          from mcp import Client
+          from mcp.client.streamable_http import streamable_http_client
 
-      - name: Cleanup temporary npm modules
+          key=json.loads(os.environ['YC_SERVICE_ACCOUNT_KEY_JSON'])
+          sdk=yandexcloud.SDK(service_account_key=key)
+          payload=sdk.client(PayloadServiceStub).Get(GetPayloadRequest(
+              secret_id=os.environ['MCP_AUTH_SECRET_ID'], version_id=os.environ['MCP_AUTH_VERSION_ID']))
+          token=[e.text_value for e in payload.entries if e.key=='bearer_token'][0]
+
+          async def call(client,name,args):
+              try:
+                  r=await client.call_tool(name,args)
+                  return {'is_error':bool(r.is_error),'structured':r.structured_content,
+                          'text':[getattr(x,'text',None) for x in r.content]}
+              except Exception as exc:
+                  return {'thrown':True,'error_type':type(exc).__name__,'error':str(exc)}
+
+          async def main():
+              async with httpx2.AsyncClient(headers={'Authorization':f'Bearer {token}'},
+                      timeout=httpx2.Timeout(30.0,read=180.0),follow_redirects=True) as hc:
+                  async with Client(streamable_http_client(os.environ['MCP_ENDPOINT'],http_client=hc)) as client:
+                      out={}
+                      out['resolve']=await call(client,'market.resolve_instrument',{'symbol':'SBER'})
+                      out['candles']=await call(client,'market.candles',{'symbol':'SBER','timeframe':'D1','from_date':'2026-09-01','till_date':'2026-09-05','completed_only':True})
+                      out['coverage_before']=await call(client,'history.coverage',{'secid':'SBER','timeframe':'D1'})
+                      out['sync']=await call(client,'history.sync',{'symbol':'SBER','timeframe':'D1','from_date':'2026-09-01','till_date':'2026-09-05'})
+                      out['coverage_after']=await call(client,'history.coverage',{'secid':'SBER','timeframe':'D1'})
+                      print('BIRZHA_HISTORY_PY_PROBES='+json.dumps(out,ensure_ascii=False,sort_keys=True))
+          asyncio.run(main())
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\probe_history.py" -Encoding UTF8
+          python "$env:RUNNER_TEMP\probe_history.py"
+
+      - name: Cleanup
         if: always()
-        shell: cmd
-        run: if exist node_modules rmdir /s /q node_modules
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
+        run: Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\probe_history.py"
