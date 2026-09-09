@@ -25,20 +25,14 @@ resource "yandex_resourcemanager_folder_iam_member" "ci_vpc_admin" {
   sleep_after = 5
 }
 
-resource "yandex_vpc_network" "this" {
-  folder_id = yandex_resourcemanager_folder.this.id
-  name      = "telegram-reader-network"
-  labels    = local.labels
-
-  depends_on = [yandex_resourcemanager_folder_iam_member.ci_vpc_admin]
-}
-
 resource "yandex_vpc_subnet" "this" {
   folder_id      = yandex_resourcemanager_folder.this.id
   name           = "telegram-reader-subnet"
   zone           = var.yc_zone
-  network_id     = yandex_vpc_network.this.id
+  network_id     = var.shared_network_id
   v4_cidr_blocks = ["10.77.0.0/24"]
+
+  depends_on = [yandex_resourcemanager_folder_iam_member.ci_vpc_admin]
 }
 
 resource "yandex_container_registry" "this" {
