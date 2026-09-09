@@ -1,0 +1,329 @@
+name: Deploy BIRZHA Historical Data TEST
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-historical-runtime-apply.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-current-test-runtime
+  cancel-in-progress: false
+
+env:
+  SOURCE_SHA: b6ce037915ee993f2758f2ff6b29341f15554308
+  IMAGE_DIGEST: sha256:5db7e3b1bbd69ee0c797d1d9a5a9289633914ef9f360f3d0f45187cb219113fc
+  IMAGE_URL: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:5db7e3b1bbd69ee0c797d1d9a5a9289633914ef9f360f3d0f45187cb219113fc
+  EXPECTED_REGISTRY_ID: crpk5qvf4p7kcqil2u3v
+
+jobs:
+  deploy-and-accept:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 45
+    steps:
+      - name: Checkout infrastructure main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Assert immutable application coordinates
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          [[ "$IMAGE_DIGEST" =~ ^sha256:[0-9a-f]{64}$ ]]
+          [[ "$IMAGE_URL" == "cr.yandex/${EXPECTED_REGISTRY_ID}/birzha-mcp-forecast@${IMAGE_DIGEST}" ]]
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Mint ephemeral Yandex IAM token
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' 'cryptography'
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
+          now=int(time.time())
+          signed=jwt.encode(
+              {'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600},
+              key['private_key'], algorithm='PS256', headers={'kid':key['id']},
+          )
+          req=urllib.request.Request(
+              'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+              data=json.dumps({'jwt':signed}).encode(),
+              headers={'Content-Type':'application/json'}, method='POST',
+          )
+          with urllib.request.urlopen(req, timeout=30) as r:
+              token=json.loads(r.read())['iamToken']
+          assert token and len(token)>100
+          print(f'::add-mask::{token}')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'TF_VAR_yc_token={token}\n')
+          PY
+
+      - name: Initialize BIRZHA remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Capture current runtime outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/before.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'before.json').read_text()); v=lambda k:o[k]['value']
+          assert v('container_registry_id')==os.environ['EXPECTED_REGISTRY_ID']
+          domain=v('api_gateway_domain').strip(); endpoint=v('mcp_endpoint').strip()
+          assert endpoint==f'https://{domain}/mcp'
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'GATEWAY_DOMAIN={domain}\nMCP_ENDPOINT={endpoint}\n')
+          PY
+
+      - name: Plan immutable image promotion only
+        shell: bash
+        run: |
+          set -euo pipefail
+          REAL_HOSTS="${GATEWAY_DOMAIN},${GATEWAY_DOMAIN}:*"
+          set +e
+          terraform -chdir=terraform/birzha_test plan -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/plan.tfplan" \
+            -var="source_commit_sha=${SOURCE_SHA}" \
+            -var="mcp_image_url=${IMAGE_URL}" \
+            -var="mcp_allowed_hosts=${REAL_HOSTS}" \
+            -var="mcp_allowed_origins=https://chatgpt.com" \
+            -var="ydb_bootstrap_enabled=false" > "$RUNNER_TEMP/plan.txt"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ] && [ "$RC" -ne 2 ]; then cat "$RUNNER_TEMP/plan.txt"; exit "$RC"; fi
+          terraform -chdir=terraform/birzha_test show -json "$RUNNER_TEMP/plan.tfplan" > "$RUNNER_TEMP/plan.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'plan.json').read_text())
+          changed=[]
+          allowed={'yandex_serverless_container.mcp[0]'}
+          for rc in d.get('resource_changes',[]):
+              actions=rc.get('change',{}).get('actions',[])
+              if actions==['no-op']: continue
+              addr=rc['address']; changed.append((addr,actions))
+              assert addr in allowed, (addr,actions)
+              assert 'delete' not in actions, (addr,actions)
+              assert actions==['update'], (addr,actions)
+          print('APPROVED_HISTORICAL_RUNTIME_PLAN',changed)
+          PY
+          echo "PLAN_RC=$RC" >> "$GITHUB_ENV"
+
+      - name: Apply image promotion
+        if: env.PLAN_RC == '2'
+        shell: bash
+        run: terraform -chdir=terraform/birzha_test apply -input=false -auto-approve "$RUNNER_TEMP/plan.tfplan"
+
+      - name: Capture deployed outputs and secret IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/outputs.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'outputs.json').read_text()); v=lambda k:o[k]['value']
+          for k in ('ydb_database_id','mcp_auth_secret_id','mcp_auth_secret_version_id','serverless_container_id','api_gateway_id'):
+              assert v(k), k
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'MCP_AUTH_SECRET_ID={v("mcp_auth_secret_id")}\n')
+              f.write(f'MCP_AUTH_VERSION_ID={v("mcp_auth_secret_version_id")}\n')
+          PY
+
+      - name: Wait for historical runtime health
+        shell: bash
+        run: |
+          set -euo pipefail
+          HEALTH="https://${GATEWAY_DOMAIN}/healthz"
+          for i in $(seq 1 40); do
+            if curl --proto '=https' --tlsv1.2 --silent --show-error --fail --max-time 15 "$HEALTH" > "$RUNNER_TEMP/health.json"; then
+              if python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'health.json').read_text())
+          assert d.get('status')=='ok' and d.get('state_backend')=='ydb' and d.get('historical_storage')=='distributed', d
+          PY
+              then break; fi
+            fi
+            sleep 5
+          done
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'health.json').read_text())
+          assert d.get('status')=='ok' and d.get('state_backend')=='ydb' and d.get('historical_storage')=='distributed', d
+          print('HISTORICAL_RUNTIME_HEALTH_PASS')
+          PY
+          CODE="$(curl --silent --output "$RUNNER_TEMP/unauth.json" --write-out '%{http_code}' --max-time 15 "$MCP_ENDPOINT")"
+          test "$CODE" = "401"
+
+      - name: Install acceptance clients
+        run: python -m pip install --disable-pip-version-check 'mcp==2.1.1' 'yandexcloud'
+
+      - name: Read generated token for masked acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import yandexcloud
+          from yandex.cloud.lockbox.v1.payload_service_pb2 import GetPayloadRequest
+          from yandex.cloud.lockbox.v1.payload_service_pb2_grpc import PayloadServiceStub
+          key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
+          sdk=yandexcloud.SDK(service_account_key=key)
+          service=sdk.client(PayloadServiceStub)
+          payload=service.Get(GetPayloadRequest(secret_id=os.environ['MCP_AUTH_SECRET_ID'],version_id=os.environ['MCP_AUTH_VERSION_ID']))
+          values=[e.text_value for e in payload.entries if e.key=='bearer_token']
+          assert len(values)==1 and len(values[0])>=48
+          token=values[0]; print(f'::add-mask::{token}')
+          p=Path(os.environ['RUNNER_TEMP'])/'mcp-token'; p.write_text(token); p.chmod(0o600)
+          PY
+
+      - name: Prove durable incremental history and forecast regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio, json, os
+          from pathlib import Path
+          import httpx2
+          from mcp import Client
+          from mcp.client.streamable_http import streamable_http_client
+
+          async def call(client,name,args):
+              r=await client.call_tool(name,args)
+              assert not r.is_error, (name,r)
+              return r.structured_content
+
+          async def main():
+              token=(Path(os.environ['RUNNER_TEMP'])/'mcp-token').read_text()
+              timeout=httpx2.Timeout(30.0,read=600.0)
+              async with httpx2.AsyncClient(headers={'Authorization':f'Bearer {token}'},timeout=timeout,follow_redirects=True) as hc:
+                  async with Client(streamable_http_client(os.environ['MCP_ENDPOINT'],http_client=hc)) as client:
+                      listed=await client.list_tools(); names={t.name for t in listed.tools}
+                      required={'history.sync','history.coverage','forecast.create','forecast.get','market.resolve_instrument'}
+                      assert not required-names, required-names
+
+                      first=await call(client,'history.sync',{'symbol':'SBER','timeframe':'D1','from_date':'2026-09-01','till_date':'2026-09-05'})
+                      assert first['stored_candles']>0 and first['contract_count']==1, first
+                      second=await call(client,'history.sync',{'symbol':'SBER','timeframe':'D1','from_date':'2026-09-01','till_date':'2026-09-05'})
+                      assert second['fetched_candles']==0, second
+                      cov=await call(client,'history.coverage',{'secid':'SBER','timeframe':'D1'})
+                      assert cov['count']>0, cov
+
+                      si=await call(client,'history.sync',{'symbol':'Si','timeframe':'D1','from_date':'2026-03-01','till_date':'2026-07-15'})
+                      assert si['stored_candles']>0 and si['contract_count']>=2, si
+                      secids={c['secid'] for c in si['contracts']}
+                      assert len(secids)>=2, si
+
+                      created=await call(client,'forecast.create',{'symbol':'SBER'})
+                      forecast=created.get('forecast') or created
+                      fid=forecast.get('forecast_id'); assert fid
+                      fetched=await call(client,'forecast.get',{'forecast_id':fid})
+                      assert fetched.get('forecast_id')==fid
+                      print(json.dumps({
+                          'durable_history':'PASS',
+                          'incremental_no_refetch':'PASS',
+                          'futures_rollover':'PASS',
+                          'forecast_regression':'PASS',
+                          'si_contracts':sorted(secids),
+                          'forecast_id':fid,
+                      },sort_keys=True))
+          asyncio.run(main())
+          PY
+
+      - name: Re-assert zero Terraform drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          REAL_HOSTS="${GATEWAY_DOMAIN},${GATEWAY_DOMAIN}:*"
+          set +e
+          terraform -chdir=terraform/birzha_test plan -detailed-exitcode -input=false -no-color \
+            -var="source_commit_sha=${SOURCE_SHA}" \
+            -var="mcp_image_url=${IMAGE_URL}" \
+            -var="mcp_allowed_hosts=${REAL_HOSTS}" \
+            -var="mcp_allowed_origins=https://chatgpt.com" \
+            -var="ydb_bootstrap_enabled=false" > "$RUNNER_TEMP/post-drift.txt"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ]; then cat "$RUNNER_TEMP/post-drift.txt"; exit "$RC"; fi
+          echo POST_ACCEPTANCE_DRIFT_NONE
+
+      - name: Write M9 deployment evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/evidence"
+          python - <<'PY'
+          import json, os
+          from datetime import datetime, timezone
+          from pathlib import Path
+          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'outputs.json').read_text()); v=lambda k:o[k]['value']
+          e={
+            'schema':'BIRZHA_MCP_HISTORICAL_DATA_M9_V1',
+            'timestamp_utc':datetime.now(timezone.utc).isoformat(),
+            'infra_sha':os.environ['GITHUB_SHA'],
+            'application_source_sha':os.environ['SOURCE_SHA'],
+            'image_digest':os.environ['IMAGE_DIGEST'],
+            'ydb_database_id':v('ydb_database_id'),
+            'serverless_container_id':v('serverless_container_id'),
+            'api_gateway_id':v('api_gateway_id'),
+            'mcp_endpoint':v('mcp_endpoint'),
+            'acceptance':{
+              'historical_storage':'DISTRIBUTED_YDB_PASS',
+              'incremental_no_refetch':'PASS',
+              'futures_rollover':'PASS',
+              'forecast_regression':'PASS',
+              'terraform_postcheck':'NO_DRIFT'
+            }
+          }
+          (Path(os.environ['RUNNER_TEMP'])/'evidence'/'deployment.json').write_text(json.dumps(e,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload M9 deployment evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-mcp-historical-m9-evidence
+          path: ${{ runner.temp }}/evidence/deployment.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral credentials
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/mcp-token"
