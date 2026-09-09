@@ -1,0 +1,113 @@
+name: Telegram Reader HTTPS CONNECT Probe 2
+on:
+  push:
+    branches: [diagnostic/telegram-mtproxy-faketls443]
+    paths: [".github/workflows/telegram-reader-https-connect-probe2.yml"]
+permissions:
+  contents: read
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Select live CONNECT relays outside Yandex
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/select.py" <<'PY'
+          import concurrent.futures,json,socket,urllib.request
+          T='149.154.167.51'; P=443
+          urls=['https://raw.githubusercontent.com/proxifly/free-proxy-list/main/proxies/protocols/http/data.txt','https://raw.githubusercontent.com/TheSpeedX/PROXY-List/master/http.txt']
+          xs=[]
+          for u in urls:
+            try: xs += urllib.request.urlopen(u,timeout=15).read().decode(errors='ignore').splitlines()
+            except: pass
+          cand=[]; seen=set()
+          for x in xs:
+            x=x.strip().replace('http://','').replace('https://','')
+            if x in seen or ':' not in x: continue
+            seen.add(x); h,p=x.rsplit(':',1)
+            try: p=int(p)
+            except: continue
+            cand.append((h,p))
+          def one(x):
+            h,p=x
+            try:
+              s=socket.create_connection((h,p),timeout=3); s.settimeout(4)
+              s.sendall((f'CONNECT {T}:{P} HTTP/1.1\r\nHost: {T}:{P}\r\n\r\n').encode())
+              d=s.recv(1024); s.close(); first=d.split(b'\r\n',1)[0].decode(errors='ignore')
+              if ' 200 ' in first: print('OUTSIDE_PASS',h,p,first,flush=True); return {'host':h,'port':p}
+            except: pass
+          alive=[]
+          with concurrent.futures.ThreadPoolExecutor(max_workers=60) as ex:
+            for r in ex.map(one,cand[:700]):
+              if r: alive.append(r)
+              if len(alive)>=8: break
+          print('OUTSIDE_ALIVE',len(alive),flush=True); json.dump(alive,open('/tmp/alive.json','w'))
+          raise SystemExit(0 if alive else 20)
+          PY
+          python3 "$RUNNER_TEMP/select.py"
+      - name: YC auth
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"; wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"; chmod +x "$RUNNER_TEMP/yc/yc"; echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"; chmod 600 "$RUNNER_TEMP/key.json"
+          "$RUNNER_TEMP/yc/yc" config profile create https-connect2 || true; "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
+      - name: Create disposable Yandex VM
+        id: vm
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'; prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(echo "$prod"|jq -r .zone_id)"; subnet="$(echo "$prod"|jq -r '.network_interfaces[0].subnet_id')"; name="https-connect2-${GITHUB_RUN_ID}"
+          b64="$(base64 -w0 /tmp/alive.json)"
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import base64,json,socket,time
+          T='149.154.167.51'; P=443
+          C=json.loads(base64.b64decode(open('/opt/alive.b64','rb').read()).decode())
+          ok=False
+          for i,x in enumerate(C,1):
+            h,p=x['host'],x['port']
+            try:
+              t=time.monotonic(); s=socket.create_connection((h,p),timeout=5); s.settimeout(7)
+              print(f'Y{i}_PROXY_TCP=PASS host={h}:{p} ms={int((time.monotonic()-t)*1000)}',flush=True)
+              s.sendall((f'CONNECT {T}:{P} HTTP/1.1\r\nHost: {T}:{P}\r\n\r\n').encode()); d=s.recv(2048); s.close()
+              first=d.split(b'\r\n',1)[0].decode(errors='ignore'); good=' 200 ' in first
+              print(f'Y{i}_CONNECT={"PASS" if good else "FAIL"} status={first}',flush=True); ok=ok or good
+            except Exception as e: print(f'Y{i}_FAIL host={h}:{p} error={type(e).__name__}',flush=True)
+          print('HTTPS_CONNECT_GATE=PASS' if ok else 'HTTPS_CONNECT_GATE=FAIL',flush=True)
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/pi"
+          {
+            echo '#cloud-config'; echo 'write_files:'; echo '  - path: /opt/alive.b64'; echo "    permissions: '0600'"; echo '    content: |'; echo "      $b64";
+            echo '  - path: /opt/probe.py'; echo "    permissions: '0644'"; echo '    content: |'; cat "$RUNNER_TEMP/pi";
+            echo 'runcmd:'; echo '  - [bash, -lc, "python3 /opt/probe.py >/tmp/result 2>&1 || true; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]';
+          } > "$RUNNER_TEMP/cloud.yaml"
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"; echo "folder=$folder" >> "$GITHUB_OUTPUT"
+      - name: Read result
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 90); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true
+            if grep -q '===PROBE_END===' "$RUNNER_TEMP/s"; then sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/s"; grep -q 'HTTPS_CONNECT_GATE=PASS' "$RUNNER_TEMP/s"; exit $?; fi
+            sleep 5
+          done
+          exit 1
+      - name: Destroy disposable VM
+        if: always()
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        shell: bash
+        run: |
+          set +e; [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/key.json"
