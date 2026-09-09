@@ -1,0 +1,123 @@
+name: Telegram Render Relay5 Live
+on:
+  push:
+    branches: [diagnostic/telegram-render-relay]
+    paths: [.github/workflows/telegram-render-relay5-live.yml]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: YC auth
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          "$RUNNER_TEMP/yc/yc" config profile create render5 || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
+
+      - name: Create disposable VM
+        id: vm
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(echo "$prod"|jq -r .zone_id)"
+          subnet="$(echo "$prod"|jq -r '.network_interfaces[0].subnet_id')"
+          name="render5-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import asyncio, websockets
+          from telethon import TelegramClient
+          from telethon.sessions import MemorySession
+
+          URL='wss://telegram-relay-free-5.onrender.com/telegram?t=test-only-token'
+
+          async def handle(r,w):
+              try:
+                  h=await asyncio.wait_for(r.readuntil(b'\r\n\r\n'),5)
+                  if not h.startswith(b'CONNECT '): return
+                  ws=await asyncio.wait_for(websockets.connect(URL,open_timeout=20,ping_interval=20),25)
+                  w.write(b'HTTP/1.1 200 Connection Established\r\n\r\n'); await w.drain()
+                  async def a():
+                      try:
+                          while True:
+                              d=await r.read(65536)
+                              if not d: break
+                              await ws.send(d)
+                      except: pass
+                  async def b():
+                      try:
+                          async for d in ws:
+                              if isinstance(d,str): d=d.encode()
+                              w.write(d); await w.drain()
+                      except: pass
+                  await asyncio.gather(a(),b())
+              except Exception as e:
+                  print('ADAPTER_FAIL',type(e).__name__,str(e)[:160],flush=True)
+              finally:
+                  try: w.close(); await w.wait_closed()
+                  except: pass
+
+          async def main():
+              srv=await asyncio.start_server(handle,'127.0.0.1',18888)
+              c=TelegramClient(MemorySession(),1,'0'*32,proxy={'proxy_type':'http','addr':'127.0.0.1','port':18888,'rdns':True},connection_retries=1,retry_delay=0,timeout=15)
+              try:
+                  await asyncio.wait_for(c.connect(),35)
+                  print('RENDER5_TELETHON_GATE=' + ('PASS' if c.is_connected() else 'FAIL'),flush=True)
+              except Exception as e:
+                  print('RENDER5_TELETHON_GATE=FAIL',type(e).__name__,str(e)[:160],flush=True)
+              finally:
+                  try: await c.disconnect()
+                  except: pass
+                  srv.close(); await srv.wait_closed()
+          asyncio.run(main())
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/pi"
+          {
+            echo '#cloud-config'
+            echo 'package_update: true'
+            echo 'packages: [python3-venv]'
+            echo 'write_files:'
+            echo '  - path: /opt/probe.py'
+            echo "    permissions: '0644'"
+            echo '    content: |'
+            cat "$RUNNER_TEMP/pi"
+            echo 'runcmd:'
+            echo '  - [bash, -lc, "python3 -m venv /opt/v; /opt/v/bin/pip -q install telethon==1.44.0 python-socks[asyncio] websockets==15.0.1; /opt/v/bin/python /opt/probe.py >/tmp/result 2>&1 || true; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]'
+          } > "$RUNNER_TEMP/cloud.yaml"
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read result
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 100); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true
+            if grep -q '===PROBE_END===' "$RUNNER_TEMP/s"; then
+              sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/s"
+              grep -q 'RENDER5_TELETHON_GATE=PASS' "$RUNNER_TEMP/s"
+              exit $?
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Destroy VM
+        if: always()
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e
+          [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/key.json"
