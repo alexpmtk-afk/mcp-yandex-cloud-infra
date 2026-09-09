@@ -39,7 +39,7 @@ jobs:
           from telethon import TelegramClient
           from telethon.sessions import MemorySession
 
-          WS_URL='wss://telegram-relay-free-2.onrender.com/telegram?token=test-only-token'
+          WS_URL='wss://telegram-relay-free-3.onrender.com/telegram?token=test-only-token'
 
           async def pipe_tcp_to_ws(reader, ws):
               try:
