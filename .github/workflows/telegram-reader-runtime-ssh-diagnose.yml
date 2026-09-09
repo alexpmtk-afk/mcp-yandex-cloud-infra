@@ -1,0 +1,118 @@
+name: Diagnose Telegram Reader Runtime via Ephemeral SSH
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-runtime-ssh-diagnose.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-reader-ssh-diagnose || true
+          yc config set service-account-key "$key"
+
+      - name: Add ephemeral SSH access
+        id: access
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          vm='telegram-news-reader'
+          runner_ip="$(curl -fsSL https://api.ipify.org)"
+          test -n "$runner_ip"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/id_ed25519"
+          pub="$(cat "$RUNNER_TEMP/id_ed25519.pub")"
+          yc compute instance get --name "$vm" --folder-id "$folder" --full --format json > "$RUNNER_TEMP/vm-full.json"
+          jq -r '.metadata["user-data"]' "$RUNNER_TEMP/vm-full.json" > "$RUNNER_TEMP/user-data.yaml"
+          ip="$(jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address' "$RUNNER_TEMP/vm-full.json")"
+          sg="$(jq -r '.network_interfaces[0].security_group_ids[0]' "$RUNNER_TEMP/vm-full.json")"
+          test -n "$ip"; test -n "$sg"
+
+          yc compute instance update --name "$vm" --folder-id "$folder" \
+            --metadata-from-file user-data="$RUNNER_TEMP/user-data.yaml" \
+            --ssh-key "$pub" >/dev/null
+
+          yc vpc security-group update-rules --id "$sg" \
+            --add-rule "description=ephemeral-runtime-debug,direction=ingress,port=22,protocol=tcp,v4-cidrs=[$runner_ip/32]" >/dev/null
+
+          rule_id="$(yc vpc security-group get --id "$sg" --format json | jq -r '.rules[] | select(.description=="ephemeral-runtime-debug") | .id' | tail -1)"
+          test -n "$rule_id"
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+          echo "sg=$sg" >> "$GITHUB_OUTPUT"
+          echo "rule_id=$rule_id" >> "$GITHUB_OUTPUT"
+
+      - name: Collect bootstrap diagnostics
+        shell: bash
+        env:
+          VM_IP: ${{ steps.access.outputs.ip }}
+        run: |
+          set -euo pipefail
+          for i in $(seq 1 12); do
+            if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
+              -i "$RUNNER_TEMP/id_ed25519" yc-user@"$VM_IP" \
+              "sudo bash -lc 'echo ===BOOTSTRAP===; cat /var/log/telegram-reader-bootstrap.log 2>/dev/null || true; echo ===DEVICES===; ls -la /dev/disk/by-id 2>/dev/null || true; echo ===STATE===; ls -la /state /opt/telegram-reader 2>/dev/null || true; echo ===DOCKER===; systemctl status docker --no-pager 2>/dev/null || true; docker ps -a 2>/dev/null || true; echo ===CLOUDINIT===; cloud-init status --long 2>/dev/null || true; echo ===LISTEN===; ss -ltnp 2>/dev/null || true'" \
+              > "$RUNNER_TEMP/runtime-diagnostic.txt"; then
+              cat "$RUNNER_TEMP/runtime-diagnostic.txt"
+              exit 0
+            fi
+            sleep 5
+          done
+          echo 'EPHEMERAL_SSH_FAILED' >&2
+          exit 1
+
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-runtime-ssh-diagnostic
+          path: ${{ runner.temp }}/runtime-diagnostic.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Remove ephemeral access
+        if: always()
+        shell: bash
+        env:
+          SG_ID: ${{ steps.access.outputs.sg }}
+          RULE_ID: ${{ steps.access.outputs.rule_id }}
+        run: |
+          set +e
+          folder='b1gk4p83brasi8g811jv'
+          vm='telegram-news-reader'
+          if [ -f "$RUNNER_TEMP/user-data.yaml" ]; then
+            yc compute instance update --name "$vm" --folder-id "$folder" \
+              --metadata-from-file user-data="$RUNNER_TEMP/user-data.yaml" >/dev/null
+          fi
+          if [ -n "$SG_ID" ] && [ -n "$RULE_ID" ]; then
+            yc vpc security-group update-rules --id "$SG_ID" --delete-rule-id "$RULE_ID" >/dev/null
+          fi
+          rm -f "$RUNNER_TEMP/id_ed25519" "$RUNNER_TEMP/id_ed25519.pub" "$RUNNER_TEMP/yc-key.json"
