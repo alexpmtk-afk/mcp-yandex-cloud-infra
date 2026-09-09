@@ -22,6 +22,13 @@ variable "yc_token" {
   sensitive = true
 }
 
+variable "ci_service_account_id" {
+  type      = string
+  default   = null
+  nullable  = true
+  sensitive = true
+}
+
 variable "folder_name" {
   type    = string
   default = "telegram-news-reader"
