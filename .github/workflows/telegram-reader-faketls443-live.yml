@@ -1,0 +1,143 @@
+name: Telegram Reader Proven Live Fake-TLS443 Probe
+
+on:
+  push:
+    branches: [diagnostic/telegram-mtproxy-faketls443]
+    paths: [".github/workflows/telegram-reader-faketls443-live.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Install and authenticate YC CLI
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"; echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          key="$RUNNER_TEMP/yc-key.json"; printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"; chmod 600 "$key"
+          "$RUNNER_TEMP/yc/yc" config profile create telegram-faketls-live || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$key"
+
+      - name: Create disposable Yandex VM
+        id: vm
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(printf '%s' "$prod" | jq -r '.zone_id')"; subnet="$(printf '%s' "$prod" | jq -r '.network_interfaces[0].subnet_id')"
+          name="telegram-faketls-live-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/cloud-init.yaml" <<'YAML'
+          #cloud-config
+          package_update: true
+          packages:
+            - python3-venv
+            - strace
+          write_files:
+            - path: /opt/probe.py
+              permissions: '0644'
+              content: |
+                import asyncio,socket,time,urllib.parse,urllib.request
+                from telethon import TelegramClient,connection
+                from telethon.sessions import MemorySession
+                HOST='178.105.137.152'; PORT=443
+                raw=urllib.request.urlopen('https://raw.githubusercontent.com/mcny2809/mtproto-for-telegram/master/all_proxies.txt',timeout=20).read().decode()
+                secret=None
+                for line in raw.splitlines():
+                    if f'server={HOST}&port={PORT}&' not in line: continue
+                    q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
+                    s=urllib.parse.unquote(q.get('secret',[''])[0])
+                    try: bytes.fromhex(s)
+                    except Exception: continue
+                    if s.lower().startswith('ee'): secret=s; break
+                print('REFERENCE=INDEPENDENT_MTPROXY_PASS',flush=True)
+                if not secret:
+                    print('REFERENCE_PROXY_NOT_FOUND',flush=True); raise SystemExit(10)
+                print(f'SECRET_TYPE=fake-tls-ee secret_hex_len={len(secret)}',flush=True)
+                try:
+                    ips=sorted({x[4][0] for x in socket.getaddrinfo(HOST,PORT,socket.AF_UNSPEC,socket.SOCK_STREAM)})
+                    print('DNS=PASS ips='+','.join(ips),flush=True)
+                except Exception as e:
+                    print('PROXY_DNS_FAIL '+type(e).__name__,flush=True); raise SystemExit(11)
+                t=time.monotonic()
+                try:
+                    s=socket.create_connection((HOST,PORT),timeout=5); peer=s.getpeername(); s.close()
+                    print(f'YANDEX_TO_PROXY_TCP=PASS peer={peer[0]}:{peer[1]} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+                except Exception as e:
+                    print(f'YANDEX_TO_PROXY_TCP_FAIL error={type(e).__name__} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); raise SystemExit(12)
+                async def main():
+                    cls=connection.ConnectionTcpMTProxyRandomizedIntermediate
+                    print(f'MTPROXY_BEGIN class={cls.__name__} host={HOST} port={PORT}',flush=True)
+                    c=TelegramClient(MemorySession(),1,'0'*32,connection=cls,proxy=(HOST,PORT,secret),connection_retries=1,retry_delay=0,timeout=7)
+                    t=time.monotonic()
+                    try:
+                        await asyncio.wait_for(c.connect(),10)
+                        if c.is_connected():
+                            print(f'MTPROXY_GATE=PASS latency_ms={int((time.monotonic()-t)*1000)}',flush=True); return 0
+                        print('MTPROXY_HANDSHAKE_FAIL not_connected',flush=True); return 13
+                    except Exception as e:
+                        print(f'MTPROXY_HANDSHAKE_FAIL error={type(e).__name__} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); return 14
+                    finally:
+                        try: await c.disconnect()
+                        except Exception: pass
+                raise SystemExit(asyncio.run(main()))
+            - path: /usr/local/sbin/run-probe
+              permissions: '0755'
+              content: |
+                #!/usr/bin/env bash
+                set -uo pipefail
+                python3 -m venv /opt/venv
+                /opt/venv/bin/pip -q install telethon==1.44.0 python-socks
+                strace -f -e trace=connect -s 200 -o /tmp/connect.trace /opt/venv/bin/python /opt/probe.py > /tmp/result.txt 2>&1
+                rc=$?
+                echo '===PROBE_BEGIN===' > /dev/ttyS0
+                cat /tmp/result.txt > /dev/ttyS0
+                echo '---STRACE---' > /dev/ttyS0
+                grep -E 'connect\(' /tmp/connect.trace | tail -n 50 > /dev/ttyS0 || true
+                echo '===PROBE_END===' > /dev/ttyS0
+                exit $rc
+          runcmd:
+            - [bash, -lc, '/usr/local/sbin/run-probe || true']
+          YAML
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 \
+            --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd \
+            --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud-init.yaml" --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"; echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read result
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 90); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/serial.txt" 2>/dev/null || true
+            if grep -q '===PROBE_END===' "$RUNNER_TEMP/serial.txt"; then
+              sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/serial.txt" | tee "$RUNNER_TEMP/result.txt"
+              grep -q 'MTPROXY_GATE=PASS' "$RUNNER_TEMP/result.txt"; exit $?
+            fi
+            sleep 5
+          done
+          echo 'LIVE_FAKETLS_GATE=TIMEOUT'; exit 1
+
+      - name: Destroy disposable VM
+        if: always()
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        shell: bash
+        run: |
+          set +e
+          if [ -n "$VM_NAME" ] && [ -n "$FOLDER_ID" ]; then yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true; fi
+          rm -f "$RUNNER_TEMP/yc-key.json"
