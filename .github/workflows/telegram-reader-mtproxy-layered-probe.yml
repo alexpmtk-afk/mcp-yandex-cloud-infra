@@ -1,3 +1,4 @@
+# Diagnostic-only workflow. Production Telegram Reader is not modified.
 name: Telegram Reader MTProxy Layered Probe
 
 on:
