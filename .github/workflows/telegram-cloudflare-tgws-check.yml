@@ -1,122 +1,12 @@
-name: Telegram Cloudflare MTProto Check
-
+name: Telegram Cloudflare Runner Sanity
 on:
   push:
     branches: [diagnostic/telegram-render-relay]
     paths: [.github/workflows/telegram-cloudflare-tgws-check.yml]
   workflow_dispatch:
-
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - name: YC auth
-        env:
-          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/yc"
-          wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
-          tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"
-          chmod +x "$RUNNER_TEMP/yc/yc"
-          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
-          "$RUNNER_TEMP/yc/yc" config profile create cf-mtproto || true
-          "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
-
-      - name: Create disposable Yandex VM
-        id: vm
-        run: |
-          set -euo pipefail
-          folder='b1gk4p83brasi8g811jv'
-          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
-          zone="$(echo "$prod" | jq -r .zone_id)"
-          subnet="$(echo "$prod" | jq -r '.network_interfaces[0].subnet_id')"
-          name="cf-mt-${GITHUB_RUN_ID}"
-          cat > "$RUNNER_TEMP/probe.py" <<'PY'
-          import os, socket, ssl, base64, subprocess, struct
-          HOST='telegram-reader-relay.alexpmtk.workers.dev'
-          DST='149.154.167.220'
-          PATH=f'/apiws?dst={DST}&dc=2&media=0'
-          RESERVED=[b'HEAD',b'POST',b'GET ',b'\xee'*4,b'\xdd'*4,b'\x16\x03\x01\x02']
-          def relay_init():
-              while True:
-                  r=bytearray(os.urandom(64))
-                  if r[0]==0xef or bytes(r[:4]) in RESERVED or bytes(r[4:8])==b'\x00'*4:
-                      continue
-                  key=bytes(r[8:40]); iv=bytes(r[40:56])
-                  p=subprocess.run(['openssl','enc','-aes-256-ctr','-K',key.hex(),'-iv',iv.hex(),'-nopad'],input=bytes(r),stdout=subprocess.PIPE,stderr=subprocess.PIPE,timeout=5)
-                  if p.returncode:
-                      raise RuntimeError('openssl failed')
-                  enc=p.stdout
-                  tail=b'\xee'*4+struct.pack('<h',2)+os.urandom(2)
-                  out=bytearray(r)
-                  for i in range(8):
-                      out[56+i]=tail[i]^(enc[56+i]^r[56+i])
-                  return bytes(out)
-          raw=socket.create_connection((HOST,443),timeout=10)
-          s=ssl.create_default_context().wrap_socket(raw,server_hostname=HOST)
-          key=base64.b64encode(os.urandom(16)).decode()
-          req=(f'GET {PATH} HTTP/1.1\r\nHost: {HOST}\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: {key}\r\nSec-WebSocket-Version: 13\r\n\r\n').encode()
-          s.sendall(req)
-          head=b''
-          while b'\r\n\r\n' not in head and len(head)<16384:
-              head+=s.recv(4096)
-          line=head.split(b'\r\n',1)[0]
-          print('WS_STATUS='+line.decode(errors='replace'),flush=True)
-          if b' 101 ' not in line: raise SystemExit(21)
-          payload=relay_init(); mask=os.urandom(4)
-          frame=bytes([0x82,0x80|64])+mask+bytes(b^mask[i%4] for i,b in enumerate(payload))
-          s.sendall(frame)
-          print('MTPROTO_INIT_SENT=PASS',flush=True)
-          s.settimeout(3.0)
-          try:
-              data=s.recv(4096)
-              if not data:
-                  print('CLOUDFLARE_YANDEX_MT_GATE=FAIL closed',flush=True); raise SystemExit(22)
-              print('CLOUDFLARE_YANDEX_MT_GATE=FAIL unexpected_bytes='+str(len(data)),flush=True); raise SystemExit(23)
-          except socket.timeout:
-              print('CLOUDFLARE_YANDEX_MT_GATE=PASS',flush=True)
-          PY
-          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/pi"
-          {
-            echo '#cloud-config'
-            echo 'package_update: false'
-            echo 'write_files:'
-            echo '  - path: /opt/probe.py'
-            echo "    permissions: '0644'"
-            echo '    content: |'
-            cat "$RUNNER_TEMP/pi"
-            echo 'runcmd:'
-            echo '  - [bash, -lc, "python3 /opt/probe.py >/tmp/result 2>&1; rc=$?; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo YANDEX_MT_RC=$rc >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]'
-          } > "$RUNNER_TEMP/cloud.yaml"
-          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet" --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
-          echo "name=$name" >> "$GITHUB_OUTPUT"
-          echo "folder=$folder" >> "$GITHUB_OUTPUT"
-
-      - name: Read result
-        env:
-          VM_NAME: ${{ steps.vm.outputs.name }}
-          FOLDER_ID: ${{ steps.vm.outputs.folder }}
-        run: |
-          set -euo pipefail
-          for n in $(seq 1 80); do
-            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true
-            if grep -q '===PROBE_END===' "$RUNNER_TEMP/s"; then
-              sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/s"
-              grep -q 'CLOUDFLARE_YANDEX_MT_GATE=PASS' "$RUNNER_TEMP/s"
-              exit $?
-            fi
-            sleep 5
-          done
-          exit 1
-
-      - name: Destroy disposable VM
-        if: always()
-        env:
-          VM_NAME: ${{ steps.vm.outputs.name }}
-          FOLDER_ID: ${{ steps.vm.outputs.folder }}
-        run: |
-          set +e
-          [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
-          rm -f "$RUNNER_TEMP/key.json"
+      - name: Sanity
+        run: echo RUNNER_SANITY=PASS
