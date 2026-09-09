@@ -1,0 +1,78 @@
+name: Telegram Reader Fake-TLS443 Source3 Check
+
+on:
+  push:
+    branches: [diagnostic/telegram-mtproxy-faketls443]
+    paths: [".github/workflows/telegram-reader-faketls443-source3.yml"]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Verify Fake-TLS 443 candidates outside Yandex
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" -q install telethon==1.44.0 python-socks
+          cat > "$RUNNER_TEMP/check.py" <<'PY'
+          import asyncio,socket,urllib.parse,urllib.request
+          from telethon import TelegramClient,connection
+          from telethon.sessions import MemorySession
+
+          URL='https://raw.githubusercontent.com/mcny2809/mtproto-for-telegram/master/all_proxies.txt'
+          raw=urllib.request.urlopen(URL,timeout=20).read().decode()
+          cand=[]; seen=set()
+          for line in raw.splitlines():
+              line=line.strip()
+              if not (line.startswith('tg://proxy?') or line.startswith('https://t.me/proxy?')): continue
+              q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
+              try:
+                  h=q['server'][0].rstrip('.'); p=int(q['port'][0]); s=urllib.parse.unquote(q['secret'][0]); bytes.fromhex(s)
+              except Exception: continue
+              k=(h,p,s)
+              if p==443 and s.lower().startswith('ee') and k not in seen:
+                  seen.add(k); cand.append((h,p,s))
+          cand=cand[:60]
+          print(f'SOURCE3_FAKETLS443={len(cand)}',flush=True)
+          sem=asyncio.Semaphore(10)
+
+          async def one(i,x):
+              async with sem:
+                  h,p,s=x; loop=asyncio.get_running_loop()
+                  try:
+                      await asyncio.wait_for(loop.run_in_executor(None,socket.getaddrinfo,h,p,socket.AF_UNSPEC,socket.SOCK_STREAM),4)
+                  except Exception as e:
+                      print(f'C{i}=DNS_FAIL host={h} error={type(e).__name__}',flush=True); return None
+                  try:
+                      def tcp():
+                          z=socket.create_connection((h,p),timeout=4); peer=z.getpeername(); z.close(); return peer
+                      peer=await asyncio.wait_for(loop.run_in_executor(None,tcp),5)
+                      print(f'C{i}_TCP=PASS host={h} peer={peer[0]}:{peer[1]}',flush=True)
+                  except Exception as e:
+                      print(f'C{i}=TCP_FAIL host={h} error={type(e).__name__}',flush=True); return None
+                  c=TelegramClient(MemorySession(),1,'0'*32,connection=connection.ConnectionTcpMTProxyRandomizedIntermediate,proxy=(h,p,s),connection_retries=1,retry_delay=0,timeout=6)
+                  try:
+                      await asyncio.wait_for(c.connect(),8)
+                      if c.is_connected():
+                          print(f'C{i}_MTPROXY=PASS host={h}',flush=True); return h
+                  except Exception as e:
+                      print(f'C{i}=MTPROXY_FAIL host={h} error={type(e).__name__}',flush=True)
+                  finally:
+                      try: await c.disconnect()
+                      except Exception: pass
+                  return None
+
+          async def main():
+              out=await asyncio.gather(*(one(i,x) for i,x in enumerate(cand,1)))
+              alive=[x for x in out if x]
+              print('ALIVE_HOSTS='+','.join(alive[:5]),flush=True)
+              print(f'INDEPENDENT_ALIVE={len(alive)}',flush=True)
+              raise SystemExit(0 if alive else 20)
+          asyncio.run(main())
+          PY
+          "$RUNNER_TEMP/venv/bin/python" "$RUNNER_TEMP/check.py"
