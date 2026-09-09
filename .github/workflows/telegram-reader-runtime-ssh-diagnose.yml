@@ -96,11 +96,13 @@ jobs:
           cat "$RUNNER_TEMP/runtime-diagnostic.txt"
 
       - name: Probe MTProto through verified MTProxy nodes
+        if: always()
         shell: bash
         env:
           VM_IP: ${{ steps.access.outputs.ip }}
         run: |
           set -euo pipefail
+          test -n "$VM_IP"
           ssh_opts=(-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$RUNNER_TEMP/id_ed25519")
           cat > "$RUNNER_TEMP/mtproxy_probe.py" <<'PY'
           import asyncio, urllib.parse, urllib.request
@@ -123,14 +125,9 @@ jobs:
                   break
 
           async def probe(i, host, port, secret):
-              client=TelegramClient(
-                  MemorySession(), 1, '0'*32,
+              client=TelegramClient(MemorySession(), 1, '0'*32,
                   connection=connection.ConnectionTcpMTProxyRandomizedIntermediate,
-                  proxy=(host, port, secret),
-                  connection_retries=1,
-                  retry_delay=0,
-                  timeout=8,
-              )
+                  proxy=(host, port, secret), connection_retries=1, retry_delay=0, timeout=8)
               try:
                   ok=await asyncio.wait_for(client.connect(), timeout=12)
                   if ok and client.is_connected():
@@ -139,21 +136,18 @@ jobs:
               except Exception as e:
                   print(f'PROXY_{i}=FAIL {host}:{port} {type(e).__name__}')
               finally:
-                  try:
-                      await client.disconnect()
-                  except Exception:
-                      pass
+                  try: await client.disconnect()
+                  except Exception: pass
               return False
 
           async def main():
               print(f'PROXIES_LOADED={len(proxies)}')
-              for i, proxy in enumerate(proxies, 1):
-                  if await probe(i, *proxy):
+              for i,p in enumerate(proxies,1):
+                  if await probe(i,*p):
                       print('MTPROXY_GATE=PASS')
                       return
               print('MTPROXY_GATE=FAIL')
               raise SystemExit(1)
-
           asyncio.run(main())
           PY
           scp "${ssh_opts[@]}" "$RUNNER_TEMP/mtproxy_probe.py" ubuntu@"$VM_IP":/tmp/mtproxy_probe.py
