@@ -15,7 +15,7 @@ jobs:
     environment: test
     timeout-minutes: 20
     steps:
-      - name: Independent MTProxy check outside Yandex
+      - name: Independent Fake-TLS MTProxy 443 check outside Yandex
         shell: bash
         run: |
           set -euo pipefail
@@ -39,15 +39,15 @@ jobs:
                   port=int(q['port'][0])
                   secret=q['secret'][0]
                   bytes.fromhex(secret)
+                  if port != 443 or not secret.lower().startswith('ee'):
+                      continue
                   proxies.append({'host':host,'port':port,'secret':secret})
               except Exception:
                   continue
-              if len(proxies)>=30:
+              if len(proxies)>=60:
                   break
 
-          def stype(secret):
-              p=secret[:2].lower()
-              return 'secure-dd' if p=='dd' else ('fake-tls-ee' if p=='ee' else 'classic')
+          print(f'FAKETLS443_SOURCE_CANDIDATES={len(proxies)}')
 
           async def check(idx,p):
               host,port,secret=p['host'],p['port'],p['secret']
@@ -55,7 +55,7 @@ jobs:
               try:
                   infos=await asyncio.get_running_loop().run_in_executor(None, socket.getaddrinfo, host, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
                   ips=sorted({x[4][0] for x in infos})
-                  print(f'INDEP_{idx}_DNS=PASS host={host} ips={",".join(ips[:4])} latency_ms={int((time.monotonic()-t)*1000)}')
+                  print(f'INDEP_{idx}_DNS=PASS host={host} ips={",".join(ips[:6])} latency_ms={int((time.monotonic()-t)*1000)}')
               except Exception as e:
                   print(f'INDEP_{idx}=PROXY_DNS_FAIL host={host} error={type(e).__name__}')
                   return None
@@ -68,7 +68,7 @@ jobs:
                   print(f'INDEP_{idx}=PROXY_DEAD host={host} port={port} stage=tcp error={type(e).__name__} latency_ms={int((time.monotonic()-t)*1000)}')
                   return None
               cls=connection.ConnectionTcpMTProxyRandomizedIntermediate
-              print(f'INDEP_{idx}_MTPROXY_BEGIN class={cls.__name__} host={host} port={port} secret_type={stype(secret)} secret_hex_len={len(secret)}')
+              print(f'INDEP_{idx}_MTPROXY_BEGIN class={cls.__name__} host={host} port={port} secret_type=fake-tls-ee secret_hex_len={len(secret)}')
               c=TelegramClient(MemorySession(),1,'0'*32,connection=cls,proxy=(host,port,secret),connection_retries=1,retry_delay=0,timeout=7)
               t=time.monotonic()
               try:
@@ -86,7 +86,6 @@ jobs:
 
           async def main():
               alive=[]
-              # Sequential by design: stop as soon as 3 independently proven proxies are found.
               for i,p in enumerate(proxies,1):
                   r=await check(i,p)
                   if r:
@@ -97,7 +96,7 @@ jobs:
                   json.dump(alive,f)
               print(f'INDEPENDENT_ALIVE={len(alive)}')
               if not alive:
-                  print('LAYERED_GATE=PROXY_DEAD')
+                  print('LAYERED_GATE=NO_INDEPENDENTLY_ALIVE_FAKETLS443')
                   raise SystemExit(20)
           asyncio.run(main())
           PY
@@ -138,14 +137,11 @@ jobs:
           name="telegram-mtproxy-layered-${GITHUB_RUN_ID}"
           alive_b64="$(base64 -w0 "$RUNNER_TEMP/alive.json")"
           cat > "$RUNNER_TEMP/yandex_probe.py" <<'PY'
-          import asyncio, json, socket, subprocess, time
+          import asyncio, json, socket, time
           from telethon import TelegramClient, connection
           from telethon.sessions import MemorySession
 
           CANDIDATES=json.load(open('/opt/alive.json'))
-          def stype(secret):
-              p=secret[:2].lower()
-              return 'secure-dd' if p=='dd' else ('fake-tls-ee' if p=='ee' else 'classic')
 
           async def test_one(i,p):
               host,port,secret=p['host'],p['port'],p['secret']
@@ -168,7 +164,7 @@ jobs:
                   return False
 
               cls=connection.ConnectionTcpMTProxyRandomizedIntermediate
-              print(f'PROXY_{i}_MTPROXY_BEGIN class={cls.__name__} host={host} port={port} secret_type={stype(secret)} secret_hex_len={len(secret)}',flush=True)
+              print(f'PROXY_{i}_MTPROXY_BEGIN class={cls.__name__} host={host} port={port} secret_type=fake-tls-ee secret_hex_len={len(secret)}',flush=True)
               c=TelegramClient(MemorySession(),1,'0'*32,connection=cls,proxy=(host,port,secret),connection_retries=1,retry_delay=0,timeout=7)
               t=time.monotonic()
               try:
