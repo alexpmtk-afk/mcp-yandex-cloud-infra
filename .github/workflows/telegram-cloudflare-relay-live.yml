@@ -38,51 +38,39 @@ jobs:
           import websockets
           from telethon import TelegramClient
           from telethon.sessions import MemorySession
-
           WS_URL='wss://telegram-reader-relay-test.pastoral-playground.workers.dev/telegram'
-
           async def a2b(reader, ws):
               try:
                   while True:
                       data=await reader.read(65536)
                       if not data: break
                       await ws.send(data)
-              except Exception:
-                  pass
-
+              except Exception: pass
           async def b2a(ws, writer):
               try:
                   async for data in ws:
                       if isinstance(data,str): data=data.encode()
-                      writer.write(data)
-                      await writer.drain()
-              except Exception:
-                  pass
-
+                      writer.write(data); await writer.drain()
+              except Exception: pass
           async def handle(reader, writer):
               try:
                   head=await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'),5)
                   if not head.startswith(b'CONNECT '): return
                   ws=await asyncio.wait_for(websockets.connect(WS_URL,open_timeout=15,ping_interval=20),20)
-                  writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n')
-                  await writer.drain()
+                  writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n'); await writer.drain()
                   await asyncio.gather(a2b(reader,ws),b2a(ws,writer))
-              except Exception as e:
-                  print('ADAPTER_FAIL',type(e).__name__,str(e)[:160],flush=True)
+              except Exception as e: print('ADAPTER_FAIL',type(e).__name__,str(e)[:160],flush=True)
               finally:
                   try: writer.close(); await writer.wait_closed()
                   except: pass
-
           async def main():
               srv=await asyncio.start_server(handle,'127.0.0.1',18888)
               proxy={'proxy_type':'http','addr':'127.0.0.1','port':18888,'rdns':True}
               c=TelegramClient(MemorySession(),1,'0'*32,proxy=proxy,connection_retries=1,retry_delay=0,timeout=15)
               try:
                   await asyncio.wait_for(c.connect(),30)
-                  ok=c.is_connected()
-                  print('CLOUDFLARE_TELETHON_GATE=' + ('PASS' if ok else 'FAIL'),flush=True)
-              except Exception as e:
-                  print('CLOUDFLARE_TELETHON_GATE=FAIL',type(e).__name__,str(e)[:160],flush=True)
+                  print('CLOUDFLARE_TELETHON_GATE=' + ('PASS' if c.is_connected() else 'FAIL'),flush=True)
+              except Exception as e: print('CLOUDFLARE_TELETHON_GATE=FAIL',type(e).__name__,str(e)[:160],flush=True)
               finally:
                   try: await c.disconnect()
                   except: pass
@@ -93,14 +81,14 @@ jobs:
           {
             echo '#cloud-config'
             echo 'package_update: true'
-            echo 'packages: [python3-venv]'
+            echo 'packages: [python3-venv, curl]'
             echo 'write_files:'
             echo '  - path: /opt/probe.py'
             echo "    permissions: '0644'"
             echo '    content: |'
             cat "$RUNNER_TEMP/pi"
             echo 'runcmd:'
-            echo '  - [bash, -lc, "python3 -m venv /opt/venv; /opt/venv/bin/pip -q install telethon==1.44.0 python-socks[asyncio] websockets==15.0.1; /opt/venv/bin/python /opt/probe.py >/tmp/result 2>&1 || true; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]'
+            echo '  - [bash, -lc, "exec >/tmp/result 2>&1; echo STAGE_NETWORK; curl -I -m 15 https://telegram-reader-relay-test.pastoral-playground.workers.dev/telegram || true; echo STAGE_VENV; python3 -m venv /opt/venv; echo STAGE_PIP; /opt/venv/bin/pip install telethon==1.44.0 python-socks websockets==15.0.1; echo PIP_RC=$?; /opt/venv/bin/python -c 'import telethon,websockets; print(\"IMPORTS=PASS\")'; echo STAGE_TELETHON; /opt/venv/bin/python /opt/probe.py || true; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]'
           } > "$RUNNER_TEMP/cloud.yaml"
           yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet" --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
           echo "name=$name" >> "$GITHUB_OUTPUT"
