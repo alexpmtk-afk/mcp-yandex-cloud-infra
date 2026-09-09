@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from telethon import TelegramClient
+from telethon import TelegramClient, connection
 
 from app.config import Settings
 from app.errors import AuthorizationRequired
@@ -32,11 +32,17 @@ class TelegramReader:
             if settings.ws_relay_url
             else None
         )
+        kwargs: dict[str, object] = {}
+        if self.relay is not None:
+            kwargs["connection"] = connection.ConnectionTcpMTProxyAbridged
+            kwargs["proxy"] = self.relay.mtproxy_tuple()
+        else:
+            kwargs["proxy"] = settings.telethon_proxy()
         self.client = TelegramClient(
             str(settings.session_path),
             settings.api_id,
             settings.api_hash,
-            proxy=settings.telethon_proxy(),
+            **kwargs,
         )
 
     async def connect(self, *, interactive_login: bool = False) -> None:
