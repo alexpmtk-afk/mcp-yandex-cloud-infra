@@ -57,6 +57,8 @@ resource "yandex_compute_disk" "state" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [yandex_resourcemanager_folder_iam_member.ci_compute_admin]
 }
 
 resource "yandex_compute_instance" "runtime" {
@@ -113,5 +115,7 @@ resource "yandex_compute_instance" "runtime" {
     yandex_lockbox_secret_iam_member.runtime_credentials,
     yandex_lockbox_secret_iam_member.runtime_auth,
     yandex_resourcemanager_folder_iam_member.runtime_registry_pull,
+    yandex_resourcemanager_folder_iam_member.ci_compute_admin,
+    yandex_resourcemanager_folder_iam_member.ci_sa_user,
   ]
 }
