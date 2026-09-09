@@ -5,9 +5,9 @@ terraform {
     endpoints = {
       s3 = "https://storage.yandexcloud.net"
     }
-    bucket    = "marketplaces-mcp-tfstate-b1gnd0dqoq3ljod88i8t"
-    key       = "telegram-news-reader/prod/terraform.tfstate"
-    region    = "ru-central1"
+    bucket = "marketplaces-mcp-tfstate-b1gnd0dqoq3ljod88i8t"
+    key    = "telegram-news-reader/prod/terraform.tfstate"
+    region = "ru-central1"
     skip_region_validation      = true
     skip_credentials_validation = true
     skip_requesting_account_id  = true
