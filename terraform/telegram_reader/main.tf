@@ -72,7 +72,7 @@ resource "yandex_resourcemanager_folder_iam_member" "runtime_registry_pull" {
 resource "yandex_lockbox_secret" "telegram_credentials" {
   folder_id           = yandex_resourcemanager_folder.this.id
   name                = "telegram-reader-credentials"
-  description         = "Telegram API credentials written only by the one-time setup flow"
+  description         = "Populate manually with api_id, api_hash and phone; values are never stored in Git"
   deletion_protection = true
   labels              = local.labels
 }
