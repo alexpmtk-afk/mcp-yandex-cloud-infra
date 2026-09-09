@@ -29,6 +29,12 @@ variable "ci_service_account_id" {
   sensitive = true
 }
 
+variable "shared_network_id" {
+  description = "Existing cloud VPC network reused through Yandex multi-folder VPC"
+  type        = string
+  default     = "enp3vuoau0hkv7hcb6mh"
+}
+
 variable "folder_name" {
   type    = string
   default = "telegram-news-reader"
