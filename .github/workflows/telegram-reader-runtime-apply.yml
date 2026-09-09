@@ -10,6 +10,7 @@ on:
 permissions:
   contents: read
 
+# Runtime is created only after the additive-only Terraform safety gate passes.
 concurrency:
   group: telegram-reader-runtime
   cancel-in-progress: false
