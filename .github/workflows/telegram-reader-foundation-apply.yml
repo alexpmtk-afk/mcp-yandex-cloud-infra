@@ -47,7 +47,10 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // empty' "$KEY_FILE")"
+          test -n "$CI_SA_ID"
           echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "TF_VAR_ci_service_account_id=$CI_SA_ID" >> "$GITHUB_ENV"
           yc config profile create telegram-reader-ci || true
           yc config set service-account-key "$KEY_FILE"
 
