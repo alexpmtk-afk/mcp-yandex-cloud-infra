@@ -16,12 +16,16 @@ from telethon import TelegramClient
 from telethon.errors import SessionPasswordNeededError
 
 from app.formatting import dialog_type
+from app.ws_relay import WebSocketRelayAdapter
 
 SETUP_TOKEN_SHA256 = os.getenv("SETUP_TOKEN_SHA256", "").strip().lower()
 LOCKBOX_SECRET_ID = os.getenv("TELEGRAM_CREDENTIALS_SECRET_ID", "").strip()
 SESSION_PATH = Path(os.getenv("TELEGRAM_SESSION_PATH", "/state/telegram_news"))
 WHITELIST_PATH = Path(os.getenv("TELEGRAM_WHITELIST_PATH", "/state/allowed_chats.yaml"))
 COMPLETE_MARKER = Path(os.getenv("SETUP_COMPLETE_MARKER", "/state/setup.complete"))
+WS_RELAY_URL = os.getenv("TELEGRAM_WS_RELAY_URL", "").strip()
+WS_RELAY_TOKEN = os.getenv("TELEGRAM_WS_RELAY_TOKEN", "").strip()
+WS_RELAY_PORT = int(os.getenv("TELEGRAM_WS_RELAY_LOCAL_PORT", "18888"))
 
 
 class BeginPayload(BaseModel):
@@ -51,11 +55,15 @@ class SetupState:
         self.phone: str | None = None
         self.phone_code_hash: str | None = None
         self.dialogs: dict[int, dict[str, object]] = {}
+        self.relay: WebSocketRelayAdapter | None = None
 
     async def clear(self) -> None:
         if self.client is not None:
             await self.client.disconnect()
+        if self.relay is not None:
+            await self.relay.stop()
         self.client = None
+        self.relay = None
         self.api_id = None
         self.api_hash = None
         self.phone = None
@@ -101,8 +109,20 @@ async def begin(payload: BeginPayload):
     async with state.lock:
         await state.clear()
         SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)
-        client = TelegramClient(str(SESSION_PATH), payload.api_id, payload.api_hash)
-        await client.connect()
+        relay = None
+        proxy = None
+        if WS_RELAY_URL and WS_RELAY_TOKEN:
+            relay = WebSocketRelayAdapter(WS_RELAY_URL, WS_RELAY_TOKEN, WS_RELAY_PORT)
+            await relay.start()
+            proxy = relay.proxy_mapping()
+        client = TelegramClient(str(SESSION_PATH), payload.api_id, payload.api_hash, proxy=proxy)
+        try:
+            await client.connect()
+        except Exception:
+            if relay is not None:
+                await relay.stop()
+            raise
+        state.relay = relay
         state.client = client
         state.api_id = payload.api_id
         state.api_hash = payload.api_hash
