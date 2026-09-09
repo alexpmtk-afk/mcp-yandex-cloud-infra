@@ -1,0 +1,5 @@
+allowed_chats:
+  # Replace with real chat IDs locally after running list_dialogs.py.
+  # - chat_id: -1001234567890
+  #   name: "Example public channel"
+  #   enabled: true
