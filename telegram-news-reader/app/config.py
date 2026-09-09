@@ -79,11 +79,11 @@ def _load_proxy() -> tuple[str | None, str | None, int | None, str | None, str |
     if not configured:
         return None, None, None, None, None
 
-    if proxy_type != "socks5":
-        raise RuntimeError("TELEGRAM_PROXY_TYPE currently supports only 'socks5'")
+    if proxy_type not in {"socks5", "http"}:
+        raise RuntimeError("TELEGRAM_PROXY_TYPE supports 'socks5' or 'http'")
     if not proxy_host or not proxy_port_raw:
         raise RuntimeError(
-            "SOCKS5 proxy requires TELEGRAM_PROXY_HOST and TELEGRAM_PROXY_PORT"
+            "Proxy requires TELEGRAM_PROXY_HOST and TELEGRAM_PROXY_PORT"
         )
     try:
         proxy_port = int(proxy_port_raw)
