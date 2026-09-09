@@ -7,16 +7,16 @@ import websockets
 
 
 TELEGRAM_DC_ROUTES = {
-    "149.154.175.50": "dc1",
-    "149.154.167.51": "dc2",
-    "149.154.175.100": "dc3",
-    "149.154.167.91": "dc4",
-    "91.108.56.130": "dc5",
+    "149.154.175.50": "1",
+    "149.154.167.51": "2",
+    "149.154.175.100": "3",
+    "149.154.167.91": "4",
+    "91.108.56.130": "5",
 }
 
 
 class WebSocketRelayAdapter:
-    """Loopback HTTP CONNECT adapter backed by an authenticated WSS relay."""
+    """Loopback HTTP CONNECT adapter backed by a Cloudflare WSS-to-TCP relay."""
 
     def __init__(self, base_url: str, token: str, port: int = 18888) -> None:
         self.base_url = base_url.rstrip("/")
@@ -55,14 +55,18 @@ class WebSocketRelayAdapter:
             if len(parts) < 2 or parts[0].upper() != "CONNECT":
                 return
             target = parts[1]
-            host = target.rsplit(":", 1)[0].strip("[]")
+            host, sep, target_port = target.rpartition(":")
+            host = host.strip("[]")
             route = TELEGRAM_DC_ROUTES.get(host)
-            if route is None:
+            if not sep or target_port != "443" or route is None:
                 writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
                 await writer.drain()
                 return
 
-            url = f"{self.base_url}/{route}?t={quote(self.token, safe='')}"
+            url = (
+                f"{self.base_url}/apiws?dst={quote(host, safe='')}"
+                f"&dc={route}&media=0&t={quote(self.token, safe='')}"
+            )
             ws = await asyncio.wait_for(
                 websockets.connect(url, open_timeout=20, ping_interval=20), timeout=25
             )
