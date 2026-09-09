@@ -43,6 +43,17 @@ jobs:
           TELEGRAM_WHITELIST_PATH: "config/allowed_chats.example.yaml"
           READER_API_TOKEN: "dummy-ci-token"
         run: python -c "import app.service; print('SERVICE_IMPORT_PASS')"
+      - name: Build Docker image
+        run: docker build -t telegram-news-reader:ci telegram-news-reader
+      - name: Import service inside image
+        run: |
+          docker run --rm --entrypoint python \
+            -e TELEGRAM_API_ID=12345 \
+            -e TELEGRAM_API_HASH=dummy \
+            -e TELEGRAM_PHONE=+10000000000 \
+            -e READER_API_TOKEN=dummy-ci-token \
+            telegram-news-reader:ci \
+            -c "import app.service; print('CONTAINER_IMPORT_PASS')"
 
   terraform-plan:
     runs-on: ubuntu-latest
