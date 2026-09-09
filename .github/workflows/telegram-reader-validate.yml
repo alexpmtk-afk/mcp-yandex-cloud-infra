@@ -85,5 +85,18 @@ jobs:
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
       - name: Terraform validate
         run: terraform -chdir=terraform/telegram_reader validate
-      - name: Foundation-only plan
-        run: terraform -chdir=terraform/telegram_reader plan -input=false -no-color -var='runtime_enabled=false'
+      - name: Foundation-only targeted plan
+        run: |
+          terraform -chdir=terraform/telegram_reader plan -input=false -no-color \
+            -var='runtime_enabled=false' \
+            -target=yandex_resourcemanager_folder.this \
+            -target=yandex_vpc_subnet.this \
+            -target=yandex_container_registry.this \
+            -target=yandex_iam_service_account.runtime \
+            -target=yandex_resourcemanager_folder_iam_member.runtime_registry_pull \
+            -target=yandex_lockbox_secret.telegram_credentials \
+            -target=yandex_lockbox_secret.reader_auth \
+            -target=yandex_lockbox_secret_version.reader_auth \
+            -target=yandex_lockbox_secret_iam_member.runtime_credentials \
+            -target=yandex_lockbox_secret_iam_member.runtime_credentials_setup_editor \
+            -target=yandex_lockbox_secret_iam_member.runtime_auth
