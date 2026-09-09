@@ -1,0 +1,239 @@
+name: Telegram Reader Fake-TLS443 Isolated Probe
+
+on:
+  push:
+    branches:
+      - diagnostic/telegram-mtproxy-faketls443
+    paths:
+      - ".github/workflows/telegram-reader-faketls443-isolated.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Select independently alive Fake-TLS 443 proxies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/pip" -q install telethon==1.44.0 python-socks
+          cat > "$RUNNER_TEMP/select.py" <<'PY'
+          import asyncio,json,socket,time,urllib.parse,urllib.request
+          from telethon import TelegramClient,connection
+          from telethon.sessions import MemorySession
+
+          URL='https://raw.githubusercontent.com/SoliSpirit/mtproto/master/all_proxies.txt'
+          raw=urllib.request.urlopen(URL,timeout=20).read().decode()
+          cand=[]
+          for line in raw.splitlines():
+              line=line.strip()
+              if not (line.startswith('tg://proxy?') or line.startswith('https://t.me/proxy?')):
+                  continue
+              q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
+              try:
+                  host=q['server'][0].rstrip('.')
+                  port=int(q['port'][0])
+                  secret=urllib.parse.unquote(q['secret'][0])
+                  bytes.fromhex(secret)
+              except Exception:
+                  continue
+              if port==443 and secret.lower().startswith('ee'):
+                  cand.append({'host':host,'port':port,'secret':secret})
+          print(f'SOURCE_FAKETLS443={len(cand)}',flush=True)
+
+          async def one(i,p):
+              h,port,s=p['host'],p['port'],p['secret']
+              try:
+                  ips=sorted({x[4][0] for x in socket.getaddrinfo(h,port,socket.AF_UNSPEC,socket.SOCK_STREAM)})
+                  print(f'OUT_{i}_DNS=PASS host={h} ips={",".join(ips[:5])}',flush=True)
+              except Exception as e:
+                  print(f'OUT_{i}=PROXY_DNS_FAIL host={h} error={type(e).__name__}',flush=True); return None
+              t=time.monotonic()
+              try:
+                  sock=socket.create_connection((h,port),timeout=5); peer=sock.getpeername(); sock.close()
+                  print(f'OUT_{i}_TCP=PASS host={h} peer={peer[0]}:{peer[1]} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+              except Exception as e:
+                  print(f'OUT_{i}=PROXY_DEAD host={h} stage=tcp error={type(e).__name__}',flush=True); return None
+              c=TelegramClient(MemorySession(),1,'0'*32,connection=connection.ConnectionTcpMTProxyRandomizedIntermediate,proxy=(h,port,s),connection_retries=1,retry_delay=0,timeout=7)
+              t=time.monotonic()
+              try:
+                  await asyncio.wait_for(c.connect(),timeout=10)
+                  if c.is_connected():
+                      print(f'OUT_{i}_MTPROXY=PASS host={h} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); return p
+              except Exception as e:
+                  print(f'OUT_{i}=PROXY_DEAD host={h} stage=mtproxy error={type(e).__name__}',flush=True)
+              finally:
+                  try: await c.disconnect()
+                  except Exception: pass
+              return None
+
+          async def main():
+              alive=[]
+              for i,p in enumerate(cand[:80],1):
+                  r=await one(i,p)
+                  if r: alive.append(r)
+                  if len(alive)>=3: break
+              json.dump(alive,open('/tmp/alive.json','w'))
+              print(f'INDEPENDENT_ALIVE={len(alive)}',flush=True)
+              if not alive: raise SystemExit(20)
+          asyncio.run(main())
+          PY
+          "$RUNNER_TEMP/venv/bin/python" "$RUNNER_TEMP/select.py" | tee "$RUNNER_TEMP/outside.log"
+          cp /tmp/alive.json "$RUNNER_TEMP/alive.json"
+
+      - name: Install YC CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-faketls443 || true
+          yc config set service-account-key "$key"
+
+      - name: Create disposable Yandex probe VM
+        id: vm
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(printf '%s' "$prod" | jq -r '.zone_id')"
+          subnet="$(printf '%s' "$prod" | jq -r '.network_interfaces[0].subnet_id')"
+          name="telegram-faketls443-${GITHUB_RUN_ID}"
+          alive_b64="$(base64 -w0 "$RUNNER_TEMP/alive.json")"
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import asyncio,json,socket,time
+          from telethon import TelegramClient,connection
+          from telethon.sessions import MemorySession
+          C=json.load(open('/opt/alive.json'))
+          async def one(i,p):
+              h,port,s=p['host'],p['port'],p['secret']
+              try:
+                  ips=sorted({x[4][0] for x in socket.getaddrinfo(h,port,socket.AF_UNSPEC,socket.SOCK_STREAM)})
+                  print(f'Y_{i}_DNS=PASS host={h} ips={",".join(ips[:6])}',flush=True)
+              except Exception as e:
+                  print(f'Y_{i}=PROXY_DNS_FAIL host={h} error={type(e).__name__}',flush=True); return False
+              t=time.monotonic()
+              try:
+                  sock=socket.create_connection((h,port),timeout=5); peer=sock.getpeername(); sock.close()
+                  print(f'Y_{i}_TCP=PASS host={h} peer={peer[0]}:{peer[1]} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+              except Exception as e:
+                  print(f'Y_{i}=YANDEX_TO_PROXY_TCP_FAIL host={h} error={type(e).__name__} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); return False
+              cls=connection.ConnectionTcpMTProxyRandomizedIntermediate
+              print(f'Y_{i}_MTPROXY_BEGIN class={cls.__name__} host={h} port={port} secret_type=fake-tls-ee secret_hex_len={len(s)}',flush=True)
+              c=TelegramClient(MemorySession(),1,'0'*32,connection=cls,proxy=(h,port,s),connection_retries=1,retry_delay=0,timeout=7)
+              t=time.monotonic()
+              try:
+                  await asyncio.wait_for(c.connect(),timeout=10)
+                  if c.is_connected():
+                      print(f'Y_{i}=MTPROXY_GATE_PASS host={h} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); return True
+              except ValueError as e:
+                  print(f'Y_{i}=MTPROXY_SECRET_OR_CODEC_FAIL host={h} error={type(e).__name__}',flush=True)
+              except Exception as e:
+                  print(f'Y_{i}=MTPROXY_HANDSHAKE_FAIL host={h} error={type(e).__name__} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+              finally:
+                  try: await c.disconnect()
+                  except Exception: pass
+              return False
+          async def main():
+              print(f'YANDEX_CANDIDATES={len(C)}',flush=True)
+              ok=False
+              for i,p in enumerate(C,1): ok=(await one(i,p)) or ok
+              print('MTPROXY_GATE=PASS' if ok else 'MTPROXY_GATE=FAIL',flush=True)
+              raise SystemExit(0 if ok else 1)
+          asyncio.run(main())
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/probe.indented"
+          {
+            echo '#cloud-config'
+            echo 'package_update: true'
+            echo 'packages:'
+            echo '  - python3-venv'
+            echo '  - strace'
+            echo 'write_files:'
+            echo '  - path: /opt/alive.json.b64'
+            echo "    permissions: '0600'"
+            echo '    content: |'
+            echo "      $alive_b64"
+            echo '  - path: /opt/probe.py'
+            echo "    permissions: '0644'"
+            echo '    content: |'
+            cat "$RUNNER_TEMP/probe.indented"
+            echo '  - path: /usr/local/sbin/run-probe'
+            echo "    permissions: '0755'"
+            echo '    content: |'
+            echo '      #!/usr/bin/env bash'
+            echo '      set -uo pipefail'
+            echo '      base64 -d /opt/alive.json.b64 > /opt/alive.json'
+            echo '      python3 -m venv /opt/venv'
+            echo '      /opt/venv/bin/pip -q install telethon==1.44.0 python-socks'
+            echo '      strace -f -e trace=connect -s 200 -o /tmp/connect.trace /opt/venv/bin/python /opt/probe.py > /tmp/result.txt 2>&1'
+            echo '      rc=$?'
+            echo "      echo '===PROBE_BEGIN===' > /dev/ttyS0"
+            echo '      cat /tmp/result.txt > /dev/ttyS0'
+            echo "      echo '---STRACE---' > /dev/ttyS0"
+            echo "      grep -E 'connect\\(' /tmp/connect.trace | tail -n 80 > /dev/ttyS0 || true"
+            echo "      echo '===PROBE_END===' > /dev/ttyS0"
+            echo '      exit $rc'
+            echo 'runcmd:'
+            echo '  - [bash, -lc, "/usr/local/sbin/run-probe || true"]'
+          } > "$RUNNER_TEMP/cloud-init.yaml"
+          yc compute instance create \
+            --name "$name" --folder-id "$folder" --zone "$zone" \
+            --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 \
+            --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd \
+            --network-interface subnet-id="$subnet",nat-ip-version=ipv4 \
+            --metadata-from-file user-data="$RUNNER_TEMP/cloud-init.yaml" \
+            --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read Yandex result
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 90); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/serial.txt" 2>/dev/null || true
+            if grep -q '===PROBE_END===' "$RUNNER_TEMP/serial.txt"; then
+              sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/serial.txt" | tee "$RUNNER_TEMP/result.txt"
+              grep -q 'MTPROXY_GATE=PASS' "$RUNNER_TEMP/result.txt"
+              exit $?
+            fi
+            sleep 5
+          done
+          echo 'ISOLATED_GATE=TIMEOUT'
+          exit 1
+
+      - name: Destroy disposable probe VM
+        if: always()
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e
+          if [ -n "$VM_NAME" ] && [ -n "$FOLDER_ID" ]; then
+            yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/alive.json"
