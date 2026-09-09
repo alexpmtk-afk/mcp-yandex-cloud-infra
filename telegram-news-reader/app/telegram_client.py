@@ -10,6 +10,7 @@ from app.errors import AuthorizationRequired
 from app.formatting import dialog_type, media_type, public_message_url
 from app.models import DialogRecord, MessageRecord
 from app.whitelist import Whitelist
+from app.ws_relay import WebSocketRelayAdapter
 
 
 class TelegramReader:
@@ -22,6 +23,15 @@ class TelegramReader:
         self.settings = settings
         self.whitelist = whitelist or Whitelist(settings.whitelist_path)
         Path(settings.session_path).parent.mkdir(parents=True, exist_ok=True)
+        self.relay = (
+            WebSocketRelayAdapter(
+                settings.ws_relay_url,
+                settings.ws_relay_token or "",
+                settings.ws_relay_port,
+            )
+            if settings.ws_relay_url
+            else None
+        )
         self.client = TelegramClient(
             str(settings.session_path),
             settings.api_id,
@@ -30,28 +40,39 @@ class TelegramReader:
         )
 
     async def connect(self, *, interactive_login: bool = False) -> None:
-        await self.client.connect()
+        if self.relay is not None:
+            await self.relay.start()
+        try:
+            await self.client.connect()
+        except Exception:
+            if self.relay is not None:
+                await self.relay.stop()
+            raise
         if await self.client.is_user_authorized():
             return
         if not interactive_login:
-            await self.client.disconnect()
+            await self.disconnect()
             raise AuthorizationRequired(
-                "Telegram session is not authorized. Run scripts/login.py locally."
+                "Telegram session is not authorized. Run one-time setup."
             )
         await self.client.start(phone=self.settings.phone)
 
     async def disconnect(self) -> None:
         await self.client.disconnect()
+        if self.relay is not None:
+            await self.relay.stop()
 
     async def is_authorized(self) -> bool:
         was_connected = self.client.is_connected()
         if not was_connected:
+            if self.relay is not None:
+                await self.relay.start()
             await self.client.connect()
         try:
             return bool(await self.client.is_user_authorized())
         finally:
             if not was_connected:
-                await self.client.disconnect()
+                await self.disconnect()
 
     async def list_dialogs(self) -> list[DialogRecord]:
         result: list[DialogRecord] = []
