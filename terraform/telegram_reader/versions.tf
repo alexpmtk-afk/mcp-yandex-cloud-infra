@@ -2,7 +2,9 @@ terraform {
   required_version = ">= 1.6.0"
 
   backend "s3" {
-    endpoints = { s3 = "https://storage.yandexcloud.net" }
+    endpoints = {
+      s3 = "https://storage.yandexcloud.net"
+    }
     bucket    = "marketplaces-mcp-tfstate-b1gnd0dqoq3ljod88i8t"
     key       = "telegram-news-reader/prod/terraform.tfstate"
     region    = "ru-central1"
