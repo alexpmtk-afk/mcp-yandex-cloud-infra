@@ -1,0 +1,40 @@
+#cloud-config
+write_files:
+  - path: /usr/local/bin/telegram-tor-probe.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set +e
+      install_status=FAIL
+      tor_status=FAIL
+      telegram=FAIL
+
+      apt-get update -y >/tmp/tor-apt-update.log 2>&1
+      apt-get install -y tor netcat-openbsd curl >/tmp/tor-install.log 2>&1
+
+      if command -v tor >/dev/null 2>&1; then
+        install_status=PASS
+        systemctl enable --now tor >/tmp/tor-service.log 2>&1 || true
+        systemctl start tor@default >/tmp/tor-instance.log 2>&1 || true
+
+        for i in $(seq 1 30); do
+          if nc -z -w 2 127.0.0.1 9050 >/dev/null 2>&1; then
+            tor_status=PASS
+            break
+          fi
+          sleep 2
+        done
+      fi
+
+      if [ "$tor_status" = PASS ]; then
+        if nc -x 127.0.0.1:9050 -X 5 -z -w 15 149.154.167.51 443 >/dev/null 2>&1; then
+          telegram=PASS
+        fi
+      fi
+
+      result="TOR_RESULT INSTALL=$install_status TOR=$tor_status TG_DC2_443=$telegram TOR_TEST_DONE"
+      printf '%s\n' "$result" >/dev/console
+      printf '<6>%s\n' "$result" >/dev/kmsg 2>/dev/null || true
+
+runcmd:
+  - [bash, -lc, '/usr/local/bin/telegram-tor-probe.sh || true']
