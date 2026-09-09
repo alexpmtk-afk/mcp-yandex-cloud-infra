@@ -17,10 +17,20 @@ resource "yandex_resourcemanager_folder" "this" {
   labels      = local.labels
 }
 
+resource "yandex_resourcemanager_folder_iam_member" "ci_vpc_admin" {
+  count       = var.ci_service_account_id == null ? 0 : 1
+  folder_id   = yandex_resourcemanager_folder.this.id
+  role        = "vpc.admin"
+  member      = "serviceAccount:${var.ci_service_account_id}"
+  sleep_after = 5
+}
+
 resource "yandex_vpc_network" "this" {
   folder_id = yandex_resourcemanager_folder.this.id
   name      = "telegram-reader-network"
   labels    = local.labels
+
+  depends_on = [yandex_resourcemanager_folder_iam_member.ci_vpc_admin]
 }
 
 resource "yandex_vpc_subnet" "this" {
