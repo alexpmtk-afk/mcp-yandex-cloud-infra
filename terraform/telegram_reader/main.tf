@@ -25,6 +25,22 @@ resource "yandex_resourcemanager_folder_iam_member" "ci_vpc_admin" {
   sleep_after = 5
 }
 
+resource "yandex_resourcemanager_folder_iam_member" "ci_compute_admin" {
+  count       = var.ci_service_account_id == null ? 0 : 1
+  folder_id   = yandex_resourcemanager_folder.this.id
+  role        = "compute.admin"
+  member      = "serviceAccount:${var.ci_service_account_id}"
+  sleep_after = 5
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "ci_sa_user" {
+  count       = var.ci_service_account_id == null ? 0 : 1
+  folder_id   = yandex_resourcemanager_folder.this.id
+  role        = "iam.serviceAccounts.user"
+  member      = "serviceAccount:${var.ci_service_account_id}"
+  sleep_after = 5
+}
+
 resource "yandex_vpc_subnet" "this" {
   folder_id      = yandex_resourcemanager_folder.this.id
   name           = "telegram-reader-subnet"
