@@ -51,9 +51,8 @@ jobs:
           yc config set cloud-id "$YC_CLOUD_ID"
           yc config set folder-id "$YC_FOLDER_ID"
 
-          container="$(yc serverless container get "$CONTAINER_ID" --format json)"
-          revision_id="$(jq -r '.current_revision_id // .currentRevisionId // empty' <<<"$container")"
-          test -n "$revision_id"
+          revisions="$(yc serverless container revision list --container-id "$CONTAINER_ID" --format json)"
+          revision_id="$(jq -r 'if type == "array" then . else .revisions end | [ .[]? | select(.status == "ACTIVE") ] | if length == 1 then .[0].id else error("expected exactly one active revision") end' <<<"$revisions")"
           revision="$(yc serverless container revision get "$revision_id" --format json)"
           binding="$(jq -c '[.secrets[]? | select((.environment_variable // .environmentVariable) == "MARKETPLACE_MCP_CABINETS_JSON")] | if length == 1 then .[0] else error("expected exactly one cabinets binding") end' <<<"$revision")"
           secret_id="$(jq -r '.id // empty' <<<"$binding")"
