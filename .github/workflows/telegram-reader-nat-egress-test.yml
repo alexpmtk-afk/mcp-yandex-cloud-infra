@@ -6,6 +6,7 @@ on:
       - feature/telegram-news-reader
     paths:
       - ".github/workflows/telegram-reader-nat-egress-test.yml"
+      - "terraform/telegram_reader_nat_test/**"
 
 permissions:
   contents: read
@@ -69,16 +70,16 @@ jobs:
           set -euo pipefail
           probe_id="$(terraform -chdir=terraform/telegram_reader_nat_test output -raw probe_id)"
           result="$RUNNER_TEMP/nat-probe.txt"
-          for attempt in $(seq 1 20); do
+          for attempt in $(seq 1 12); do
             timeout 8s yc compute instance get-serial-port-output --id "$probe_id" --port 1 > "$result" 2>/dev/null || true
             if grep -q 'NAT_TEST_DONE' "$result"; then
-              grep -E 'NAT_TEST_|GENERIC_HTTPS=|TG_' "$result" | tail -20
+              grep -E 'NAT_RESULT|NAT_TEST_|GENERIC_HTTPS=|TG_' "$result" | tail -20
               exit 0
             fi
             sleep 5
           done
           echo 'NAT probe did not finish' >&2
-          grep -E 'NAT_TEST_|GENERIC_HTTPS=|TG_|cloud-init|FAILED|ERROR' "$result" | tail -40 || true
+          grep -E 'NAT_RESULT|NAT_TEST_|GENERIC_HTTPS=|TG_|cloud-init|FAILED|ERROR' "$result" | tail -40 || true
           exit 1
 
       - name: Upload NAT probe evidence
@@ -104,7 +105,7 @@ jobs:
           set -euo pipefail
           result="$RUNNER_TEMP/nat-probe.txt"
           grep -q 'GENERIC_HTTPS=PASS' "$result" || { echo 'NAT_GENERIC_EGRESS=FAIL'; exit 2; }
-          if grep -Eq 'TG_DC2_443=PASS|TG_DC4_443=PASS' "$result"; then
+          if grep -q 'TG_DC2_443=PASS' "$result"; then
             echo 'TELEGRAM_NAT_EGRESS=PASS'
           else
             echo 'TELEGRAM_NAT_EGRESS=FAIL'
