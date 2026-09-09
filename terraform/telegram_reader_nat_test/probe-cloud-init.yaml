@@ -1,34 +1,38 @@
 #cloud-config
 write_files:
-  - path: /usr/local/bin/telegram-nat-probe.py
+  - path: /usr/local/bin/telegram-nat-probe.sh
     permissions: '0755'
     content: |
-      #!/usr/bin/env python3
-      import socket
-      import urllib.request
+      #!/usr/bin/env bash
+      exec >/dev/ttyS0 2>&1
+      echo NAT_TEST_BEGIN
 
-      def tcp(label, host, port):
-          try:
-              with socket.create_connection((host, port), timeout=6):
-                  print(f"{label}=PASS", flush=True)
-          except Exception as exc:
-              print(f"{label}=FAIL {type(exc).__name__}", flush=True)
+      if curl -fsS --max-time 10 https://api.ipify.org >/dev/null; then
+        echo GENERIC_HTTPS=PASS
+      else
+        echo GENERIC_HTTPS=FAIL
+      fi
 
-      def https(label, url):
-          try:
-              with urllib.request.urlopen(url, timeout=10) as response:
-                  print(f"{label}=PASS status={response.status}", flush=True)
-          except Exception as exc:
-              print(f"{label}=FAIL {type(exc).__name__}", flush=True)
+      if curl -sS -I --max-time 10 https://api.telegram.org >/dev/null; then
+        echo TG_HTTPS=PASS
+      else
+        echo TG_HTTPS=FAIL
+      fi
 
-      print("NAT_TEST_BEGIN", flush=True)
-      https("GENERIC_HTTPS", "https://api.ipify.org")
-      https("TG_HTTPS", "https://api.telegram.org")
-      tcp("TG_DC2_443", "149.154.167.51", 443)
-      tcp("TG_DC2_80", "149.154.167.51", 80)
-      tcp("TG_DC2_5222", "149.154.167.51", 5222)
-      tcp("TG_DC4_443", "149.154.167.91", 443)
-      print("NAT_TEST_DONE", flush=True)
+      tcp_test() {
+        label="$1"; host="$2"; port="$3"
+        if timeout 6 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
+          echo "$label=PASS"
+        else
+          echo "$label=FAIL"
+        fi
+      }
+
+      tcp_test TG_DC2_443 149.154.167.51 443
+      tcp_test TG_DC2_80 149.154.167.51 80
+      tcp_test TG_DC2_5222 149.154.167.51 5222
+      tcp_test TG_DC4_443 149.154.167.91 443
+      echo NAT_TEST_DONE
 
 runcmd:
-  - [bash, -lc, 'python3 /usr/local/bin/telegram-nat-probe.py > /dev/ttyS0 2>&1']
+  - [bash, -lc, '/usr/local/bin/telegram-nat-probe.sh || true']
