@@ -1,0 +1,71 @@
+name: Telegram Cloudflare tg-ws Check
+
+on:
+  push:
+    branches: [diagnostic/telegram-render-relay]
+    paths: [.github/workflows/telegram-cloudflare-tgws-check.yml]
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: YC auth
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          "$RUNNER_TEMP/yc/yc" config profile create cf-tgws || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
+
+      - name: Create disposable Yandex VM
+        id: vm
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(echo "$prod" | jq -r .zone_id)"
+          subnet="$(echo "$prod" | jq -r '.network_interfaces[0].subnet_id')"
+          name="cf-tgws-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/cloud.yaml" <<'YAML'
+          #cloud-config
+          package_update: false
+          runcmd:
+            - [bash, -lc, "set -o pipefail; cd /tmp; curl -L -sS -o tgws.tgz https://github.com/valnesfjord/tg-ws-proxy-rs/releases/download/v2.3.3/tg-ws-proxy-x86_64-unknown-linux-musl.tar.gz; tar -xzf tgws.tgz; chmod +x tg-ws-proxy; ./tg-ws-proxy --cf-worker-domain telegram-reader-relay.alexpmtk.workers.dev --cf-priority --check >/tmp/result 2>&1; rc=$?; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo YANDEX_CF_TGWS_RC=$rc >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]
+          YAML
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet" --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read result
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 100); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true
+            if grep -q '===PROBE_END===' "$RUNNER_TEMP/s"; then
+              sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/s"
+              grep -q 'YANDEX_CF_TGWS_RC=0' "$RUNNER_TEMP/s"
+              exit $?
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Destroy disposable VM
+        if: always()
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e
+          [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/key.json"
