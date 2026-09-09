@@ -119,7 +119,7 @@ jobs:
             echo '      #!/usr/bin/env bash'
             echo '      set -uo pipefail'
             echo '      python3 -m venv /opt/mtproxy-venv'
-            echo '      /opt/mtproxy-venv/bin/pip -q install telethon==1.44.0'
+            echo '      /opt/mtproxy-venv/bin/pip -q install telethon==1.44.0 python-socks'
             echo '      /opt/mtproxy-venv/bin/python /opt/mtproxy_probe.py > /tmp/result.txt 2>&1'
             echo '      rc=$?'
             echo "      echo '===MTPROXY_PROBE_BEGIN===' > /dev/ttyS0"
