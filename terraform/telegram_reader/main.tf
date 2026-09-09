@@ -6,7 +6,7 @@ provider "yandex" {
 }
 
 locals {
-  labels = { project = "telegram-news-reader", managed_by = "terraform" }
+  labels         = { project = "telegram-news-reader", managed_by = "terraform" }
   create_runtime = var.runtime_enabled && var.image_url != null
 }
 
