@@ -23,6 +23,13 @@ mountpoint -q /state || mount /state
 chown 10001:10001 /state
 chmod 700 /state
 
+if ! command -v docker >/dev/null 2>&1; then
+  export DEBIAN_FRONTEND=noninteractive
+  apt-get update -y
+  apt-get install -y docker.io jq curl e2fsprogs ca-certificates
+fi
+systemctl enable --now docker
+
 cat >/opt/telegram-reader/Caddyfile <<'EOF'
 111-88-248-156.sslip.io {
   handle_path /setup* {
