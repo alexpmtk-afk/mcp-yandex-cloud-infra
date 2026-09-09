@@ -127,3 +127,5 @@ jobs:
           yc compute instance remove-metadata --name "$vm" --folder-id "$folder" --keys ssh-keys >/dev/null 2>&1 || true
           if [ -n "$SG_ID" ] && [ -n "$RULE_ID" ]; then yc vpc security-group update-rules --id "$SG_ID" --delete-rule-id "$RULE_ID" >/dev/null; fi
           rm -f "$RUNNER_TEMP/id_ed25519" "$RUNNER_TEMP/id_ed25519.pub" "$RUNNER_TEMP/yc-key.json"
+
+# trigger: mtproxy-probe-v1
