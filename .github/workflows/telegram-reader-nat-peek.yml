@@ -52,3 +52,5 @@ jobs:
       - name: Remove provider key
         if: always()
         run: rm -f "$RUNNER_TEMP/yc-key.json"
+
+# bounded read-only reinspection
