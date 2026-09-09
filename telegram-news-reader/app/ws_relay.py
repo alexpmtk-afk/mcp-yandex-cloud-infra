@@ -1,105 +1,81 @@
 from __future__ import annotations
 
 import asyncio
-from urllib.parse import quote
-
-import websockets
-
-
-TELEGRAM_DC_ROUTES = {
-    "149.154.175.50": "1",
-    "149.154.167.51": "2",
-    "149.154.175.100": "3",
-    "149.154.167.91": "4",
-    "91.108.56.130": "5",
-}
+import os
+import secrets
+from urllib.parse import urlparse
 
 
 class WebSocketRelayAdapter:
-    """Loopback HTTP CONNECT adapter backed by a Cloudflare WSS-to-TCP relay."""
+    """Manage the local MTProto proxy that tunnels through a Cloudflare Worker."""
 
-    def __init__(self, base_url: str, token: str, port: int = 18888) -> None:
-        self.base_url = base_url.rstrip("/")
+    def __init__(self, base_url: str, token: str = "", port: int = 18888) -> None:
+        self.base_url = base_url.strip()
         self.token = token
         self.port = port
-        self._server: asyncio.AbstractServer | None = None
+        self.secret = secrets.token_hex(16)
+        self._process: asyncio.subprocess.Process | None = None
+
+    @property
+    def worker_domain(self) -> str:
+        value = self.base_url
+        if "://" not in value:
+            value = f"https://{value}"
+        parsed = urlparse(value)
+        if not parsed.hostname:
+            raise RuntimeError("Invalid TELEGRAM_WS_RELAY_URL")
+        return parsed.hostname
+
+    def mtproxy_tuple(self) -> tuple[str, int, str]:
+        return ("127.0.0.1", self.port, self.secret)
 
     async def start(self) -> None:
-        if self._server is not None:
+        if self._process is not None and self._process.returncode is None:
             return
-        self._server = await asyncio.start_server(self._handle, "127.0.0.1", self.port)
+
+        binary = os.getenv("TELEGRAM_TG_WS_PROXY_BINARY", "/usr/local/bin/tg-ws-proxy")
+        self._process = await asyncio.create_subprocess_exec(
+            binary,
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(self.port),
+            "--secret",
+            self.secret,
+            "--cf-worker-domain",
+            self.worker_domain,
+            "--cf-priority",
+            "--quiet",
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await self._wait_until_ready()
 
     async def stop(self) -> None:
-        if self._server is None:
+        process = self._process
+        self._process = None
+        if process is None or process.returncode is not None:
             return
-        self._server.close()
-        await self._server.wait_closed()
-        self._server = None
-
-    def proxy_mapping(self) -> dict[str, object]:
-        return {
-            "proxy_type": "http",
-            "addr": "127.0.0.1",
-            "port": self.port,
-            "username": None,
-            "password": None,
-            "rdns": True,
-        }
-
-    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
-        ws = None
+        process.terminate()
         try:
-            head = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
-            first = head.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
-            parts = first.split()
-            if len(parts) < 2 or parts[0].upper() != "CONNECT":
-                return
-            target = parts[1]
-            host, sep, target_port = target.rpartition(":")
-            host = host.strip("[]")
-            route = TELEGRAM_DC_ROUTES.get(host)
-            if not sep or target_port != "443" or route is None:
-                writer.write(b"HTTP/1.1 403 Forbidden\r\n\r\n")
-                await writer.drain()
-                return
+            await asyncio.wait_for(process.wait(), timeout=3)
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
 
-            url = (
-                f"{self.base_url}/apiws?dst={quote(host, safe='')}"
-                f"&dc={route}&media=0&t={quote(self.token, safe='')}"
-            )
-            ws = await asyncio.wait_for(
-                websockets.connect(url, open_timeout=20, ping_interval=20), timeout=25
-            )
-            writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            await writer.drain()
-
-            async def tcp_to_ws() -> None:
-                while True:
-                    data = await reader.read(65536)
-                    if not data:
-                        return
-                    await ws.send(data)
-
-            async def ws_to_tcp() -> None:
-                async for data in ws:
-                    if isinstance(data, str):
-                        data = data.encode()
-                    writer.write(data)
-                    await writer.drain()
-
-            await asyncio.gather(tcp_to_ws(), ws_to_tcp())
-        except (asyncio.IncompleteReadError, asyncio.TimeoutError, ConnectionError):
-            pass
-        except Exception:
-            pass
-        finally:
-            if ws is not None:
-                try:
-                    await ws.close()
-                except Exception:
-                    pass
-            writer.close()
+    async def _wait_until_ready(self) -> None:
+        process = self._process
+        if process is None:
+            raise RuntimeError("Telegram relay process did not start")
+        for _ in range(50):
+            if process.returncode is not None:
+                raise RuntimeError("Telegram relay process exited during startup")
             try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", self.port)
+                writer.close()
                 await writer.wait_closed()
-            except Exception:
-                pass
+                return
+            except OSError:
+                await asyncio.sleep(0.1)
+        await self.stop()
+        raise RuntimeError("Telegram relay process did not become ready")
