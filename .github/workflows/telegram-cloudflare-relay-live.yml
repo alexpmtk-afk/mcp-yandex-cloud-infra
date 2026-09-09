@@ -102,7 +102,7 @@ jobs:
             echo 'runcmd:'
             echo '  - [bash, -lc, "python3 -m venv /opt/venv; /opt/venv/bin/pip -q install telethon==1.44.0 python-socks[asyncio] websockets==15.0.1; /opt/venv/bin/python /opt/probe.py >/tmp/result 2>&1 || true; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]'
           } > "$RUNNER_TEMP/cloud.yaml"
-          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet" --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
           echo "name=$name" >> "$GITHUB_OUTPUT"
           echo "folder=$folder" >> "$GITHUB_OUTPUT"
 
