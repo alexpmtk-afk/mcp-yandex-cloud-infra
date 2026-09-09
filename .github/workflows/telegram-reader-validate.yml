@@ -63,7 +63,7 @@ jobs:
           chmod 600 "$KEY_FILE"
           echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
       - name: Terraform format
-        run: terraform -chdir=terraform/telegram_reader fmt -check -recursive
+        run: terraform -chdir=terraform/telegram_reader fmt -check -diff -recursive
       - name: Terraform init
         env:
           YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
