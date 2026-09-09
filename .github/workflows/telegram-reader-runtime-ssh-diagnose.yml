@@ -74,7 +74,7 @@ jobs:
           for i in $(seq 1 18); do
             if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -i "$RUNNER_TEMP/id_ed25519" ubuntu@"$VM_IP" \
-              "sudo bash -lc 'echo ===CONTAINERS===; docker ps -a 2>/dev/null || true; echo ===SETUP_LOG===; docker logs telegram-reader-setup --tail 200 2>&1 || true; echo ===STATE===; ls -la /state 2>/dev/null || true; echo ===LOCAL_HEALTH===; curl -sS -i http://127.0.0.1:8081/healthz 2>/dev/null || true; echo ===LISTEN===; ss -ltnp 2>/dev/null || true'" \
+              "sudo bash -lc 'echo ===CONTAINERS===; docker ps -a 2>/dev/null || true; echo ===SETUP_LOG===; docker logs telegram-reader-setup --tail 120 2>&1 || true; echo ===SESSION_DC===; python3 -c \"import sqlite3; db=sqlite3.connect('/state/telegram_news.session'); print(db.execute('select dc_id, server_address, port from sessions').fetchall())\" 2>/dev/null || true; echo ===TG_TCP===; timeout 5 bash -c \"</dev/tcp/149.154.167.51/443\" && echo DC2_443=PASS || echo DC2_443=FAIL; timeout 5 bash -c \"</dev/tcp/149.154.167.91/443\" && echo DC4_443=PASS || echo DC4_443=FAIL; timeout 5 bash -c \"</dev/tcp/91.108.56.130/443\" && echo TG_ALT_443=PASS || echo TG_ALT_443=FAIL; echo ===TG_HTTPS===; curl -sS -I --max-time 10 https://api.telegram.org 2>&1 | head -20 || true; echo ===LOCAL_HEALTH===; curl -sS -i http://127.0.0.1:8081/healthz 2>/dev/null || true'" \
               > "$RUNNER_TEMP/runtime-diagnostic.txt"; then
               cat "$RUNNER_TEMP/runtime-diagnostic.txt"
               exit 0
