@@ -12,10 +12,6 @@ packages:
   - curl
   - e2fsprogs
 write_files:
-  - path: /opt/telegram-reader/allowed_chats.yaml
-    permissions: '0644'
-    content: |
-      allowed_chats: []
   - path: /opt/telegram-reader/Caddyfile
     permissions: '0644'
     content: |
@@ -49,7 +45,7 @@ write_files:
       }
 
       while true; do
-        if [ ! -f "$marker" ] || [ ! -f /state/telegram_news.session ]; then
+        if [ ! -f "$marker" ] || [ ! -f /state/telegram_news.session ] || [ ! -f /state/allowed_chats.yaml ]; then
           sleep 5
           continue
         fi
@@ -69,7 +65,7 @@ TELEGRAM_API_ID=$api_id
 TELEGRAM_API_HASH=$api_hash
 TELEGRAM_SESSION_PATH=/state/telegram_news
 TELEGRAM_DATABASE_PATH=/state/telegram.db
-TELEGRAM_WHITELIST_PATH=/app/config/allowed_chats.yaml
+TELEGRAM_WHITELIST_PATH=/state/allowed_chats.yaml
 READER_API_TOKEN=$api_token
 COLLECT_INTERVAL_SECONDS=60
 COLLECT_BOOTSTRAP_LIMIT=200
@@ -79,7 +75,6 @@ ENV
           -p 127.0.0.1:8080:8080 \
           --env-file /opt/telegram-reader/runtime.env \
           -v /state:/state \
-          -v /opt/telegram-reader/allowed_chats.yaml:/app/config/allowed_chats.yaml:ro \
           "$IMAGE"
         docker rm -f telegram-reader-setup >/dev/null 2>&1 || true
         exit 0
@@ -125,6 +120,7 @@ ENV
           -e SETUP_TOKEN_SHA256='${setup_token_sha256}' \
           -e TELEGRAM_CREDENTIALS_SECRET_ID='${credentials_secret_id}' \
           -e TELEGRAM_SESSION_PATH=/state/telegram_news \
+          -e TELEGRAM_WHITELIST_PATH=/state/allowed_chats.yaml \
           -e SETUP_COMPLETE_MARKER=/state/setup.complete \
           -v /state:/state \
           '${image_url}' \
