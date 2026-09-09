@@ -23,7 +23,10 @@ class TelegramReader:
         self.whitelist = whitelist or Whitelist(settings.whitelist_path)
         Path(settings.session_path).parent.mkdir(parents=True, exist_ok=True)
         self.client = TelegramClient(
-            str(settings.session_path), settings.api_id, settings.api_hash
+            str(settings.session_path),
+            settings.api_id,
+            settings.api_hash,
+            proxy=settings.telethon_proxy(),
         )
 
     async def connect(self, *, interactive_login: bool = False) -> None:
