@@ -1,0 +1,15 @@
+name: Codex Quota Router v0.3
+
+on:
+  push:
+    branches:
+      - tooling/codex-quota-router-v0.1
+    paths:
+      - 'tools/codex-quota-router/**'
+      - '.github/workflows/tooling-codex-quota-router-v0.1.yml'
+      - '.github/workflows/tooling-codex-quota-router-v0.3-pr.yml'
+  workflow_dispatch:
+
+jobs:
+  verify:
+    uses: ./.github/workflows/tooling-codex-quota-router-v0.3-pr.yml
