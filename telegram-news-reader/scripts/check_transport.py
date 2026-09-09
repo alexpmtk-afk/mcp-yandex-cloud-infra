@@ -6,12 +6,11 @@ from app.runtime import build_runtime
 
 
 async def main() -> None:
-    runtime = build_runtime()
-    reader = runtime.reader
+    settings, _whitelist, reader, _storage = build_runtime()
     try:
         await reader.client.connect()
         authorized = bool(await reader.client.is_user_authorized())
-        transport = reader.settings.proxy_type or "direct"
+        transport = settings.proxy_type or "direct"
         print(f"TRANSPORT=PASS MODE={transport} AUTHORIZED={str(authorized).upper()}")
     finally:
         await reader.client.disconnect()
