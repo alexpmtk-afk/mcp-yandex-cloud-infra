@@ -1,0 +1,33 @@
+name: BIRZHA self-hosted runner diagnostic
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-runner-diagnostic.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
+    timeout-minutes: 10
+    steps:
+      - name: Runner identity
+        shell: cmd
+        run: |
+          echo BIRZHA_RUNNER_PASS
+          whoami
+      - name: Yandex CLI availability
+        shell: cmd
+        run: |
+          where yc
+          yc --version
+      - name: Yandex authentication check
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $token = & yc iam create-token
+          if ([string]::IsNullOrWhiteSpace($token)) { throw 'Yandex authentication failed' }
+          Write-Output 'YANDEX_AUTH_PASS'
