@@ -25,7 +25,6 @@ class Settings:
     ws_relay_port: int = 18888
 
     def telethon_proxy(self) -> dict[str, object] | None:
-        """Return a Telethon-compatible generic proxy mapping."""
         if self.proxy_type is None:
             return None
         return {
@@ -52,6 +51,10 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
 
     proxy_type, proxy_host, proxy_port, proxy_username, proxy_password = _load_proxy()
     ws_relay_url, ws_relay_token, ws_relay_port = _load_ws_relay()
+    if proxy_type == "ws":
+        ws_relay_url = ws_relay_url or proxy_host
+        ws_relay_port = proxy_port or ws_relay_port
+        proxy_type = proxy_host = proxy_port = proxy_username = proxy_password = None
 
     return Settings(
         api_id=api_id,
@@ -59,9 +62,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         phone=phone,
         session_path=Path(os.getenv("TELEGRAM_SESSION_PATH", "data/telegram_news")),
         database_path=Path(os.getenv("TELEGRAM_DATABASE_PATH", "data/telegram.db")),
-        whitelist_path=Path(
-            os.getenv("TELEGRAM_WHITELIST_PATH", "config/allowed_chats.yaml")
-        ),
+        whitelist_path=Path(os.getenv("TELEGRAM_WHITELIST_PATH", "config/allowed_chats.yaml")),
         proxy_type=proxy_type,
         proxy_host=proxy_host,
         proxy_port=proxy_port,
@@ -79,13 +80,11 @@ def _load_proxy() -> tuple[str | None, str | None, int | None, str | None, str |
     proxy_port_raw = os.getenv("TELEGRAM_PROXY_PORT", "").strip()
     proxy_username = os.getenv("TELEGRAM_PROXY_USERNAME", "").strip() or None
     proxy_password = os.getenv("TELEGRAM_PROXY_PASSWORD", "").strip() or None
-
     configured = any([proxy_type, proxy_host, proxy_port_raw, proxy_username, proxy_password])
     if not configured:
         return None, None, None, None, None
-
-    if proxy_type not in {"socks5", "http"}:
-        raise RuntimeError("TELEGRAM_PROXY_TYPE supports 'socks5' or 'http'")
+    if proxy_type not in {"socks5", "http", "ws"}:
+        raise RuntimeError("TELEGRAM_PROXY_TYPE supports 'socks5', 'http' or 'ws'")
     if not proxy_host or not proxy_port_raw:
         raise RuntimeError("Proxy requires TELEGRAM_PROXY_HOST and TELEGRAM_PROXY_PORT")
     try:
@@ -94,10 +93,8 @@ def _load_proxy() -> tuple[str | None, str | None, int | None, str | None, str |
         raise RuntimeError("TELEGRAM_PROXY_PORT must be an integer") from exc
     if not 1 <= proxy_port <= 65535:
         raise RuntimeError("TELEGRAM_PROXY_PORT must be between 1 and 65535")
-    if bool(proxy_username) != bool(proxy_password):
-        raise RuntimeError(
-            "TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD must be set together"
-        )
+    if proxy_type != "ws" and bool(proxy_username) != bool(proxy_password):
+        raise RuntimeError("TELEGRAM_PROXY_USERNAME and TELEGRAM_PROXY_PASSWORD must be set together")
     return proxy_type, proxy_host, proxy_port, proxy_username, proxy_password
 
 
@@ -111,10 +108,4 @@ def _load_ws_relay() -> tuple[str | None, str | None, int]:
         raise RuntimeError("TELEGRAM_WS_RELAY_LOCAL_PORT must be an integer") from exc
     if not 1 <= port <= 65535:
         raise RuntimeError("TELEGRAM_WS_RELAY_LOCAL_PORT must be between 1 and 65535")
-    if url and not (
-        url.startswith("wss://")
-        or url.startswith("https://")
-        or "." in url
-    ):
-        raise RuntimeError("TELEGRAM_WS_RELAY_URL must identify a Cloudflare Worker domain")
     return url, token, port
