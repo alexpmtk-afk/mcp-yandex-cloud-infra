@@ -4,35 +4,20 @@ write_files:
     permissions: '0755'
     content: |
       #!/usr/bin/env bash
-      exec >/dev/ttyS0 2>&1
-      echo NAT_TEST_BEGIN
+      generic=FAIL
+      telegram=FAIL
 
-      if curl -fsS --max-time 10 https://api.ipify.org >/dev/null; then
-        echo GENERIC_HTTPS=PASS
-      else
-        echo GENERIC_HTTPS=FAIL
+      if curl -fsS --max-time 8 https://api.ipify.org >/dev/null 2>&1; then
+        generic=PASS
       fi
 
-      if curl -sS -I --max-time 10 https://api.telegram.org >/dev/null; then
-        echo TG_HTTPS=PASS
-      else
-        echo TG_HTTPS=FAIL
+      if timeout 8 bash -c 'exec 3<>/dev/tcp/149.154.167.51/443' >/dev/null 2>&1; then
+        telegram=PASS
       fi
 
-      tcp_test() {
-        label="$1"; host="$2"; port="$3"
-        if timeout 6 bash -c "exec 3<>/dev/tcp/$host/$port" 2>/dev/null; then
-          echo "$label=PASS"
-        else
-          echo "$label=FAIL"
-        fi
-      }
-
-      tcp_test TG_DC2_443 149.154.167.51 443
-      tcp_test TG_DC2_80 149.154.167.51 80
-      tcp_test TG_DC2_5222 149.154.167.51 5222
-      tcp_test TG_DC4_443 149.154.167.91 443
-      echo NAT_TEST_DONE
+      result="NAT_RESULT GENERIC_HTTPS=$generic TG_DC2_443=$telegram NAT_TEST_DONE"
+      printf '%s\n' "$result" >/dev/console
+      printf '<6>%s\n' "$result" >/dev/kmsg 2>/dev/null || true
 
 runcmd:
   - [bash, -lc, '/usr/local/bin/telegram-nat-probe.sh || true']
