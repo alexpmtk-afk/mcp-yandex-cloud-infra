@@ -6,6 +6,7 @@ on:
       - feature/telegram-news-reader
     paths:
       - ".github/workflows/telegram-reader-runtime-repair.yml"
+      - "terraform/telegram_reader/scripts/repair-runtime.sh"
 
 permissions:
   contents: read
