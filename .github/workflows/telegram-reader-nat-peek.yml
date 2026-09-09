@@ -1,0 +1,54 @@
+name: Inspect Telegram NAT Probe
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-nat-peek.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-nat-peek || true
+          yc config set service-account-key "$key"
+      - name: Inspect probe without changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          name='telegram-nat-egress-probe'
+          yc compute instance get --name "$name" --folder-id "$folder" --format json | jq '{id,name,status,network_interfaces}'
+          timeout 20s yc compute instance get-serial-port-output --name "$name" --folder-id "$folder" --port 1 > "$RUNNER_TEMP/serial.txt" || true
+          echo '===PROBE_MARKERS==='
+          grep -E 'NAT_TEST_|GENERIC_HTTPS=|TG_' "$RUNNER_TEMP/serial.txt" | tail -30 || true
+          echo '===CLOUD_INIT_MARKERS==='
+          grep -E 'cloud-init|Cloud-init|Traceback|ERROR|FAILED' "$RUNNER_TEMP/serial.txt" | tail -30 || true
+      - name: Remove provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
