@@ -90,6 +90,70 @@ jobs:
           } > "$RUNNER_TEMP/runtime-diagnostic.txt"
           cat "$RUNNER_TEMP/runtime-diagnostic.txt"
 
+      - name: Probe MTProto through verified MTProxy nodes
+        shell: bash
+        env:
+          VM_IP: ${{ steps.access.outputs.ip }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$RUNNER_TEMP/id_ed25519")
+          cat > "$RUNNER_TEMP/mtproxy_probe.py" <<'PY'
+          import asyncio, urllib.parse, urllib.request
+          from telethon import TelegramClient, connection
+          from telethon.sessions import MemorySession
+
+          URL='https://raw.githubusercontent.com/aviamastersgh/mtproto-free-russia/main/verified_proxies.txt'
+          raw=urllib.request.urlopen(URL, timeout=15).read().decode()
+          proxies=[]
+          for line in raw.splitlines():
+              line=line.strip()
+              if not line.startswith('tg://proxy?'):
+                  continue
+              q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
+              try:
+                  proxies.append((q['server'][0], int(q['port'][0]), q['secret'][0]))
+              except Exception:
+                  pass
+              if len(proxies) >= 20:
+                  break
+
+          async def probe(i, host, port, secret):
+              client=TelegramClient(
+                  MemorySession(), 1, '0'*32,
+                  connection=connection.ConnectionTcpMTProxyRandomizedIntermediate,
+                  proxy=(host, port, secret),
+                  connection_retries=1,
+                  retry_delay=0,
+                  timeout=8,
+              )
+              try:
+                  ok=await asyncio.wait_for(client.connect(), timeout=12)
+                  if ok and client.is_connected():
+                      print(f'PROXY_{i}=PASS {host}:{port}')
+                      return True
+              except Exception as e:
+                  print(f'PROXY_{i}=FAIL {host}:{port} {type(e).__name__}')
+              finally:
+                  try:
+                      await client.disconnect()
+                  except Exception:
+                      pass
+              return False
+
+          async def main():
+              print(f'PROXIES_LOADED={len(proxies)}')
+              for i, proxy in enumerate(proxies, 1):
+                  if await probe(i, *proxy):
+                      print('MTPROXY_GATE=PASS')
+                      return
+              print('MTPROXY_GATE=FAIL')
+              raise SystemExit(1)
+
+          asyncio.run(main())
+          PY
+          scp "${ssh_opts[@]}" "$RUNNER_TEMP/mtproxy_probe.py" ubuntu@"$VM_IP":/tmp/mtproxy_probe.py
+          ssh "${ssh_opts[@]}" ubuntu@"$VM_IP" "sudo apt-get update -qq && sudo apt-get install -y -qq python3-venv >/dev/null && rm -rf /tmp/mtproxy-venv && python3 -m venv /tmp/mtproxy-venv && /tmp/mtproxy-venv/bin/pip -q install telethon==1.44.0 && /tmp/mtproxy-venv/bin/python /tmp/mtproxy_probe.py"
+
       - name: Upload diagnostic
         if: always()
         uses: actions/upload-artifact@v4
