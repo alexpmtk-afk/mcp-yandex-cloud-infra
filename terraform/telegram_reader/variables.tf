@@ -51,6 +51,12 @@ variable "image_url" {
   nullable = true
 }
 
+variable "setup_token_sha256" {
+  description = "SHA-256 of the temporary one-time setup token; plaintext token is never stored in Git"
+  type        = string
+  default     = "5de631bb5e3aab9d545f725c55e752e9d9b83cc02f3c54f518b6a47f3f18efda"
+}
+
 variable "vm_cores" {
   type    = number
   default = 2

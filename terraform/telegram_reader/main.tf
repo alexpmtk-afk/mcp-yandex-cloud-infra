@@ -72,7 +72,7 @@ resource "yandex_resourcemanager_folder_iam_member" "runtime_registry_pull" {
 resource "yandex_lockbox_secret" "telegram_credentials" {
   folder_id           = yandex_resourcemanager_folder.this.id
   name                = "telegram-reader-credentials"
-  description         = "Populate manually with api_id, api_hash and phone; values are never stored in Git"
+  description         = "Telegram API credentials written only by the one-time setup flow"
   deletion_protection = true
   labels              = local.labels
 }
@@ -101,6 +101,14 @@ resource "yandex_lockbox_secret_version" "reader_auth" {
 resource "yandex_lockbox_secret_iam_member" "runtime_credentials" {
   secret_id   = yandex_lockbox_secret.telegram_credentials.id
   role        = "lockbox.payloadViewer"
+  member      = "serviceAccount:${yandex_iam_service_account.runtime.id}"
+  sleep_after = 5
+}
+
+# Temporary, least-scoped bootstrap permission. Remove after Telegram setup is complete.
+resource "yandex_lockbox_secret_iam_member" "runtime_credentials_setup_editor" {
+  secret_id   = yandex_lockbox_secret.telegram_credentials.id
+  role        = "lockbox.editor"
   member      = "serviceAccount:${yandex_iam_service_account.runtime.id}"
   sleep_after = 5
 }

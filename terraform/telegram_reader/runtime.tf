@@ -20,7 +20,7 @@ resource "yandex_vpc_security_group" "runtime" {
 
   ingress {
     protocol       = "TCP"
-    description    = "HTTPS for API/MCP"
+    description    = "HTTPS for API/MCP and one-time setup"
     v4_cidr_blocks = ["0.0.0.0/0"]
     port           = 443
   }
@@ -104,6 +104,7 @@ resource "yandex_compute_instance" "runtime" {
       auth_secret_id        = yandex_lockbox_secret.reader_auth.id
       image_url             = var.image_url
       public_ip             = yandex_vpc_address.public[0].external_ipv4_address[0].address
+      setup_token_sha256    = var.setup_token_sha256
     })
   }
 
@@ -113,6 +114,7 @@ resource "yandex_compute_instance" "runtime" {
 
   depends_on = [
     yandex_lockbox_secret_iam_member.runtime_credentials,
+    yandex_lockbox_secret_iam_member.runtime_credentials_setup_editor,
     yandex_lockbox_secret_iam_member.runtime_auth,
     yandex_resourcemanager_folder_iam_member.runtime_registry_pull,
     yandex_resourcemanager_folder_iam_member.ci_compute_admin,
