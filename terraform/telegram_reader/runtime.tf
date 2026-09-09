@@ -53,6 +53,10 @@ resource "yandex_compute_disk" "state" {
   zone      = var.yc_zone
   size      = var.state_disk_size_gb
   labels    = local.labels
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "yandex_compute_instance" "runtime" {
@@ -64,7 +68,6 @@ resource "yandex_compute_instance" "runtime" {
   platform_id               = "standard-v3"
   service_account_id        = yandex_iam_service_account.runtime.id
   allow_stopping_for_update = true
-  deletion_protection       = true
 
   resources {
     cores         = var.vm_cores
@@ -100,6 +103,10 @@ resource "yandex_compute_instance" "runtime" {
       image_url             = var.image_url
       public_ip             = yandex_vpc_address.public[0].external_ipv4_address[0].address
     })
+  }
+
+  lifecycle {
+    prevent_destroy = true
   }
 
   depends_on = [
