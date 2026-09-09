@@ -98,6 +98,14 @@ resource "yandex_lockbox_secret_version" "reader_auth" {
   secret_id = yandex_lockbox_secret.reader_auth.id
 }
 
+resource "yandex_lockbox_secret" "relay" {
+  folder_id           = yandex_resourcemanager_folder.this.id
+  name                = "telegram-reader-relay"
+  description         = "Populate manually with proxy_type, proxy_host, proxy_port and optional username/password; values are never stored in Terraform state or Git"
+  deletion_protection = true
+  labels              = local.labels
+}
+
 resource "yandex_lockbox_secret_iam_member" "runtime_credentials" {
   secret_id   = yandex_lockbox_secret.telegram_credentials.id
   role        = "lockbox.payloadViewer"
@@ -115,6 +123,13 @@ resource "yandex_lockbox_secret_iam_member" "runtime_credentials_setup_editor" {
 
 resource "yandex_lockbox_secret_iam_member" "runtime_auth" {
   secret_id   = yandex_lockbox_secret.reader_auth.id
+  role        = "lockbox.payloadViewer"
+  member      = "serviceAccount:${yandex_iam_service_account.runtime.id}"
+  sleep_after = 5
+}
+
+resource "yandex_lockbox_secret_iam_member" "runtime_relay" {
+  secret_id   = yandex_lockbox_secret.relay.id
   role        = "lockbox.payloadViewer"
   member      = "serviceAccount:${yandex_iam_service_account.runtime.id}"
   sleep_after = 5
