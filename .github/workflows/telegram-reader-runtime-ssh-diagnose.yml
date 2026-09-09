@@ -55,20 +55,17 @@ jobs:
           ip="$(jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address' "$RUNNER_TEMP/vm-full.json")"
           sg="$(jq -r '.network_interfaces[0].security_group_ids[0]' "$RUNNER_TEMP/vm-full.json")"
           test -n "$ip"; test -n "$sg"
-
           yc compute instance add-metadata --name "$vm" --folder-id "$folder" \
             --metadata "ssh-keys=ubuntu:${pub}" >/dev/null
-
           yc vpc security-group update-rules --id "$sg" \
             --add-rule "description=ephemeral-runtime-debug,direction=ingress,port=22,protocol=tcp,v4-cidrs=[$runner_ip/32]" >/dev/null
-
           rule_id="$(yc vpc security-group get --id "$sg" --format json | jq -r '.rules[] | select(.description=="ephemeral-runtime-debug") | .id' | tail -1)"
           test -n "$rule_id"
           echo "ip=$ip" >> "$GITHUB_OUTPUT"
           echo "sg=$sg" >> "$GITHUB_OUTPUT"
           echo "rule_id=$rule_id" >> "$GITHUB_OUTPUT"
 
-      - name: Collect bootstrap diagnostics
+      - name: Collect setup diagnostics
         shell: bash
         env:
           VM_IP: ${{ steps.access.outputs.ip }}
@@ -77,7 +74,7 @@ jobs:
           for i in $(seq 1 18); do
             if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
               -i "$RUNNER_TEMP/id_ed25519" ubuntu@"$VM_IP" \
-              "sudo bash -lc 'echo ===BOOTSTRAP===; cat /var/log/telegram-reader-bootstrap.log 2>/dev/null || true; echo ===DEVICES===; ls -la /dev/disk/by-id 2>/dev/null || true; echo ===STATE===; ls -la /state /opt/telegram-reader 2>/dev/null || true; echo ===DOCKER===; systemctl status docker --no-pager 2>/dev/null || true; docker ps -a 2>/dev/null || true; echo ===CLOUDINIT===; cloud-init status --long 2>/dev/null || true; echo ===LISTEN===; ss -ltnp 2>/dev/null || true'" \
+              "sudo bash -lc 'echo ===CONTAINERS===; docker ps -a 2>/dev/null || true; echo ===SETUP_LOG===; docker logs telegram-reader-setup --tail 200 2>&1 || true; echo ===STATE===; ls -la /state 2>/dev/null || true; echo ===LOCAL_HEALTH===; curl -sS -i http://127.0.0.1:8081/healthz 2>/dev/null || true; echo ===LISTEN===; ss -ltnp 2>/dev/null || true'" \
               > "$RUNNER_TEMP/runtime-diagnostic.txt"; then
               cat "$RUNNER_TEMP/runtime-diagnostic.txt"
               exit 0
