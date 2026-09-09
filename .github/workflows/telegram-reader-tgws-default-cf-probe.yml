@@ -45,24 +45,22 @@ jobs:
           #!/usr/bin/env bash
           set -uo pipefail
           apt-get update -qq
-          apt-get install -y -qq curl jq ca-certificates >/dev/null
-          release="$(curl -fsSL https://api.github.com/repos/valnesfjord/tg-ws-proxy-rs/releases/latest)"
-          tag="$(printf '%s' "$release" | jq -r .tag_name)"
-          url="$(printf '%s' "$release" | jq -r '.assets[] | select(.name|test("x86_64.*linux|linux.*x86_64|x86_64-unknown-linux-musl";"i")) | select(.name|endswith(".tar.gz")) | .browser_download_url' | head -1)"
-          echo "RELEASE_TAG=$tag"
-          if [ -z "$url" ] || [ "$url" = null ]; then
-            echo 'TGWS_BINARY=ASSET_NOT_FOUND'
-            printf '%s' "$release" | jq -r '.assets[].name' | head -50
-            exit 20
-          fi
+          apt-get install -y -qq curl ca-certificates >/dev/null
+          url='https://github.com/valnesfjord/tg-ws-proxy-rs/releases/download/v2.3.3/tg-ws-proxy-x86_64-unknown-linux-musl.tar.gz'
+          expected='4174b8c10efc83d2a1122d472bf13e78e5296b0462783a1eda832ee02b79b444'
+          echo 'RELEASE_TAG=v2.3.3'
           curl -fL --retry 2 -o /tmp/tgws.tar.gz "$url"
+          actual="$(sha256sum /tmp/tgws.tar.gz | awk '{print $1}')"
+          echo "TGWS_SHA256=$actual"
+          if [ "$actual" != "$expected" ]; then echo 'TGWS_BINARY=SHA256_MISMATCH'; exit 21; fi
           mkdir -p /tmp/tgws
           tar -xzf /tmp/tgws.tar.gz -C /tmp/tgws
           bin="$(find /tmp/tgws -type f -name 'tg-ws-proxy*' ! -name '*.sha*' | head -1)"
+          if [ -z "$bin" ]; then echo 'TGWS_BINARY=NOT_FOUND_IN_ARCHIVE'; find /tmp/tgws -maxdepth 2 -type f -print; exit 22; fi
           chmod +x "$bin"
           "$bin" --version || true
           echo '===TGWS_CHECK_START==='
-          timeout 120 "$bin" --default-domains --cf-priority --check --verbose
+          timeout 150 "$bin" --default-domains --cf-priority --check --verbose
           rc=$?
           echo "TGWS_CHECK_RC=$rc"
           echo '===TGWS_CHECK_END==='
