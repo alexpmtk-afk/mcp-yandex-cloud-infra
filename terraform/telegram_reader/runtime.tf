@@ -16,7 +16,7 @@ resource "yandex_vpc_security_group" "runtime" {
   count      = local.create_runtime ? 1 : 0
   folder_id  = yandex_resourcemanager_folder.this.id
   name       = "telegram-reader-runtime"
-  network_id = yandex_vpc_network.this.id
+  network_id = var.shared_network_id
 
   ingress {
     protocol       = "TCP"
