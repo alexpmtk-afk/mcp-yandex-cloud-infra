@@ -26,25 +26,25 @@ jobs:
           from telethon import TelegramClient, connection
           from telethon.sessions import MemorySession
 
-          URL='https://raw.githubusercontent.com/aviamastersgh/mtproto-free-russia/main/verified_proxies.txt'
+          URL='https://raw.githubusercontent.com/SoliSpirit/mtproto/main/all_proxies.txt'
           raw=urllib.request.urlopen(URL, timeout=20).read().decode()
           proxies=[]
           for line in raw.splitlines():
               line=line.strip()
-              if not line.startswith('tg://proxy?'):
+              if not (line.startswith('tg://proxy?') or line.startswith('https://t.me/proxy?')):
                   continue
               q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
               try:
                   host=q['server'][0].rstrip('.')
                   port=int(q['port'][0])
-                  secret=q['secret'][0]
+                  secret=urllib.parse.unquote(q['secret'][0])
                   bytes.fromhex(secret)
                   if port != 443 or not secret.lower().startswith('ee'):
                       continue
                   proxies.append({'host':host,'port':port,'secret':secret})
               except Exception:
                   continue
-              if len(proxies)>=60:
+              if len(proxies)>=80:
                   break
 
           print(f'FAKETLS443_SOURCE_CANDIDATES={len(proxies)}')
