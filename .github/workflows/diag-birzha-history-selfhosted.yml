@@ -21,12 +21,12 @@ jobs:
     timeout-minutes: 20
     steps:
       - name: Prepare Python dependencies
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           py -3.13 -m pip install --disable-pip-version-check --user "mcp==2.1.1" "yandexcloud==0.406.0"
 
       - name: Write ephemeral Yandex key
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
         run: |
@@ -36,7 +36,7 @@ jobs:
           "YC_KEY_FILE=$keyPath" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
 
       - name: Probe MCP history dependencies
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           @'
           import asyncio, json, os
@@ -82,7 +82,7 @@ jobs:
           py -3.13 "$env:RUNNER_TEMP\probe_history.py"
 
       - name: Probe raw MOEX calendar endpoint
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           $url = 'https://iss.moex.com/iss/history/engines/stock/markets/shares/boards/TQBR/securities/SBER.json?iss.meta=off&iss.only=history,history.cursor&history.columns=TRADEDATE&from=2026-09-01&till=2026-09-05'
           $r = Invoke-RestMethod -Uri $url -TimeoutSec 30
@@ -91,6 +91,6 @@ jobs:
 
       - name: Cleanup
         if: always()
-        shell: powershell
+        shell: powershell -NoProfile -ExecutionPolicy Bypass -Command "& '{0}'"
         run: |
           Remove-Item -Force -ErrorAction SilentlyContinue "$env:RUNNER_TEMP\yc-key.json","$env:RUNNER_TEMP\probe_history.py"
