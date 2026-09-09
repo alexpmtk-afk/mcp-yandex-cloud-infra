@@ -1,0 +1,133 @@
+name: Telegram Render Relay Live Probe
+
+on:
+  push:
+    branches: [diagnostic/telegram-render-relay]
+    paths: [.github/workflows/telegram-render-relay-live.yml]
+  workflow_dispatch:
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    steps:
+      - name: YC auth
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          "$RUNNER_TEMP/yc/yc" config profile create render-relay || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
+
+      - name: Create disposable Yandex VM
+        id: vm
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(echo "$prod" | jq -r .zone_id)"
+          subnet="$(echo "$prod" | jq -r '.network_interfaces[0].subnet_id')"
+          name="render-relay-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import asyncio
+          import websockets
+          from telethon import TelegramClient
+          from telethon.sessions import MemorySession
+
+          WS_URL='wss://telegram-relay-free-2.onrender.com/telegram?token=test-only-token'
+
+          async def pipe_tcp_to_ws(reader, ws):
+              try:
+                  while True:
+                      d=await reader.read(65536)
+                      if not d: break
+                      await ws.send(d)
+              except Exception:
+                  pass
+
+          async def pipe_ws_to_tcp(ws, writer):
+              try:
+                  async for d in ws:
+                      if isinstance(d, str): d=d.encode()
+                      writer.write(d); await writer.drain()
+              except Exception:
+                  pass
+
+          async def handle(reader, writer):
+              try:
+                  head=await asyncio.wait_for(reader.readuntil(b'\r\n\r\n'),5)
+                  if not head.startswith(b'CONNECT '):
+                      writer.close(); return
+                  ws=await asyncio.wait_for(websockets.connect(WS_URL, open_timeout=15, ping_interval=20),20)
+                  writer.write(b'HTTP/1.1 200 Connection Established\r\n\r\n'); await writer.drain()
+                  await asyncio.gather(pipe_tcp_to_ws(reader,ws),pipe_ws_to_tcp(ws,writer))
+              except Exception as e:
+                  print('ADAPTER_FAIL',type(e).__name__,str(e)[:120],flush=True)
+              finally:
+                  try: writer.close(); await writer.wait_closed()
+                  except: pass
+
+          async def main():
+              srv=await asyncio.start_server(handle,'127.0.0.1',18888)
+              proxy={'proxy_type':'http','addr':'127.0.0.1','port':18888,'rdns':True}
+              c=TelegramClient(MemorySession(),1,'0'*32,proxy=proxy,connection_retries=1,retry_delay=0,timeout=15)
+              try:
+                  await asyncio.wait_for(c.connect(),30)
+                  ok=c.is_connected()
+                  print('RENDER_TELETHON_GATE=' + ('PASS' if ok else 'FAIL'),flush=True)
+              except Exception as e:
+                  print('RENDER_TELETHON_GATE=FAIL',type(e).__name__,str(e)[:160],flush=True)
+              finally:
+                  try: await c.disconnect()
+                  except: pass
+                  srv.close(); await srv.wait_closed()
+          asyncio.run(main())
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/pi"
+          {
+            echo '#cloud-config'
+            echo 'package_update: true'
+            echo 'packages: [python3-venv]'
+            echo 'write_files:'
+            echo '  - path: /opt/probe.py'
+            echo "    permissions: '0644'"
+            echo '    content: |'
+            cat "$RUNNER_TEMP/pi"
+            echo 'runcmd:'
+            echo '  - [bash, -lc, "python3 -m venv /opt/venv; /opt/venv/bin/pip -q install telethon==1.44.0 python-socks[asyncio] websockets==15.0.1; /opt/venv/bin/python /opt/probe.py >/tmp/result 2>&1 || true; echo ===PROBE_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===PROBE_END=== >/dev/ttyS0"]'
+          } > "$RUNNER_TEMP/cloud.yaml"
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read result
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 100); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true
+            if grep -q '===PROBE_END===' "$RUNNER_TEMP/s"; then
+              sed -n '/===PROBE_BEGIN===/,/===PROBE_END===/p' "$RUNNER_TEMP/s"
+              grep -q 'RENDER_TELETHON_GATE=PASS' "$RUNNER_TEMP/s"
+              exit $?
+            fi
+            sleep 5
+          done
+          exit 1
+
+      - name: Destroy disposable VM
+        if: always()
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e
+          [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/key.json"
