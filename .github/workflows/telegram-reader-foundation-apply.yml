@@ -11,6 +11,7 @@ permissions:
   contents: read
 
 # Deliberately self-triggered: real cloud apply only when this workflow is reviewed and changed.
+# This run also converges least-scoped runtime prerequisite IAM while runtime_enabled remains false.
 concurrency:
   group: telegram-reader-foundation
   cancel-in-progress: false
