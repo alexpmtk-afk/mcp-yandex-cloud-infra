@@ -1,0 +1,115 @@
+name: Test Telegram Egress via Yandex NAT Gateway
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-nat-egress-test.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-reader-nat-egress-test
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          echo "TF_VAR_yc_service_account_key_file=$key" >> "$GITHUB_ENV"
+          yc config profile create telegram-nat-probe || true
+          yc config set service-account-key "$key"
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Validate isolated probe stack
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader_nat_test init -input=false
+          terraform -chdir=terraform/telegram_reader_nat_test fmt -check
+          terraform -chdir=terraform/telegram_reader_nat_test validate
+          terraform -chdir=terraform/telegram_reader_nat_test plan -input=false -no-color -out=probe.tfplan
+
+      - name: Create temporary NAT probe
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader_nat_test apply -input=false -no-color probe.tfplan
+
+      - name: Collect serial-port result
+        id: collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          probe_id="$(terraform -chdir=terraform/telegram_reader_nat_test output -raw probe_id)"
+          result="$RUNNER_TEMP/nat-probe.txt"
+          for attempt in $(seq 1 36); do
+            yc compute instance get-serial-port-output --id "$probe_id" --port 1 > "$result" 2>/dev/null || true
+            if grep -q 'NAT_TEST_DONE' "$result"; then
+              grep -E 'NAT_TEST_|GENERIC_HTTPS=|TG_' "$result" | tail -20
+              exit 0
+            fi
+            sleep 10
+          done
+          echo 'NAT probe did not finish' >&2
+          exit 1
+
+      - name: Upload NAT probe evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-nat-egress-evidence
+          path: ${{ runner.temp }}/nat-probe.txt
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Destroy temporary NAT probe
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          terraform -chdir=terraform/telegram_reader_nat_test destroy -auto-approve -input=false -no-color
+
+      - name: Classify result
+        if: steps.collect.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$RUNNER_TEMP/nat-probe.txt"
+          grep -q 'GENERIC_HTTPS=PASS' "$result" || { echo 'NAT_GENERIC_EGRESS=FAIL'; exit 2; }
+          if grep -Eq 'TG_DC2_443=PASS|TG_DC4_443=PASS' "$result"; then
+            echo 'TELEGRAM_NAT_EGRESS=PASS'
+          else
+            echo 'TELEGRAM_NAT_EGRESS=FAIL'
+            exit 3
+          fi
+
+      - name: Remove provider key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
