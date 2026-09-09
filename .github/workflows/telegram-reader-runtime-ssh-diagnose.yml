@@ -52,14 +52,12 @@ jobs:
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/id_ed25519"
           pub="$(cat "$RUNNER_TEMP/id_ed25519.pub")"
           yc compute instance get --name "$vm" --folder-id "$folder" --full --format json > "$RUNNER_TEMP/vm-full.json"
-          jq -r '.metadata["user-data"]' "$RUNNER_TEMP/vm-full.json" > "$RUNNER_TEMP/user-data.yaml"
           ip="$(jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address' "$RUNNER_TEMP/vm-full.json")"
           sg="$(jq -r '.network_interfaces[0].security_group_ids[0]' "$RUNNER_TEMP/vm-full.json")"
           test -n "$ip"; test -n "$sg"
 
-          yc compute instance update --name "$vm" --folder-id "$folder" \
-            --metadata-from-file user-data="$RUNNER_TEMP/user-data.yaml" \
-            --ssh-key "$pub" >/dev/null
+          yc compute instance add-metadata --name "$vm" --folder-id "$folder" \
+            --metadata "ssh-keys=ubuntu:${pub}" >/dev/null
 
           yc vpc security-group update-rules --id "$sg" \
             --add-rule "description=ephemeral-runtime-debug,direction=ingress,port=22,protocol=tcp,v4-cidrs=[$runner_ip/32]" >/dev/null
@@ -76,9 +74,9 @@ jobs:
           VM_IP: ${{ steps.access.outputs.ip }}
         run: |
           set -euo pipefail
-          for i in $(seq 1 12); do
+          for i in $(seq 1 18); do
             if ssh -o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null \
-              -i "$RUNNER_TEMP/id_ed25519" yc-user@"$VM_IP" \
+              -i "$RUNNER_TEMP/id_ed25519" ubuntu@"$VM_IP" \
               "sudo bash -lc 'echo ===BOOTSTRAP===; cat /var/log/telegram-reader-bootstrap.log 2>/dev/null || true; echo ===DEVICES===; ls -la /dev/disk/by-id 2>/dev/null || true; echo ===STATE===; ls -la /state /opt/telegram-reader 2>/dev/null || true; echo ===DOCKER===; systemctl status docker --no-pager 2>/dev/null || true; docker ps -a 2>/dev/null || true; echo ===CLOUDINIT===; cloud-init status --long 2>/dev/null || true; echo ===LISTEN===; ss -ltnp 2>/dev/null || true'" \
               > "$RUNNER_TEMP/runtime-diagnostic.txt"; then
               cat "$RUNNER_TEMP/runtime-diagnostic.txt"
@@ -108,10 +106,7 @@ jobs:
           set +e
           folder='b1gk4p83brasi8g811jv'
           vm='telegram-news-reader'
-          if [ -f "$RUNNER_TEMP/user-data.yaml" ]; then
-            yc compute instance update --name "$vm" --folder-id "$folder" \
-              --metadata-from-file user-data="$RUNNER_TEMP/user-data.yaml" >/dev/null
-          fi
+          yc compute instance remove-metadata --name "$vm" --folder-id "$folder" --keys ssh-keys >/dev/null 2>&1 || true
           if [ -n "$SG_ID" ] && [ -n "$RULE_ID" ]; then
             yc vpc security-group update-rules --id "$SG_ID" --delete-rule-id "$RULE_ID" >/dev/null
           fi
