@@ -18,7 +18,7 @@ jobs:
   probe:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -69,15 +69,16 @@ jobs:
           set -euo pipefail
           probe_id="$(terraform -chdir=terraform/telegram_reader_nat_test output -raw probe_id)"
           result="$RUNNER_TEMP/nat-probe.txt"
-          for attempt in $(seq 1 36); do
-            yc compute instance get-serial-port-output --id "$probe_id" --port 1 > "$result" 2>/dev/null || true
+          for attempt in $(seq 1 20); do
+            timeout 8s yc compute instance get-serial-port-output --id "$probe_id" --port 1 > "$result" 2>/dev/null || true
             if grep -q 'NAT_TEST_DONE' "$result"; then
               grep -E 'NAT_TEST_|GENERIC_HTTPS=|TG_' "$result" | tail -20
               exit 0
             fi
-            sleep 10
+            sleep 5
           done
           echo 'NAT probe did not finish' >&2
+          grep -E 'NAT_TEST_|GENERIC_HTTPS=|TG_|cloud-init|FAILED|ERROR' "$result" | tail -40 || true
           exit 1
 
       - name: Upload NAT probe evidence
