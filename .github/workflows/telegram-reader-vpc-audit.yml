@@ -1,0 +1,74 @@
+name: Audit Reusable VPC Networks
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-vpc-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=45 --tries=4 -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate read-only audit session
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create telegram-vpc-audit || true
+          yc config set service-account-key "$KEY_FILE"
+      - name: Inventory folders networks subnets and VM attachments
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          OUT="$RUNNER_TEMP/vpc-inventory.txt"
+          : > "$OUT"
+          printf 'CLOUD_ID=%s\n' "$CLOUD_ID" | tee -a "$OUT"
+          yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json > "$RUNNER_TEMP/folders.json"
+          jq -r '.[] | [.id,.name,.status] | @tsv' "$RUNNER_TEMP/folders.json" | while IFS=$'\t' read -r FOLDER_ID FOLDER_NAME FOLDER_STATUS; do
+            printf '\nFOLDER\t%s\t%s\t%s\n' "$FOLDER_ID" "$FOLDER_NAME" "$FOLDER_STATUS" | tee -a "$OUT"
+            yc vpc network list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/networks.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/networks.json"
+            jq -r '.[] | [.id,.name] | @tsv' "$RUNNER_TEMP/networks.json" | while IFS=$'\t' read -r NET_ID NET_NAME; do
+              printf 'NETWORK\t%s\t%s\n' "$NET_ID" "$NET_NAME" | tee -a "$OUT"
+            done
+            yc vpc subnet list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/subnets.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/subnets.json"
+            jq -r '.[] | [.id,.name,.network_id,.zone_id,((.v4_cidr_blocks // [])|join(","))] | @tsv' "$RUNNER_TEMP/subnets.json" | while IFS=$'\t' read -r SUB_ID SUB_NAME NET_ID ZONE CIDR; do
+              printf 'SUBNET\t%s\t%s\t%s\t%s\t%s\n' "$SUB_ID" "$SUB_NAME" "$NET_ID" "$ZONE" "$CIDR" | tee -a "$OUT"
+            done
+            yc compute instance list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/vms.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/vms.json"
+            jq -r '.[] | [.id,.name,.status,([.network_interfaces[]?.subnet_id] | join(","))] | @tsv' "$RUNNER_TEMP/vms.json" | while IFS=$'\t' read -r VM_ID VM_NAME VM_STATUS SUBNETS; do
+              printf 'VM\t%s\t%s\t%s\t%s\n' "$VM_ID" "$VM_NAME" "$VM_STATUS" "$SUBNETS" | tee -a "$OUT"
+            done
+          done
+          echo 'VPC_AUDIT=PASS'
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-vpc-inventory
+          path: ${{ runner.temp }}/vpc-inventory.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
