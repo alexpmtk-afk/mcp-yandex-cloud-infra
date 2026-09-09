@@ -27,6 +27,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
       - name: Authenticate read-only audit session
+        id: auth
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -35,40 +36,44 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // empty' "$KEY_FILE")"
+          test -n "$CI_SA_ID"
+          echo "ci_sa_id=$CI_SA_ID" >> "$GITHUB_OUTPUT"
           yc config profile create telegram-vpc-audit || true
           yc config set service-account-key "$KEY_FILE"
-      - name: Inventory folders networks subnets and VM attachments
+      - name: Audit CI access on shared network folder
+        shell: bash
+        env:
+          CI_SA_ID: ${{ steps.auth.outputs.ci_sa_id }}
+        run: |
+          set -euo pipefail
+          SOURCE_FOLDER=b1gnd0dqoq3ljod88i8t
+          MEMBER="serviceAccount:${CI_SA_ID}"
+          OUT="$RUNNER_TEMP/shared-vpc-ci-roles.txt"
+          yc resource-manager folder list-access-bindings --id "$SOURCE_FOLDER" --format json > "$RUNNER_TEMP/bindings.json"
+          printf 'SOURCE_FOLDER=%s\nCI_MEMBER=%s\n' "$SOURCE_FOLDER" "$MEMBER" > "$OUT"
+          jq -r --arg member "$MEMBER" '.[]? | select(.subject.id==$member or ((.subject.type // "") + ":" + (.subject.id // ""))==$member) | .role_id' "$RUNNER_TEMP/bindings.json" | sort -u | tee -a "$OUT"
+          echo 'SHARED_VPC_IAM_AUDIT=PASS'
+      - name: Inventory shared network and CIDRs
         shell: bash
         run: |
           set -euo pipefail
-          CLOUD_ID=b1gi4pr9msenirafh2c7
-          OUT="$RUNNER_TEMP/vpc-inventory.txt"
-          : > "$OUT"
-          printf 'CLOUD_ID=%s\n' "$CLOUD_ID" | tee -a "$OUT"
-          yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json > "$RUNNER_TEMP/folders.json"
-          jq -r '.[] | [.id,.name,.status] | @tsv' "$RUNNER_TEMP/folders.json" | while IFS=$'\t' read -r FOLDER_ID FOLDER_NAME FOLDER_STATUS; do
-            printf '\nFOLDER\t%s\t%s\t%s\n' "$FOLDER_ID" "$FOLDER_NAME" "$FOLDER_STATUS" | tee -a "$OUT"
-            yc vpc network list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/networks.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/networks.json"
-            jq -r '.[] | [.id,.name] | @tsv' "$RUNNER_TEMP/networks.json" | while IFS=$'\t' read -r NET_ID NET_NAME; do
-              printf 'NETWORK\t%s\t%s\n' "$NET_ID" "$NET_NAME" | tee -a "$OUT"
-            done
-            yc vpc subnet list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/subnets.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/subnets.json"
-            jq -r '.[] | [.id,.name,.network_id,.zone_id,((.v4_cidr_blocks // [])|join(","))] | @tsv' "$RUNNER_TEMP/subnets.json" | while IFS=$'\t' read -r SUB_ID SUB_NAME NET_ID ZONE CIDR; do
-              printf 'SUBNET\t%s\t%s\t%s\t%s\t%s\n' "$SUB_ID" "$SUB_NAME" "$NET_ID" "$ZONE" "$CIDR" | tee -a "$OUT"
-            done
-            yc compute instance list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/vms.json" 2>/dev/null || echo '[]' > "$RUNNER_TEMP/vms.json"
-            jq -r '.[] | [.id,.name,.status,([.network_interfaces[]?.subnet_id] | join(","))] | @tsv' "$RUNNER_TEMP/vms.json" | while IFS=$'\t' read -r VM_ID VM_NAME VM_STATUS SUBNETS; do
-              printf 'VM\t%s\t%s\t%s\t%s\n' "$VM_ID" "$VM_NAME" "$VM_STATUS" "$SUBNETS" | tee -a "$OUT"
-            done
-          done
+          SOURCE_FOLDER=b1gnd0dqoq3ljod88i8t
+          NETWORK_ID=enp3vuoau0hkv7hcb6mh
+          OUT="$RUNNER_TEMP/shared-vpc-inventory.txt"
+          printf 'SOURCE_FOLDER=%s\nNETWORK_ID=%s\n' "$SOURCE_FOLDER" "$NETWORK_ID" > "$OUT"
+          yc vpc network get --id "$NETWORK_ID" --format json | jq -r '[.id,.name,.folder_id] | @tsv' | tee -a "$OUT"
+          yc vpc subnet list --folder-id "$SOURCE_FOLDER" --format json | jq -r --arg network "$NETWORK_ID" '.[] | select(.network_id==$network) | [.id,.name,.zone_id,((.v4_cidr_blocks // [])|join(","))] | @tsv' | sort | tee -a "$OUT"
           echo 'VPC_AUDIT=PASS'
       - name: Upload inventory
         uses: actions/upload-artifact@v4
         with:
           name: telegram-reader-vpc-inventory
-          path: ${{ runner.temp }}/vpc-inventory.txt
+          path: |
+            ${{ runner.temp }}/shared-vpc-ci-roles.txt
+            ${{ runner.temp }}/shared-vpc-inventory.txt
           if-no-files-found: error
           retention-days: 7
       - name: Remove key
         if: always()
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/bindings.json"
