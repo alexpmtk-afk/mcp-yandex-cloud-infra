@@ -64,10 +64,10 @@ jobs:
           set -euo pipefail
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "IMAGE='$IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
-          test -f /opt/telegram-reader/runtime.env
-          test -f /state/telegram_news.session
-          test -f /state/allowed_chats.yaml
-          test -f /state/setup.complete
+          sudo test -f /opt/telegram-reader/runtime.env
+          sudo test -f /state/telegram_news.session
+          sudo test -f /state/allowed_chats.yaml
+          sudo test -f /state/setup.complete
           sudo mkdir -p /state/media /state/exports
           sudo chown -R 10001:10001 /state/media /state/exports
           echo STATE_PASS
