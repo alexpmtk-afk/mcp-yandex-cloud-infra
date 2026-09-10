@@ -26,13 +26,20 @@ jobs:
           curl -fsSL "$url" -o /tmp/sample.jpg
           file /tmp/sample.jpg
           test -s /tmp/sample.jpg
-          base64 /tmp/sample.jpg > telegram-news-reader/export/TELEGRAM_MEDIA_TEST.base64
+          python -m pip install -q pillow
+          python - <<'PY'
+          from PIL import Image
+          im=Image.open('/tmp/sample.jpg').convert('RGB')
+          im.thumbnail((500,500))
+          im.save('/tmp/preview.jpg', quality=70, optimize=True)
+          PY
+          base64 /tmp/preview.jpg > telegram-news-reader/export/TELEGRAM_MEDIA_PREVIEW.base64
       - name: Commit test payload
         shell: bash
         run: |
           set -euo pipefail
           git config user.name telegram-media-test
           git config user.email telegram-media-test@users.noreply.github.com
-          git add telegram-news-reader/export/TELEGRAM_MEDIA_TEST.base64
-          git commit -m "test: capture wrapped Telegram media payload"
+          git add telegram-news-reader/export/TELEGRAM_MEDIA_PREVIEW.base64
+          git commit -m "test: capture compact Telegram media preview"
           git push origin HEAD:main
