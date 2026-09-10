@@ -13,7 +13,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 15
+    timeout-minutes: 12
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -49,13 +49,8 @@ jobs:
           yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --add-rule "description=github-manager-deploy,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
           sleep 20
-          remote='set -e; image=cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:23491c937251f977f04f05bdc0f4c8dd2094c878; token=$(curl -sf -H Metadata-Flavor:Google 169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | jq -r .access_token); echo "$token" | sudo docker login --username iam --password-stdin cr.yandex >/dev/null; sudo docker pull "$image" >/dev/null; sudo grep -q "^MANAGE_TOKEN_SHA256=" /opt/telegram-reader/runtime.env || echo "MANAGE_TOKEN_SHA256=b33311a41482a4a1ccd84a293fdfc1c3097306249147e84f409920b915f07c2f" | sudo tee -a /opt/telegram-reader/runtime.env >/dev/null; sudo docker rm -f telegram-reader >/dev/null 2>&1 || true; sudo docker run -d --name telegram-reader --restart unless-stopped -p 127.0.0.1:8080:8080 --env-file /opt/telegram-reader/runtime.env -v /state:/state "$image" >/dev/null; ok=0; for i in $(seq 1 30); do if curl -fsS --max-time 5 http://127.0.0.1:8080/health >/tmp/tg-health 2>/dev/null; then ok=1; break; fi; sleep 3; done; test "$ok" = 1; cat /tmp/tg-health; jq -e ".status == \"ok\" and .telegram_authorized == true" /tmp/tg-health >/dev/null; curl -fsS --max-time 10 http://127.0.0.1:8080/manage | grep -q "Telegram Reader — управление чатами"; echo MANAGER_DEPLOY=PASS'
-          success=0
-          for attempt in $(seq 1 6); do
-            if ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=15 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote"; then success=1; break; fi
-            sleep 10
-          done
-          test "$success" = 1
+          remote='set -u; new=cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:23491c937251f977f04f05bdc0f4c8dd2094c878; old=cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:71e390786e285998ef2da9f2d8e6505e645d15e8; echo STEP=current; sudo docker ps --filter name=telegram-reader --format "{{.Image}} {{.Status}}" || true; echo STEP=login; token=$(curl -sf --max-time 10 -H Metadata-Flavor:Google 169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | jq -r .access_token) || exit 21; echo "$token" | timeout 30 sudo docker login --username iam --password-stdin cr.yandex >/dev/null || exit 22; echo STEP=pull; timeout 120 sudo docker pull "$new" >/dev/null || exit 23; echo STEP=pulled; sudo grep -q "^MANAGE_TOKEN_SHA256=" /opt/telegram-reader/runtime.env || echo "MANAGE_TOKEN_SHA256=b33311a41482a4a1ccd84a293fdfc1c3097306249147e84f409920b915f07c2f" | sudo tee -a /opt/telegram-reader/runtime.env >/dev/null; echo STEP=replace; sudo docker rm -f telegram-reader >/dev/null 2>&1 || true; sudo docker run -d --name telegram-reader --restart unless-stopped -p 127.0.0.1:8080:8080 --env-file /opt/telegram-reader/runtime.env -v /state:/state "$new" >/dev/null || exit 24; echo STEP=health; ok=0; for i in $(seq 1 24); do if curl -fsS --max-time 3 http://127.0.0.1:8080/health >/tmp/tg-health 2>/dev/null; then ok=1; break; fi; sleep 2; done; if [ "$ok" != 1 ]; then echo HEALTH_FAIL; sudo docker ps -a --filter name=telegram-reader --format "{{.Image}} {{.Status}}"; sudo docker logs --tail 80 telegram-reader 2>&1 || true; echo STEP=rollback; sudo docker rm -f telegram-reader >/dev/null 2>&1 || true; sudo docker run -d --name telegram-reader --restart unless-stopped -p 127.0.0.1:8080:8080 --env-file /opt/telegram-reader/runtime.env -v /state:/state "$old" >/dev/null || true; exit 25; fi; cat /tmp/tg-health; if ! jq -e ".status == \"ok\" and .telegram_authorized == true" /tmp/tg-health >/dev/null; then echo AUTH_FAIL; sudo docker logs --tail 80 telegram-reader 2>&1 || true; exit 26; fi; echo STEP=page; curl -fsS --max-time 10 http://127.0.0.1:8080/manage | grep -q "Telegram Reader — управление чатами" || exit 27; echo MANAGER_DEPLOY=PASS'
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote"
       - name: Cleanup
         if: always()
         shell: bash
