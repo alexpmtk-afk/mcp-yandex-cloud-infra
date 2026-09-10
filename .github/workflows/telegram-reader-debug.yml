@@ -1,0 +1,55 @@
+name: Debug Telegram Reader Setup
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  debug:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-reader-debug || true
+          yc config set service-account-key "$key"
+      - name: Capture setup container logs to serial
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/debug.sh" <<'SH'
+          #!/bin/bash
+          exec >/dev/ttyS0 2>&1
+          echo TG_SETUP_DEBUG_BEGIN
+          for i in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
+          sleep 15
+          docker ps -a --format 'CONTAINER {{.Names}} {{.Status}} {{.Image}}'
+          echo TG_SETUP_DOCKER_LOGS
+          docker logs --tail 200 telegram-reader-setup 2>&1 || true
+          echo TG_SETUP_DEBUG_END
+          SH
+          yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file startup-script="$RUNNER_TEMP/debug.sh"
+          yc compute instance restart telegram-news-reader --folder-id b1gk4p83brasi8g811jv
+          sleep 35
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/debug.sh"
