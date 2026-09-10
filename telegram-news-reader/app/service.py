@@ -11,6 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
+from app.admin_page import ADMIN_PAGE
 from app.collector import Collector
 from app.errors import AccessDenied, AuthorizationRequired
 from app.mcp_server import build_mcp
@@ -25,6 +26,8 @@ collector = Collector(reader, storage)
 mcp = build_mcp(whitelist, storage)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
+DIALOGS_TIMEOUT_SECONDS = 25
+
 
 async def _collector_loop() -> None:
     while True:
@@ -33,6 +36,33 @@ async def _collector_loop() -> None:
         except Exception as exc:
             print(f"collector_error={type(exc).__name__}")
         await asyncio.sleep(service_settings.collect_interval_seconds)
+
+
+async def _list_dialogs_resilient():
+    """Fetch dialogs with a hard timeout and one clean reconnect attempt."""
+    try:
+        return await asyncio.wait_for(reader.list_dialogs(), timeout=DIALOGS_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        print("telegram_dialogs_timeout=first_attempt")
+    except Exception as exc:
+        print(f"telegram_dialogs_error=first_attempt:{type(exc).__name__}")
+
+    try:
+        await asyncio.wait_for(reader.disconnect(), timeout=5)
+    except Exception:
+        pass
+
+    try:
+        await asyncio.wait_for(reader.connect(interactive_login=False), timeout=DIALOGS_TIMEOUT_SECONDS)
+        return await asyncio.wait_for(reader.list_dialogs(), timeout=DIALOGS_TIMEOUT_SECONDS)
+    except AuthorizationRequired:
+        raise HTTPException(503, "TELEGRAM_AUTHORIZATION_REQUIRED")
+    except asyncio.TimeoutError:
+        print("telegram_dialogs_timeout=reconnect_attempt")
+        raise HTTPException(504, "TELEGRAM_DIALOGS_TIMEOUT")
+    except Exception as exc:
+        print(f"telegram_dialogs_error=reconnect_attempt:{type(exc).__name__}")
+        raise HTTPException(503, f"TELEGRAM_UNAVAILABLE:{type(exc).__name__}")
 
 
 @asynccontextmanager
@@ -64,16 +94,26 @@ async def lifespan(app: FastAPI):
 app = FastAPI(title="Telegram News Reader", lifespan=lifespan)
 
 
+def _admin_token_ok(request: Request) -> bool:
+    supplied = request.headers.get("x-admin-token", "") or request.query_params.get("token", "")
+    if not supplied or not manage_token_sha256:
+        return False
+    digest = hashlib.sha256(supplied.encode("utf-8")).hexdigest()
+    return hmac.compare_digest(digest, manage_token_sha256)
+
+
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
     if request.url.path == "/health":
         return await call_next(request)
-    supplied = request.headers.get("authorization", "")
-    if request.url.path.startswith("/manage"):
-        query_token = request.query_params.get("token", "")
-        digest = hashlib.sha256(query_token.encode("utf-8")).hexdigest() if query_token else ""
-        if manage_token_sha256 and hmac.compare_digest(digest, manage_token_sha256):
+    if request.url.path == "/manage" or request.url.path.startswith("/api/admin/"):
+        if _admin_token_ok(request):
             return await call_next(request)
+        if request.url.path == "/manage":
+            # Allow the login shell to load without exposing any Telegram data.
+            return await call_next(request)
+        return JSONResponse({"detail": "UNAUTHORIZED"}, status_code=401)
+    supplied = request.headers.get("authorization", "")
     expected = f"Bearer {service_settings.api_token}"
     if not hmac.compare_digest(supplied, expected):
         return JSONResponse({"detail": "UNAUTHORIZED"}, status_code=401)
@@ -84,18 +124,49 @@ class ManageWhitelistPayload(BaseModel):
     chat_ids: list[int]
 
 
-MANAGE_PAGE = """<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Telegram Reader — каналы</title><style>body{font:16px system-ui;max-width:900px;margin:30px auto;padding:0 16px}input[type=search]{width:100%;padding:12px;margin:12px 0}button{padding:10px 16px;margin-right:8px}.row{padding:8px 0;border-bottom:1px solid #ddd}.muted{color:#666}.ok{color:green;font-weight:600}</style></head><body><h1>Каналы Telegram Reader</h1><p class=muted>Галочка — канал читается. Снимите галочку, чтобы исключить его. Добавленные позже в Telegram каналы появятся после «Обновить список».</p><input id=q type=search placeholder='Поиск по названию'><div><button onclick='save()'>Сохранить изменения</button><button onclick='load(false)'>Обновить список</button></div><p id=status></p><div id=list>Загрузка…</div><script>const token=new URLSearchParams(location.search).get('token')||'';let items=[];let selected=new Set();async function load(initial=true){if(initial)status.textContent='Загрузка…';let r=await fetch('/manage/dialogs?token='+encodeURIComponent(token));if(!r.ok){status.textContent='Ошибка загрузки: '+r.status;return}items=await r.json();selected=new Set(items.filter(x=>x.selected).map(x=>x.chat_id));render();if(initial)status.textContent='';}function render(){let f=document.getElementById('q').value.toLowerCase();list.innerHTML=items.filter(x=>(x.title||'').toLowerCase().includes(f)).map(x=>`<label class=row style='display:block'><input type=checkbox data-id='${x.chat_id}' ${selected.has(x.chat_id)?'checked':''}> ${esc(x.title)} <span class=muted>(${esc(x.type||'')})</span></label>`).join('');document.querySelectorAll('input[type=checkbox]').forEach(x=>x.onchange=()=>{let id=Number(x.dataset.id);x.checked?selected.add(id):selected.delete(id)});}function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}async function save(){status.textContent='Сохраняю…';let r=await fetch('/manage/whitelist?token='+encodeURIComponent(token),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_ids:[...selected]})});let j=await r.json();if(!r.ok){status.textContent='Ошибка: '+(j.detail||r.status);return}await load(false);status.innerHTML=`<span class=ok>Сохранено. Активных каналов: ${j.allowed_chats}</span>`;}q.oninput=render;load();</script></body></html>"""
-
-
 @app.get("/manage", response_class=HTMLResponse)
 async def manage_page():
-    return HTMLResponse(MANAGE_PAGE)
+    return HTMLResponse(ADMIN_PAGE)
 
 
-@app.get("/manage/dialogs")
-async def manage_dialogs():
+@app.get("/api/admin/dialogs")
+async def admin_dialogs():
     selected = {item.chat_id for item in whitelist.list_allowed()}
-    dialogs = await reader.list_dialogs()
+    dialogs = await _list_dialogs_resilient()
+    return {
+        "dialogs": [
+            {
+                "chat_id": d.chat_id,
+                "title": d.title,
+                "type": d.type,
+                "username": d.username,
+            }
+            for d in dialogs
+        ],
+        "selected": list(selected),
+    }
+
+
+@app.post("/api/admin/whitelist")
+async def admin_whitelist(payload: ManageWhitelistPayload):
+    dialogs = {d.chat_id: d for d in await _list_dialogs_resilient()}
+    chosen: list[AllowedChat] = []
+    for chat_id in dict.fromkeys(payload.chat_ids):
+        dialog = dialogs.get(int(chat_id))
+        if dialog is None:
+            raise HTTPException(400, "UNKNOWN_CHAT_ID")
+        chosen.append(AllowedChat(chat_id=dialog.chat_id, name=dialog.title, enabled=True))
+    whitelist.replace(chosen)
+    return {"status": "saved", "allowed_chats": len(chosen)}
+
+
+# Backward-compatible endpoints for old bookmarked manager pages.
+@app.get("/manage/dialogs")
+async def manage_dialogs_legacy(request: Request):
+    if not _admin_token_ok(request):
+        raise HTTPException(401, "UNAUTHORIZED")
+    selected = {item.chat_id for item in whitelist.list_allowed()}
+    dialogs = await _list_dialogs_resilient()
     return [
         {
             "chat_id": d.chat_id,
@@ -109,8 +180,10 @@ async def manage_dialogs():
 
 
 @app.post("/manage/whitelist")
-async def manage_whitelist(payload: ManageWhitelistPayload):
-    dialogs = {d.chat_id: d for d in await reader.list_dialogs()}
+async def manage_whitelist_legacy(payload: ManageWhitelistPayload, request: Request):
+    if not _admin_token_ok(request):
+        raise HTTPException(401, "UNAUTHORIZED")
+    dialogs = {d.chat_id: d for d in await _list_dialogs_resilient()}
     chosen: list[AllowedChat] = []
     for chat_id in dict.fromkeys(payload.chat_ids):
         dialog = dialogs.get(int(chat_id))
@@ -129,8 +202,11 @@ async def access_denied_handler(request: Request, exc: AccessDenied):
 @app.get("/health")
 async def health():
     try:
-        authorized = await reader.is_authorized()
+        authorized = await asyncio.wait_for(reader.is_authorized(), timeout=10)
         telegram_status = "ok" if authorized else "authorization_required"
+    except asyncio.TimeoutError:
+        authorized = False
+        telegram_status = "unavailable:timeout"
     except Exception as exc:
         authorized = False
         telegram_status = f"unavailable:{type(exc).__name__}"
