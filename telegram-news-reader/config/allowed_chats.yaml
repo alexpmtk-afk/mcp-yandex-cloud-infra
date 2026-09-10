@@ -1,1 +1,4 @@
-allowed_chats: []
+allowed_chats:
+  - chat_id: -1003236897998
+    name: "Тестовый канал ChatGPT"
+    enabled: true
