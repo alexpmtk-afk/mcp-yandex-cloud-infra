@@ -48,11 +48,20 @@ class ObjectStorage:
     def _object_url(self, key: str) -> str:
         return f"{self.endpoint}/{quote(self.bucket, safe='')}/{quote(key, safe='/')}"
 
-    def upload(self, path: str | Path, *, chat_id: int, message_id: int) -> tuple[str, str | None] | None:
+    def upload(
+        self,
+        path: str | Path,
+        *,
+        chat_id: int,
+        message_id: int,
+        variant: str | None = None,
+    ) -> tuple[str, str | None] | None:
         if not self.enabled:
             return None
         source = Path(path)
-        key = f"{self.prefix}/{chat_id}/{message_id}{source.suffix.lower()}"
+        suffix = source.suffix.lower()
+        stem = str(message_id) if not variant else f"{message_id}.{variant.strip('.') }"
+        key = f"{self.prefix}/{chat_id}/{stem}{suffix}"
         content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
         request = Request(
             self._object_url(key),
