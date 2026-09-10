@@ -6,13 +6,15 @@ from contextlib import asynccontextmanager
 from datetime import datetime
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse
+from pydantic import BaseModel
 
 from app.collector import Collector
 from app.errors import AccessDenied, AuthorizationRequired
 from app.mcp_server import build_mcp
 from app.runtime import build_runtime
 from app.service_config import load_service_settings
+from app.whitelist import AllowedChat
 
 service_settings = load_service_settings()
 settings, whitelist, reader, storage = build_runtime()
@@ -63,11 +65,48 @@ app = FastAPI(title="Telegram News Reader", lifespan=lifespan)
 async def bearer_auth(request: Request, call_next):
     if request.url.path == "/health":
         return await call_next(request)
+    expected_token = service_settings.api_token
     supplied = request.headers.get("authorization", "")
-    expected = f"Bearer {service_settings.api_token}"
+    if request.url.path.startswith("/manage"):
+        query_token = request.query_params.get("token", "")
+        if query_token and hmac.compare_digest(query_token, expected_token):
+            return await call_next(request)
+    expected = f"Bearer {expected_token}"
     if not hmac.compare_digest(supplied, expected):
         return JSONResponse({"detail": "UNAUTHORIZED"}, status_code=401)
     return await call_next(request)
+
+
+class ManageWhitelistPayload(BaseModel):
+    chat_ids: list[int]
+
+
+MANAGE_PAGE = """<!doctype html><html lang=ru><head><meta charset=utf-8><meta name=viewport content='width=device-width,initial-scale=1'><title>Telegram Reader — каналы</title><style>body{font:16px system-ui;max-width:900px;margin:30px auto;padding:0 16px}input[type=search]{width:100%;padding:12px;margin:12px 0}button{padding:10px 16px;margin-right:8px}.row{padding:8px 0;border-bottom:1px solid #ddd}.muted{color:#666}.ok{color:green;font-weight:600}</style></head><body><h1>Каналы Telegram Reader</h1><p class=muted>Отметьте каналы, которые Reader должен читать. Снятие галочки отключает канал.</p><input id=q type=search placeholder='Поиск по названию'><div><button onclick='save()'>Сохранить изменения</button><button onclick='load()'>Обновить список</button></div><p id=status></p><div id=list>Загрузка…</div><script>const token=new URLSearchParams(location.search).get('token')||'';let items=[];async function load(){status.textContent='Загрузка…';let r=await fetch('/manage/dialogs?token='+encodeURIComponent(token));if(!r.ok){status.textContent='Ошибка загрузки';return}items=await r.json();render();status.textContent='';}function render(){let q=document.getElementById('q').value.toLowerCase();list.innerHTML=items.filter(x=>(x.title||'').toLowerCase().includes(q)).map(x=>`<label class=row style='display:block'><input type=checkbox data-id='${x.chat_id}' ${x.selected?'checked':''}> ${esc(x.title)} <span class=muted>(${esc(x.type||'')})</span></label>`).join('');}function esc(s){return String(s).replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]))}async function save(){let ids=[...document.querySelectorAll('input[type=checkbox]:checked')].map(x=>Number(x.dataset.id));status.textContent='Сохраняю…';let r=await fetch('/manage/whitelist?token='+encodeURIComponent(token),{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({chat_ids:ids})});let j=await r.json();if(r.ok){status.innerHTML=`<span class=ok>Сохранено: ${j.allowed_chats} каналов</span>`;await load();}else status.textContent='Ошибка: '+(j.detail||r.status);}q.oninput=render;load();</script></body></html>"""
+
+
+@app.get("/manage", response_class=HTMLResponse)
+async def manage_page():
+    return HTMLResponse(MANAGE_PAGE)
+
+
+@app.get("/manage/dialogs")
+async def manage_dialogs():
+    selected = {item.chat_id for item in whitelist.list_allowed()}
+    dialogs = await reader.list_dialogs()
+    return [{"chat_id": d.chat_id, "title": d.title, "type": d.type, "username": d.username, "selected": d.chat_id in selected} for d in dialogs]
+
+
+@app.post("/manage/whitelist")
+async def manage_whitelist(payload: ManageWhitelistPayload):
+    dialogs = {d.chat_id: d for d in await reader.list_dialogs()}
+    chosen = []
+    for chat_id in dict.fromkeys(payload.chat_ids):
+        dialog = dialogs.get(int(chat_id))
+        if dialog is None:
+            raise HTTPException(400, "UNKNOWN_CHAT_ID")
+        chosen.append(AllowedChat(chat_id=dialog.chat_id, name=dialog.title, enabled=True))
+    whitelist.replace(chosen)
+    return {"status": "saved", "allowed_chats": len(chosen)}
 
 
 @app.exception_handler(AccessDenied)
