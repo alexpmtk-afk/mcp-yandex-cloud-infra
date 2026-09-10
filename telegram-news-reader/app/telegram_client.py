@@ -68,6 +68,10 @@ class TelegramReader:
         if self.relay is not None:
             await self.relay.stop()
 
+    def is_connected(self) -> bool:
+        """Return local connection state without initiating network I/O."""
+        return bool(self.client.is_connected())
+
     async def is_authorized(self) -> bool:
         was_connected = self.client.is_connected()
         if not was_connected:
