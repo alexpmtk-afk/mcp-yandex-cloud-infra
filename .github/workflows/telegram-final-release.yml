@@ -64,19 +64,17 @@ jobs:
           set -euo pipefail
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "IMAGE='$IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
+          echo CHECK_STATE
           test -f /opt/telegram-reader/runtime.env
           test -f /state/telegram_news.session
           test -f /state/allowed_chats.yaml
           sudo mkdir -p /state/media /state/exports
           sudo chown -R 10001:10001 /state/media /state/exports
+          echo STATE_PASS
 
-          token="$(curl -sf -H Metadata-Flavor:Google 169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | jq -r .access_token)"
-          printf '%s' "$token" | sudo docker login --username iam --password-stdin cr.yandex >/dev/null
-          for attempt in $(seq 1 30); do
-            sudo docker pull "$IMAGE" && break
-            [ "$attempt" -eq 30 ] && exit 1
-            sleep 10
-          done
+          echo PULL_IMAGE
+          sudo docker pull "$IMAGE"
+          echo PULL_PASS
 
           sudo systemctl stop telegram-reader-launcher.service || true
           sudo tee /usr/local/sbin/telegram-reader-launcher >/dev/null <<EOF
@@ -95,6 +93,7 @@ jobs:
           sudo chmod 0750 /usr/local/sbin/telegram-reader-launcher
           sudo systemctl daemon-reload
           sudo systemctl restart telegram-reader-launcher.service
+          echo RESTARTED
 
           for attempt in $(seq 1 60); do
             body="$(curl -fsS http://127.0.0.1:8080/health 2>/dev/null || true)"
@@ -112,12 +111,9 @@ jobs:
           from pathlib import Path
           from PIL import Image
           from app.media_pipeline import MediaPipeline
-          p=Path('/tmp/media-final-test')
-          p.mkdir(exist_ok=True)
-          a=Image.new('RGB',(80,60),(255,255,255))
-          b=Image.new('RGB',(80,60),(0,0,0))
-          gif=p/'sample.gif'
-          a.save(gif,save_all=True,append_images=[b],duration=100,loop=0)
+          p=Path('/tmp/media-final-test'); p.mkdir(exist_ok=True)
+          a=Image.new('RGB',(80,60),(255,255,255)); b=Image.new('RGB',(80,60),(0,0,0))
+          gif=p/'sample.gif'; a.save(gif,save_all=True,append_images=[b],duration=100,loop=0)
           preview=MediaPipeline._build_preview(gif,'gif')
           assert preview and preview.exists() and preview.stat().st_size>0
           print('GIF_PREVIEW_PASS')
@@ -138,12 +134,10 @@ jobs:
           sudo docker exec telegram-reader python -m app.export_cli >/dev/null
           sudo docker exec telegram-reader python - <<'PY'
           import json
-          p='/state/exports/TELEGRAM_NEWS_LATEST.json'
-          d=json.load(open(p,encoding='utf-8'))
+          d=json.load(open('/state/exports/TELEGRAM_NEWS_LATEST.json',encoding='utf-8'))
           assert d['schema']=='TELEGRAM_NEWS_READER_V1'
           assert d['window_hours']==192
-          assert d['allowed_chats']>=1
-          assert d['message_count']>=1
+          assert d['allowed_chats']>=1 and d['message_count']>=1
           assert 'media_message_count' in d and 'preview_message_count' in d
           print('EXPORT_FINAL_PASS', d['allowed_chats'], d['message_count'], d['media_message_count'], d['preview_message_count'])
           PY
