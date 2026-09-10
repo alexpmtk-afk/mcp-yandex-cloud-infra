@@ -30,8 +30,8 @@ jobs:
           python - <<'PY'
           from PIL import Image
           im=Image.open('/tmp/sample.jpg').convert('RGB')
-          im.thumbnail((180,180))
-          im.save('/tmp/preview.jpg', quality=45, optimize=True)
+          im.thumbnail((100,100))
+          im.save('/tmp/preview.jpg', quality=30, optimize=True)
           PY
           base64 /tmp/preview.jpg > telegram-news-reader/export/TELEGRAM_MEDIA_PREVIEW.base64
       - name: Commit test payload
@@ -41,5 +41,5 @@ jobs:
           git config user.name telegram-media-test
           git config user.email telegram-media-test@users.noreply.github.com
           git add telegram-news-reader/export/TELEGRAM_MEDIA_PREVIEW.base64
-          git commit -m "test: capture tiny Telegram media preview"
+          git commit -m "test: capture minimal Telegram media preview"
           git push origin HEAD:main
