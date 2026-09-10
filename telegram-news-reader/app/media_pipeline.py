@@ -3,14 +3,22 @@ from __future__ import annotations
 import json
 import mimetypes
 import os
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Mapping
 
 from app.models import MessageRecord
 from app.object_storage import ObjectStorage
 from app.telegram_client import TelegramReader
 
 SUPPORTED_MEDIA = {"photo", "image", "gif", "animation"}
+
+
+@dataclass(frozen=True)
+class MediaRef:
+    chat_id: int
+    message_id: int
+    media_type: str | None
 
 
 class MediaPipeline:
@@ -23,49 +31,78 @@ class MediaPipeline:
         self.objects = ObjectStorage()
 
     async def capture(self, records: Iterable[MessageRecord]) -> int:
+        refs = [MediaRef(x.chat_id, x.message_id, x.media_type) for x in records]
+        return await self.capture_refs(refs)
+
+    async def capture_local_rows(self, rows: Iterable[Mapping[str, object]]) -> int:
+        refs = [
+            MediaRef(
+                int(row["chat_id"]),
+                int(row["message_id"]),
+                str(row.get("media_type") or "") or None,
+            )
+            for row in rows
+        ]
+        return await self.capture_refs(refs)
+
+    async def capture_refs(self, refs: Iterable[MediaRef]) -> int:
         saved = 0
-        for record in records:
-            if record.media_type not in SUPPORTED_MEDIA:
+        for ref in refs:
+            if ref.media_type not in SUPPORTED_MEDIA:
                 continue
-            if await self._capture_one(record):
+            if await self._capture_one(ref):
                 saved += 1
         return saved
 
-    async def _capture_one(self, record: MessageRecord) -> bool:
-        folder = self.root / str(record.chat_id)
+    async def _capture_one(self, ref: MediaRef) -> bool:
+        folder = self.root / str(ref.chat_id)
         folder.mkdir(parents=True, exist_ok=True)
-        manifest = folder / f"{record.message_id}.json"
-        if manifest.exists():
-            return False
+        manifest = folder / f"{ref.message_id}.json"
 
-        self.reader.whitelist.assert_allowed(record.chat_id)
-        entity = await self.reader.client.get_entity(int(record.chat_id))
-        message = await self.reader.client.get_messages(entity, ids=int(record.message_id))
+        previous = None
+        if manifest.exists():
+            try:
+                previous = json.loads(manifest.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                previous = None
+            if previous and previous.get("object_key"):
+                return False
+
+        self.reader.whitelist.assert_allowed(ref.chat_id)
+        entity = await self.reader.client.get_entity(int(ref.chat_id))
+        message = await self.reader.client.get_messages(entity, ids=int(ref.message_id))
         if not message or not getattr(message, "media", None):
             return False
 
-        ext = self._extension(message, record.media_type)
-        target = folder / f"{record.message_id}{ext}"
-        downloaded = await self.reader.client.download_media(message, file=str(target))
-        if not downloaded:
-            return False
+        actual = None
+        if previous:
+            local_path = previous.get("local_path")
+            if local_path and Path(str(local_path)).exists():
+                actual = Path(str(local_path))
 
-        actual = Path(downloaded)
+        if actual is None:
+            ext = self._extension(message, ref.media_type or "media")
+            target = folder / f"{ref.message_id}{ext}"
+            downloaded = await self.reader.client.download_media(message, file=str(target))
+            if not downloaded:
+                return False
+            actual = Path(downloaded)
+
         object_key = None
         media_url = None
         if self.objects.enabled:
             uploaded = self.objects.upload(
                 actual,
-                chat_id=record.chat_id,
-                message_id=record.message_id,
+                chat_id=ref.chat_id,
+                message_id=ref.message_id,
             )
             if uploaded:
                 object_key, media_url = uploaded
 
         metadata = {
-            "chat_id": record.chat_id,
-            "message_id": record.message_id,
-            "media_type": record.media_type,
+            "chat_id": ref.chat_id,
+            "message_id": ref.message_id,
+            "media_type": ref.media_type,
             "local_path": str(actual),
             "size": actual.stat().st_size if actual.exists() else None,
             "object_key": object_key,
