@@ -1,17 +1,22 @@
 from __future__ import annotations
 
 import json
+import logging
 import mimetypes
 import os
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Mapping
+
+from PIL import Image
 
 from app.models import MessageRecord
 from app.object_storage import ObjectStorage
 from app.telegram_client import TelegramReader
 
 SUPPORTED_MEDIA = {"photo", "image", "gif", "animation"}
+LOGGER = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -49,8 +54,17 @@ class MediaPipeline:
         for ref in refs:
             if ref.media_type not in SUPPORTED_MEDIA:
                 continue
-            if await self._capture_one(ref):
-                saved += 1
+            try:
+                if await self._capture_one(ref):
+                    saved += 1
+            except Exception as exc:
+                LOGGER.warning(
+                    "media_capture_error chat_id=%s message_id=%s type=%s error=%s",
+                    ref.chat_id,
+                    ref.message_id,
+                    ref.media_type,
+                    type(exc).__name__,
+                )
         return saved
 
     async def _capture_one(self, ref: MediaRef) -> bool:
@@ -64,7 +78,7 @@ class MediaPipeline:
                 previous = json.loads(manifest.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 previous = None
-            if previous and previous.get("object_key"):
+            if previous and previous.get("object_key") and previous.get("preview_object_key"):
                 return False
 
         self.reader.whitelist.assert_allowed(ref.chat_id)
@@ -87,9 +101,9 @@ class MediaPipeline:
                 return False
             actual = Path(downloaded)
 
-        object_key = None
-        media_url = None
-        if self.objects.enabled:
+        object_key = previous.get("object_key") if previous else None
+        media_url = previous.get("media_url") if previous else None
+        if self.objects.enabled and not object_key:
             uploaded = self.objects.upload(
                 actual,
                 chat_id=ref.chat_id,
@@ -97,6 +111,22 @@ class MediaPipeline:
             )
             if uploaded:
                 object_key, media_url = uploaded
+
+        preview_path = self._build_preview(actual, ref.media_type or "media")
+        preview_object_key = previous.get("preview_object_key") if previous else None
+        preview_url = previous.get("preview_url") if previous else None
+        preview_size = previous.get("preview_size") if previous else None
+        if preview_path and preview_path.exists():
+            preview_size = preview_path.stat().st_size
+            if self.objects.enabled and not preview_object_key:
+                uploaded_preview = self.objects.upload(
+                    preview_path,
+                    chat_id=ref.chat_id,
+                    message_id=ref.message_id,
+                    variant="preview",
+                )
+                if uploaded_preview:
+                    preview_object_key, preview_url = uploaded_preview
 
         metadata = {
             "chat_id": ref.chat_id,
@@ -106,9 +136,58 @@ class MediaPipeline:
             "size": actual.stat().st_size if actual.exists() else None,
             "object_key": object_key,
             "media_url": media_url,
+            "preview_local_path": str(preview_path) if preview_path else None,
+            "preview_size": preview_size,
+            "preview_object_key": preview_object_key,
+            "preview_url": preview_url,
         }
-        manifest.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp = manifest.with_suffix(".json.tmp")
+        tmp.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
+        tmp.replace(manifest)
         return True
+
+    @staticmethod
+    def _build_preview(source: Path, kind: str) -> Path | None:
+        preview = source.with_name(f"{source.stem}.preview.jpg")
+        if preview.exists():
+            return preview
+        try:
+            if kind in {"photo", "image", "gif"}:
+                with Image.open(source) as image:
+                    image.seek(0)
+                    frame = image.convert("RGB")
+                    frame.thumbnail((640, 640))
+                    frame.save(preview, "JPEG", quality=72, optimize=True)
+                return preview
+            if kind == "animation":
+                subprocess.run(
+                    [
+                        "ffmpeg",
+                        "-loglevel",
+                        "error",
+                        "-y",
+                        "-ss",
+                        "0",
+                        "-i",
+                        str(source),
+                        "-frames:v",
+                        "1",
+                        "-vf",
+                        "scale='min(640,iw)':-2",
+                        str(preview),
+                    ],
+                    check=True,
+                    timeout=30,
+                )
+                return preview if preview.exists() else None
+        except Exception as exc:
+            LOGGER.warning(
+                "media_preview_error path=%s type=%s error=%s",
+                source,
+                kind,
+                type(exc).__name__,
+            )
+        return None
 
     @staticmethod
     def _extension(message, kind: str) -> str:
