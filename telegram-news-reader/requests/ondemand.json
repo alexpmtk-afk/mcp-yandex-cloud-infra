@@ -1,7 +1,6 @@
 {
   "chat_id": -1001343028414,
-  "date_from": "2026-09-09T21:00:00Z",
-  "date_to": "2026-09-10T18:14:15Z",
-  "limit": 1000,
-  "requested_at": "2026-09-10T18:14:15Z"
+  "period_hours": 24,
+  "limit": 1,
+  "requested_at": "2026-09-10T18:20:18Z"
 }
