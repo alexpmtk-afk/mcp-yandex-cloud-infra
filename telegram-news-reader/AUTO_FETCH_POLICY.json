@@ -1,0 +1,13 @@
+{
+  "schema": "TELEGRAM_NEWS_AUTO_FETCH_POLICY_V1",
+  "snapshot_max_age_minutes": 7,
+  "ondemand_max_chats": 5,
+  "ondemand_default_limit_per_chat": 20,
+  "rules": {
+    "single_or_small_set_request": "If the general snapshot is older than snapshot_max_age_minutes, automatically trigger on-demand refresh for the requested whitelisted chat(s) before answering.",
+    "broad_request": "Use the rolling 192-hour general snapshot for broad multi-source analysis unless the user explicitly requires near-real-time completeness.",
+    "fresh_snapshot": "If the general snapshot age is within snapshot_max_age_minutes, answer from it without on-demand refresh.",
+    "fallback": "If on-demand refresh fails, answer from the newest available general snapshot and explicitly state its generated_at time.",
+    "user_interaction": "Never ask the user to choose a mode. Fetch strategy is selected automatically."
+  }
+}
