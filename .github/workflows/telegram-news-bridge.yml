@@ -64,7 +64,7 @@ jobs:
 
           mkdir -p telegram-news-reader/export
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 \
-            'sudo docker exec telegram-reader python -m app.export_cli >/dev/null && sudo cat /state/exports/TELEGRAM_NEWS_LATEST.json' \
+            'sudo mkdir -p /state/media /state/exports && sudo chown -R 10001:10001 /state/media /state/exports && sudo docker exec telegram-reader python -m app.export_cli >/dev/null && sudo cat /state/exports/TELEGRAM_NEWS_LATEST.json' \
             > telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
 
           jq -e '.schema == "TELEGRAM_NEWS_READER_V1" and (.allowed_chats >= 0) and (.message_count >= 0)' telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json >/dev/null
