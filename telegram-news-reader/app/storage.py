@@ -32,6 +32,11 @@ CREATE TABLE IF NOT EXISTS sync_state (
     last_message_datetime TEXT,
     last_collected_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS export_state (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    last_rowid INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL
+);
 """
 
 
@@ -109,6 +114,43 @@ class Storage:
                 """,
                 (chat_id, newest.message_id, newest.datetime.isoformat(), now),
             )
+
+    def get_export_cursor(self) -> int:
+        with self._connect() as conn:
+            row = conn.execute("SELECT last_rowid FROM export_state WHERE id = 1").fetchone()
+            return int(row[0]) if row else 0
+
+    def set_export_cursor(self, last_rowid: int) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO export_state (id, last_rowid, updated_at)
+                VALUES (1, ?, ?)
+                ON CONFLICT(id) DO UPDATE SET
+                    last_rowid = excluded.last_rowid,
+                    updated_at = excluded.updated_at
+                """,
+                (int(last_rowid), now),
+            )
+
+    def get_messages_after_rowid(
+        self, last_rowid: int, chat_ids: list[int], *, limit: int = 5000
+    ) -> list[dict]:
+        if not chat_ids:
+            return []
+        placeholders = ",".join("?" for _ in chat_ids)
+        params: list[object] = [int(last_rowid), *[int(x) for x in chat_ids], max(1, int(limit))]
+        sql = f"""
+            SELECT rowid AS _rowid, chat_id, message_id, chat_title, datetime, sender_id, text,
+                   url, media_type, views, forwards, reply_to_message_id, collected_at
+            FROM messages
+            WHERE rowid > ? AND chat_id IN ({placeholders})
+            ORDER BY rowid ASC
+            LIMIT ?
+        """
+        with self._connect() as conn:
+            return [dict(row) for row in conn.execute(sql, params).fetchall()]
 
     def search_local(
         self,
