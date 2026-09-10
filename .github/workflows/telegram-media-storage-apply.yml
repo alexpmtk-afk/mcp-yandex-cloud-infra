@@ -44,8 +44,14 @@ jobs:
           set -euo pipefail
           folder="b1gk4p83brasi8g811jv"
           bucket="telegram-reader-media-alexpmtk-20260910"
+          deploy_sa="$(jq -r '.service_account_id // .serviceAccountId // empty' "$RUNNER_TEMP/yc-key.json")"
           vm_sa="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.service_account_id')"
+          test -n "$deploy_sa"
           test -n "$vm_sa" && test "$vm_sa" != "null"
+
+          yc resource-manager folder add-access-binding "$folder" \
+            --role storage.editor \
+            --subject "serviceAccount:$deploy_sa" >/dev/null
 
           if ! yc storage bucket get --name "$bucket" --folder-id "$folder" >/dev/null 2>&1; then
             yc storage bucket create --name "$bucket" --folder-id "$folder" --max-size 5368709120
