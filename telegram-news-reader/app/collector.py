@@ -22,6 +22,12 @@ class Collector:
         if messages:
             await self.media.capture(messages)
             self.storage.update_sync_state(chat_id, messages)
+
+        # Also backfill a small rolling window so visual media that existed before
+        # the media pipeline was deployed becomes available without a full rescan.
+        recent_rows = self.storage.get_recent_local(chat_id, limit=30)
+        if recent_rows:
+            await self.media.capture_local_rows(recent_rows)
         return inserted
 
     async def sync_all_allowed(self, bootstrap_limit: int = 200) -> dict[int, int]:
