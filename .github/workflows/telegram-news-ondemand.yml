@@ -47,16 +47,26 @@ jobs:
           yc config profile activate telegram-news-ondemand
           yc config set service-account-key "$key"
 
-      - name: Export requested chat
+      - name: Export requested chats
         shell: bash
         run: |
           set -euo pipefail
           request="telegram-news-reader/requests/ondemand.json"
           test -f "$request"
-          chat_id="$(jq -er '.chat_id | numbers' "$request")"
+
           limit="$(jq -er '(.limit // 20) | numbers' "$request")"
           if [ "$limit" -lt 1 ]; then limit=1; fi
           if [ "$limit" -gt 100 ]; then limit=100; fi
+
+          chat_ids="$(jq -cer '
+            if (.chat_ids? | type) == "array" then .chat_ids
+            elif (.chat_id? | type) == "number" then [.chat_id]
+            else error("chat_id or chat_ids required") end
+            | map(select(type == "number"))
+            | unique
+            | if length == 0 then error("no chat ids") else . end
+            | if length > 5 then error("maximum 5 chats per on-demand request") else . end
+          ' "$request")"
 
           folder="b1gk4p83brasi8g811jv"
           ip="$(curl -fsS https://api.ipify.org)"
@@ -69,12 +79,13 @@ jobs:
           sleep 20
 
           mkdir -p telegram-news-reader/ondemand
-          remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone; from app.runtime import build_runtime; _,w,_,s=build_runtime(); cid=int(sys.argv[1]); lim=int(sys.argv[2]); w.assert_allowed(cid); print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V1\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"chat_id\":cid,\"messages\":s.get_recent_local(cid,lim)},ensure_ascii=False))' $chat_id $limit"
+          ids_csv="$(echo "$chat_ids" | jq -r 'join(",")')"
+          remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone; from app.runtime import build_runtime; _,w,_,s=build_runtime(); ids=[int(x) for x in sys.argv[1].split(\",\") if x]; lim=int(sys.argv[2]); out=[]; [w.assert_allowed(cid) for cid in ids]; [out.append({\"chat_id\":cid,\"messages\":s.get_recent_local(cid,lim)}) for cid in ids]; print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V2\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"chat_count\":len(out),\"chats\":out},ensure_ascii=False))' $ids_csv $limit"
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote_cmd" > telegram-news-reader/ondemand/latest.json
 
-          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V1" and (.chat_id | type == "number") and (.messages | type == "array")' telegram-news-reader/ondemand/latest.json >/dev/null
+          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V2" and (.chat_count | type == "number") and (.chats | type == "array") and (.chats | length == .chat_count)' telegram-news-reader/ondemand/latest.json >/dev/null
           echo "ONDEMAND_EXPORT_PASS"
-          jq '{generated_at,chat_id,message_count:(.messages|length),latest_datetime:(.messages[0].datetime // null),latest_message_id:(.messages[0].message_id // null)}' telegram-news-reader/ondemand/latest.json
+          jq '{generated_at,chat_count,chats:[.chats[]|{chat_id,message_count:(.messages|length),latest_datetime:(.messages[0].datetime // null),latest_message_id:(.messages[0].message_id // null)}]}' telegram-news-reader/ondemand/latest.json
 
       - name: Commit latest on-demand response
         shell: bash
@@ -86,7 +97,7 @@ jobs:
           if git diff --cached --quiet; then
             echo ONDEMAND_UNCHANGED
           else
-            git commit -m "telegram-news: refresh on-demand chat"
+            git commit -m "telegram-news: refresh on-demand chats"
             git push origin HEAD:main
             echo ONDEMAND_PUSH_PASS
           fi
