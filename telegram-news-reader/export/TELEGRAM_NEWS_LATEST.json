@@ -1,12 +1,196 @@
 {
   "schema": "TELEGRAM_NEWS_READER_V1",
-  "generated_at": "2026-09-10T16:14:16.862420+00:00",
+  "generated_at": "2026-09-10T16:37:26.831770+00:00",
   "window_hours": 192,
   "allowed_chats": 9,
-  "message_count": 954,
-  "media_message_count": 105,
-  "preview_message_count": 103,
+  "message_count": 962,
+  "media_message_count": 106,
+  "preview_message_count": 104,
   "messages": [
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17842,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:35:52+00:00",
+      "sender_id": 878925863,
+      "text": "*на Левом берегу",
+      "url": null,
+      "media_type": null,
+      "views": null,
+      "forwards": null,
+      "reply_to_message_id": 17839,
+      "collected_at": "2026-09-10T16:36:45.738432+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17841,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:35:49+00:00",
+      "sender_id": 1518911333,
+      "text": "Град с 6-7 утра должен отпускать",
+      "url": null,
+      "media_type": null,
+      "views": null,
+      "forwards": null,
+      "reply_to_message_id": 17839,
+      "collected_at": "2026-09-10T16:36:45.738432+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17840,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:35:32+00:00",
+      "sender_id": 1518911333,
+      "text": "Они почувствовали, что такое вторая волна)",
+      "url": null,
+      "media_type": null,
+      "views": null,
+      "forwards": null,
+      "reply_to_message_id": 17836,
+      "collected_at": "2026-09-10T16:35:43.420788+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1001203560567,
+      "message_id": 384374,
+      "chat_title": "MarketTwits",
+      "datetime": "2026-09-10T16:35:20+00:00",
+      "sender_id": -1001203560567,
+      "text": "⚠️🇮🇷#иран #геополитика \nИран возобновил производство баллистических ракет — WSJ",
+      "url": "https://t.me/markettwits/384374",
+      "media_type": null,
+      "views": 1,
+      "forwards": 0,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:35:41.429142+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17839,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:35:07+00:00",
+      "sender_id": 878925863,
+      "text": "Ранним утром есть шансы поймать где-нибудь наличие бензина? Или они все начинают отпускать после 08:00?",
+      "url": null,
+      "media_type": null,
+      "views": null,
+      "forwards": null,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:35:43.420788+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1001343028414,
+      "message_id": 59964,
+      "chat_title": "Анатолий Шарий",
+      "datetime": "2026-09-10T16:34:49+00:00",
+      "sender_id": -1001343028414,
+      "text": "Скоро выдам максимально подробный рассказ. Спасибо немецким СМИ и блогерам за внимание к вопросу.\n\nНапомню то, что рассказал в Х. \n\n1 августа 2024 года семь климатических активистов из движения «Letzte Generation» незаконно проникли на территорию аэропорта Лейпциг/Халле. \n\nОни прорезали внешний охранный забор в трех разных местах и вошли в ограниченную зону аэропорта\n\nПятерым активистам удалось приклеить себя к рулежным дорожкам, в то время как двое других были задержаны до того, как смогли это сделать\n\nТаким образом, уже в 2024 году был задокументирован случай, когда неавторизованные лица смогли ночью прорвать охраняемый периметр и получить прямой доступ к зоне аэродрома аэропорта Лейпциг/Халле\n\nНа этом фоне особое внимание следует уделить рассказу, сделанному мне сотрудником аэропорта об инциденте, связанном с тем самым дроном\n\nЕго рассказ существенно отличается от версии, представленной в СМИ\n\nПо его словам, все произошло ночью во время погрузки грузового самолета в зоне Vorfeld 2, где, в частности, обслуживаются самолеты DHL и расположены самолеты Антонов\n\nСотрудники аэропорта ранее замечали дроны вблизи аэропорта\n\nВозле дороги S8a, которая проходит вдоль периметра аэропорта, находится аварийный шлагбаум и место с хорошим видом на взлетно-посадочную полосу\n\nНочью там иногда стоят авиаспоттеры, фотографируя взлетающие и садящиеся самолеты\n\nПо словам моего источника, дроны также неоднократно видели в этой зоне, хотя обычно они не приближались к людям или самолетам на близкое расстояние\n\nОднако на этот раз ситуация была иной. Во время погрузочных работ небольшой дрон начал кружить возле грузового самолета, а затем завис прямо рядом с сотрудником\n\nПо словам источника, никто из присутствующих не увидел, откуда именно он появился\n\nКогда устройство приблизилось достаточно близко, сотрудник опустил его на землю и прижал рукой, повредив пропеллеры. Затем он сообщил по рации, что дрон на земле\n\nИменно то, что произошло дальше, источник считает крайне странным\n\nПо его словам, в течение всего нескольких минут на место прибыли полицейские, специалисты по обезвреживанию бомб, пожарные, телевизионные съемочные группы и оборудование для обезвреживания бомб, включая специализированного робота\n\nСотрудник говорит, что скорость их прибытия вызвала вопросы среди персонала аэропорта\n\nАэропорт расположен примерно в 20 километрах от Лейпцига, и просто подъехать к терминалу и войти в ограниченную зону аэродрома невозможно\n\nЧтобы получить доступ, посторонним требуется пройти проверки безопасности и получить соответствующее разрешение, включая временный Tagesausweis\n\nПо оценке источника, сам процесс получения разрешения и прохождения контрольного пункта занимает время\n\nПоэтому он не понимает, как специализированная команда, телевизионная съемочная группа и тяжелая техника могли добраться до самого аэродрома почти сразу после сообщения по рации\n\nИсточник особенно решительно оспаривает сообщения о том, что устройство якобы несло взрывчатку или детонатор\n\nПо его словам, сотрудник, который сбил дрон собственными руками, не увидел ни детонатора, ни какого-либо взрывчатого вещества, прикрепленного к нему\n\nИсточник также утверждает, что фотографии, впоследствии опубликованные в СМИ, на которых дрон показан с взрывчатым веществом рядом, не соответствуют тому, что изначально видели сотрудники аэропорта на месте\n\nПо словам источника, сам дрон был небольшим, недорогим потребительским устройством, предназначенным в основном для фотографирования и видеосъемки.\n\nОн сомневается, что такое устройство вообще могло нести какую-либо значительную дополнительную нагрузку\n\nПо словам источника, после просмотра новостных репортажей сотрудник, который лично сбил дрон, был возмущен тем, как инцидент был представлен публике\n\nПо словам источника, полицейские теперь круглосуточно дежурят у аварийных ворот у S8a, где ранее по ночам собирались споттеры и откуда периодически наблюдались дроны.\n\nРассказ сотрудника аэропорта, конечно, сам по себе не доказывает, что инцидент был инсценирован или являлся провокацией.\n\nОднако его утверждения порождают ряд проверяемых вопросов.",
+      "url": "https://t.me/ASupersharij/59964",
+      "media_type": "photo",
+      "views": 4127,
+      "forwards": 0,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:35:35.564884+00:00",
+      "username": null,
+      "media_asset": {
+        "media_type": "photo",
+        "size": 107398,
+        "object_key": "telegram-media/-1001343028414/59964.jpg",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59964.jpg&expires=1789231046&sig=d83233416d117ef1628f80dd27d2c1fe61a56f0d55f8cdc85adad711c1f6a52e",
+        "preview_size": 41124,
+        "preview_object_key": "telegram-media/-1001343028414/59964.preview.jpg",
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59964.preview.jpg&expires=1789231046&sig=31d1b8e69dca39237bfa7c51bf0394f8d0976b9a64c6f2c3e0f97d51ffc548c6"
+      }
+    },
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17838,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:29:02+00:00",
+      "sender_id": -1004430048947,
+      "text": "⛽ АЗС Газпром\n📍 Воронеж, проспект Патриотов, 60Б ↗\n\n📣 Подписчик сообщил через нашего бота:\n🕒 Обновлено в 19:28\n🟢 92: есть\n🟢 95: есть\n🟢 ДТ: есть\n\nВы на АЗС? Сообщите ситуацию сейчас\n\nПодпишитесь:\n⛽ Воронеж: Telegram | MAX\n💬 Чат Telegram\n💚 Поддержать проект",
+      "url": null,
+      "media_type": null,
+      "views": 1,
+      "forwards": 0,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:29:27.478370+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17837,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:25:36+00:00",
+      "sender_id": -1004430048947,
+      "text": "⛽ Лукойл\n📍 Воронеж, улица Героев Сибиряков, 20А ↗\n\n📣 Подписчик сообщил через нашего бота:\n🕒 Обновлено в 19:14\n🟢 95: есть\n🚗 Очередь около 50 машин\n👥 Подтвердили 2 человека\n\n💰 АИ-95 — 73 ₽/л\n\nВы на АЗС? Сообщите ситуацию сейчас\n\nПодпишитесь:\n⛽ Воронеж: Telegram | MAX\n💬 Чат Telegram\n💚 Поддержать проект",
+      "url": null,
+      "media_type": null,
+      "views": 1,
+      "forwards": 0,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:26:22.602331+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1004471816254,
+      "message_id": 17836,
+      "chat_title": "Воронеж. Бензин онлайн Chat",
+      "datetime": "2026-09-10T16:24:59+00:00",
+      "sender_id": 883515454,
+      "text": "Совсем бензус пропал что ли ?",
+      "url": null,
+      "media_type": null,
+      "views": null,
+      "forwards": null,
+      "reply_to_message_id": 17831,
+      "collected_at": "2026-09-10T16:25:19.903019+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1001203560567,
+      "message_id": 384373,
+      "chat_title": "MarketTwits",
+      "datetime": "2026-09-10T16:21:29+00:00",
+      "sender_id": -1001203560567,
+      "text": "🇩🇪#P911 #VOW \nPorsche (входит в Volkswagen) продал Bugatti за €1 млрд",
+      "url": "https://t.me/markettwits/384373",
+      "media_type": null,
+      "views": 1,
+      "forwards": 0,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:22:13.400838+00:00",
+      "username": null,
+      "media_asset": null
+    },
+    {
+      "chat_id": -1001203560567,
+      "message_id": 384372,
+      "chat_title": "MarketTwits",
+      "datetime": "2026-09-10T16:19:12+00:00",
+      "sender_id": -1001203560567,
+      "text": "🇷🇺#FLOT \n16 сентября - Совкомфлот - сд обсудит актуализацию стратегии развития на период до 2030г",
+      "url": "https://t.me/markettwits/384372",
+      "media_type": null,
+      "views": 305,
+      "forwards": 0,
+      "reply_to_message_id": null,
+      "collected_at": "2026-09-10T16:20:09.143021+00:00",
+      "username": null,
+      "media_asset": null
+    },
     {
       "chat_id": -1004471816254,
       "message_id": 17835,
@@ -409,10 +593,10 @@
         "media_type": "photo",
         "size": 41168,
         "object_key": "telegram-media/-1001313313883/35501.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35501.jpg&expires=1789229656&sig=c257b48dc727c2ebb2115dbadb9c37d38b7434ae268682db5638ddcfbd58cd07",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35501.jpg&expires=1789231046&sig=9e0f9d08a6b8b2dea0d2a1cf70046382d53e56d620be2b23846e9f8b5923fea0",
         "preview_size": 12260,
         "preview_object_key": "telegram-media/-1001313313883/35501.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35501.preview.jpg&expires=1789229656&sig=43d34d042ffd5d5b229d04720616d12d6145550a1cf6da60c93fd7d732a17ed8"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35501.preview.jpg&expires=1789231046&sig=4e5d5f996ca1ee953c064710c17fed3da694a6f9d8cdca09be2f50142de3b09b"
       }
     },
     {
@@ -673,10 +857,10 @@
         "media_type": "photo",
         "size": 18544,
         "object_key": "telegram-media/-1001203560567/384359.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384359.jpg&expires=1789229656&sig=c90f199518ab40654495965391ab13273e7ffa6a3bd2b397ba03f719ca6e5f9d",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384359.jpg&expires=1789231046&sig=72e5d6686f458c0c6c79be427371bee0cabbf95d0dccf66b5e9f90bbfa5041fd",
         "preview_size": 14873,
         "preview_object_key": "telegram-media/-1001203560567/384359.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384359.preview.jpg&expires=1789229656&sig=d877b7fb24a5b282bf29a7b9d782f5fffa3704a8eed6e6244e2931783c39439e"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384359.preview.jpg&expires=1789231046&sig=3a4daa287d64f709a3e0d856d912e71ec1e54237aaddd8e348166ca91129a822"
       }
     },
     {
@@ -793,10 +977,10 @@
         "media_type": "photo",
         "size": 83734,
         "object_key": "telegram-media/-1001453563350/5170.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5170.jpg&expires=1789229656&sig=4a23f2079a24b75c48fbbe52247296510987c93d2751594f9289d2c892b9845a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5170.jpg&expires=1789231046&sig=eed879ca800bba5c994f85327d146141634c66a2a4d356847f5128eed6ab8c6b",
         "preview_size": 22990,
         "preview_object_key": "telegram-media/-1001453563350/5170.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5170.preview.jpg&expires=1789229656&sig=8ba7ffc86c47ee86dd4f02f2f211dfb573cead21602de6bd1fd3b91b1988c6e1"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5170.preview.jpg&expires=1789231046&sig=4c33c0cf0b512319a15682256869a82016843dd9aed89b8e499af00263ffc3e8"
       }
     },
     {
@@ -945,10 +1129,10 @@
         "media_type": "photo",
         "size": 139628,
         "object_key": "telegram-media/-1001313313883/35499.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35499.jpg&expires=1789229656&sig=acb30b4182daf82cdc724b6578ea79de7a9d5433bd784dcb874b045d14f6b1bd",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35499.jpg&expires=1789231046&sig=da214de0751b03fb3e74f7c62c5d8fd23bcbdcec2973611b16079c28e69c6248",
         "preview_size": 30651,
         "preview_object_key": "telegram-media/-1001313313883/35499.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35499.preview.jpg&expires=1789229656&sig=ad95c8c52a190fae9a8340b8dad89ee920afe9d553583e4f46b8a2d5820569d0"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35499.preview.jpg&expires=1789231046&sig=2006c2e8b9cf387074d5ef1a828315451e6e7171a13e89bf6d8f88030e07b336"
       }
     },
     {
@@ -1049,10 +1233,10 @@
         "media_type": "photo",
         "size": 64035,
         "object_key": "telegram-media/-1001203560567/384351.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384351.jpg&expires=1789229656&sig=027a800434a89af753b54d952004fa22933d9fb01148d074c7c6aa73159300a5",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384351.jpg&expires=1789231046&sig=dacf2c928e484b4f0ded7b32b5c3155f07b2a61a19d38c2ff666d1ebd8fba313",
         "preview_size": 39686,
         "preview_object_key": "telegram-media/-1001203560567/384351.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384351.preview.jpg&expires=1789229656&sig=bb106c05cf8335f2b35676e420d19950302b79fde1738ec451933c8361adbdf3"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384351.preview.jpg&expires=1789231046&sig=55312e40697f9ef8f61ef63383428ca19268f094f6d0308e44b7583d71c5a47c"
       }
     },
     {
@@ -1073,10 +1257,10 @@
         "media_type": "photo",
         "size": 59053,
         "object_key": "telegram-media/-1001203560567/384350.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384350.jpg&expires=1789229656&sig=a3b7cb11a96d17c4d40f7be277bc40ec9da14c646a0719df43c20741f9c223e3",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384350.jpg&expires=1789231046&sig=d6d7e6a9c869d39ca3e716ddb18a36dabc260f9a2498e2dcebfc4d0bcdb9859b",
         "preview_size": 35504,
         "preview_object_key": "telegram-media/-1001203560567/384350.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384350.preview.jpg&expires=1789229656&sig=b94850cd14362b27de2cdccc98b75e362b4d3da9a0e9745d56dc9c9f121ecc96"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384350.preview.jpg&expires=1789231046&sig=034b3cb1b699f725917d072d47fabf9481f6321b14c1db3fbc29d86c3bf9bd6e"
       }
     },
     {
@@ -1097,10 +1281,10 @@
         "media_type": "photo",
         "size": 61078,
         "object_key": "telegram-media/-1001203560567/384349.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384349.jpg&expires=1789229656&sig=9df465647d6abb3dcc8ac4ad2726750a63b293048fe2739b235bd6d8386316ee",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384349.jpg&expires=1789231046&sig=ae9564a95d22d2ac958bd8282197c17ab4a40582331e0d6858654f6043355c02",
         "preview_size": 36322,
         "preview_object_key": "telegram-media/-1001203560567/384349.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384349.preview.jpg&expires=1789229656&sig=764b630cf9f5dd7766d4cf3a3aa4148da2e559d7a229ea0c4426a7343b06e074"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384349.preview.jpg&expires=1789231046&sig=5c41b9067837b3e0bd99cf56c9b0b0199044fc24cde105072e4665bf63e38a4f"
       }
     },
     {
@@ -1121,10 +1305,10 @@
         "media_type": "photo",
         "size": 66949,
         "object_key": "telegram-media/-1001203560567/384348.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384348.jpg&expires=1789229656&sig=b4deb852eb1aea55fe1eb340e8a34b6ca9ad27656bd1779c1b49ce48441fe4af",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384348.jpg&expires=1789231046&sig=88ca30e39e6c292344089fff3d434bcf441522a6c589ee86d157889ce0c81b02",
         "preview_size": 41427,
         "preview_object_key": "telegram-media/-1001203560567/384348.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384348.preview.jpg&expires=1789229656&sig=da36a31e74a578afab37ce04887c7b359586f17d7aaddc14faf974409a1c1fe4"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384348.preview.jpg&expires=1789231046&sig=37b412d0f6b3c15f0cb8ba958a2a460d53b7e02381b2e82354e7154b48246394"
       }
     },
     {
@@ -1177,10 +1361,10 @@
         "media_type": "photo",
         "size": 94772,
         "object_key": "telegram-media/-1001203560567/384346.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384346.jpg&expires=1789229656&sig=aad9aa5abc5cedefca007f14b896c9cd9c05ba900dadb1c2f60d23fe1d5a8fa7",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384346.jpg&expires=1789231046&sig=c9e5d9e35a6f44d2ed86cecef8143e652c2443d8256a79a8a11e88f1a8db75a5",
         "preview_size": 28357,
         "preview_object_key": "telegram-media/-1001203560567/384346.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384346.preview.jpg&expires=1789229656&sig=2bee1e01fae4e8e557f3f1e952ac73c0a908be8796294aa5842cdbf19381da81"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384346.preview.jpg&expires=1789231046&sig=4ea1903e6da212abf81a81418c53711f2c9fa544e03d641964b9bedfda06ab72"
       }
     },
     {
@@ -1201,10 +1385,10 @@
         "media_type": "photo",
         "size": 34333,
         "object_key": "telegram-media/-1001203560567/384345.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384345.jpg&expires=1789229656&sig=56a9b040abbe402c19c02a0ab66f8468e9f168f4f507d8d514cccfa541026410",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384345.jpg&expires=1789231046&sig=dbb75323819b3952374999d3d2fd731ced2d5ab38855768e13e605af2a0a94a2",
         "preview_size": 19905,
         "preview_object_key": "telegram-media/-1001203560567/384345.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384345.preview.jpg&expires=1789229656&sig=c94be2b5509f20fad0d974704e0f6f8cc18dfb5e204010f4f6b5a48c66d65825"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384345.preview.jpg&expires=1789231046&sig=cc13bacc5cd79707a53f9dc35eb9d93614ab7950a27872b6b53e0a989ac276ae"
       }
     },
     {
@@ -1225,10 +1409,10 @@
         "media_type": "photo",
         "size": 175773,
         "object_key": "telegram-media/-1001313313883/35498.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35498.jpg&expires=1789229656&sig=ca17f0de43d6cd5b69ce0086c2ce37d5942d40fb0dd57aad77990f8448c88336",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35498.jpg&expires=1789231046&sig=4dfa582b198fc315942dca7a2bcb7e609b1e36310f36e8c95e6a1a395aad0448",
         "preview_size": 46119,
         "preview_object_key": "telegram-media/-1001313313883/35498.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35498.preview.jpg&expires=1789229656&sig=e6cf3c436751c9fdb6b96e31de7d2ceacd16660f8ed8ff67c506efe7771d6be6"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35498.preview.jpg&expires=1789231046&sig=82dc737ffce1b14a7921b4e781833730848a458611169f32e1c93a0df192ddc3"
       }
     },
     {
@@ -1409,10 +1593,10 @@
         "media_type": "photo",
         "size": 20146,
         "object_key": "telegram-media/-1001203560567/384336.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384336.jpg&expires=1789229656&sig=3ff2bb263782279ed4ec5f52eb89d66430e71d020e82b9192eac43998d2adc51",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384336.jpg&expires=1789231046&sig=537c9cd36166462f0ababd5b892e69b485f1159236bd33526a90a4ae55a29122",
         "preview_size": 12392,
         "preview_object_key": "telegram-media/-1001203560567/384336.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384336.preview.jpg&expires=1789229656&sig=9a3536f7af7467bbd8f96c2941d845e9472aa19379980040830aafbac72daa11"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384336.preview.jpg&expires=1789231046&sig=297922ccaf716359e6419063b7688355fb47838ef01588fda5ef5d60b47b813b"
       }
     },
     {
@@ -1449,10 +1633,10 @@
         "media_type": "photo",
         "size": 271323,
         "object_key": "telegram-media/-1001261664652/10825.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10825.jpg&expires=1789229656&sig=fb2da9a0fe775a1393480291de04c9adcef12b74d72ae0faaf6f0735fe9c1c56",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10825.jpg&expires=1789231046&sig=6f4923ca2c0ea2edc10e4bf55cc3d9540fde55f61f744cb488d37bc8129f618f",
         "preview_size": 59240,
         "preview_object_key": "telegram-media/-1001261664652/10825.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10825.preview.jpg&expires=1789229656&sig=95b4677d144272a1acb0e3c70ef7c5d07243b636588aba08d09f128856a876fc"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10825.preview.jpg&expires=1789231046&sig=99ca94b48ca77963454e317afbb898f9945030cc6eccf42e82ebf05dddde0318"
       }
     },
     {
@@ -1473,10 +1657,10 @@
         "media_type": "photo",
         "size": 124862,
         "object_key": "telegram-media/-1001343028414/59959.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59959.jpg&expires=1789229656&sig=89db9ee7c9c7abee0ea37153c3ad4bf3fd4f16cb493f44aa4036aeb9a7b6affc",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59959.jpg&expires=1789231046&sig=599bd5b44f251ff88bcc45a984bb68abf28d121839a2a2ceb9f6520f3e9c0d8c",
         "preview_size": 53810,
         "preview_object_key": "telegram-media/-1001343028414/59959.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59959.preview.jpg&expires=1789229656&sig=fc0e5b998e6de5125392c10bf3b1eca791f388f2c52ddef69b692808722353b9"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59959.preview.jpg&expires=1789231046&sig=df17ccd2118fbb27ea58d81d0515de00ba105e708273273e743d7c57b63a54ce"
       }
     },
     {
@@ -1545,10 +1729,10 @@
         "media_type": "photo",
         "size": 205062,
         "object_key": "telegram-media/-1001313313883/35497.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35497.jpg&expires=1789229656&sig=4d2bf7524aec5695bfe649c8c6613ef05ad997f35139b7c5de739ae704c8e07f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35497.jpg&expires=1789231046&sig=4cc2bda29d46ff0319e84483dac16e7185d4e649a781cf226d0aaaabea2608b7",
         "preview_size": 51166,
         "preview_object_key": "telegram-media/-1001313313883/35497.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35497.preview.jpg&expires=1789229656&sig=f0ebb04e074540f218c909a3353cd8d04ac8e173b4ebd60014833af1365557de"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35497.preview.jpg&expires=1789231046&sig=009fd11c091bfddd3cb992db5149c1ea81da922cdbea99430be3861e8f4154d4"
       }
     },
     {
@@ -1569,10 +1753,10 @@
         "media_type": "photo",
         "size": 204509,
         "object_key": "telegram-media/-1001313313883/35496.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35496.jpg&expires=1789229656&sig=ee6e9f4c9c313ef2ce723dbdf48dd94abebfed4236d2089ed5fab36039fd3615",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35496.jpg&expires=1789231046&sig=08cc5aa073665d2c458b7fd0205bf85a5a7b4df296be519142eadf46e6b23a34",
         "preview_size": 51824,
         "preview_object_key": "telegram-media/-1001313313883/35496.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35496.preview.jpg&expires=1789229656&sig=35f601e9edd65598e067281b3d6f5b46481aeca30ad90c9271688f22eade4a12"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35496.preview.jpg&expires=1789231046&sig=a41ab801aeb379ec2b778148087019f31f1cba7a705c3fed3742b57cf59e7aa5"
       }
     },
     {
@@ -1689,10 +1873,10 @@
         "media_type": "photo",
         "size": 144768,
         "object_key": "telegram-media/-1001453563350/5169.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5169.jpg&expires=1789229656&sig=be5f03394e148268076f6b0f84a1061de8d5cb3ce710ec448c1ce4cd678bc73a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5169.jpg&expires=1789231046&sig=a4030b290233d6e2ce85f846a65cd235804ddf633326cf5b18381beb28c2c962",
         "preview_size": 45317,
         "preview_object_key": "telegram-media/-1001453563350/5169.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5169.preview.jpg&expires=1789229656&sig=4f6897aa3f026a5c31e3c133a80cb9f1cad1a6a514c94ed95d2fcdc8aee91f52"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5169.preview.jpg&expires=1789231046&sig=401b3f90a934e1bd319c6ca23a76b1a3c178235fda759a3ccf00a1bb8a7b809d"
       }
     },
     {
@@ -1713,10 +1897,10 @@
         "media_type": "photo",
         "size": 162106,
         "object_key": "telegram-media/-1001453563350/5168.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5168.jpg&expires=1789229656&sig=c870dabd01bd4e88df0297a09f403c154038ab32ed8d32924866498474c0c48e",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5168.jpg&expires=1789231046&sig=724534d054830d183a0eb31fe8920917e3ed939cd4e152e1b8245e9c3b775109",
         "preview_size": 47818,
         "preview_object_key": "telegram-media/-1001453563350/5168.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5168.preview.jpg&expires=1789229656&sig=2578f35ce5f900d99a87ed8045904ae3e2d6fd6a0f14e2d0b08ae1bf5e60ded6"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5168.preview.jpg&expires=1789231046&sig=561548d6613e5d4a499ee705b20a971e088ff0a965de82f114c6618f39f45c30"
       }
     },
     {
@@ -1737,10 +1921,10 @@
         "media_type": "photo",
         "size": 180473,
         "object_key": "telegram-media/-1001453563350/5167.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5167.jpg&expires=1789229656&sig=b5e7b9cfe42bd2b75f8e944deaf84d29205bd4687a3acac09e1fe36149122e8a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5167.jpg&expires=1789231046&sig=7aea4733ce1f29d38f76914348574334a42ca6b36dda5fb0beb085fa07fec6f0",
         "preview_size": 55131,
         "preview_object_key": "telegram-media/-1001453563350/5167.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5167.preview.jpg&expires=1789229656&sig=67d0f9e242283e8f6f54bf2f592c5fd8730c0741fcf5497d830617d31a76745e"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5167.preview.jpg&expires=1789231046&sig=a9b9d37be1e4b87df7b75b438f0083fa7c1ce9d19ee41fb2d8094bf9780e16c5"
       }
     },
     {
@@ -1761,10 +1945,10 @@
         "media_type": "photo",
         "size": 114256,
         "object_key": "telegram-media/-1001453563350/5166.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5166.jpg&expires=1789229656&sig=82293fb5fdd79000e6ad5a8e35d955feed78a37a766a0503030845a599c73db8",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5166.jpg&expires=1789231046&sig=afa88a1aa42d83398cb3d5f9602cc0e4ba8f803a4744ba7336f6cf1c295dea29",
         "preview_size": 35849,
         "preview_object_key": "telegram-media/-1001453563350/5166.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5166.preview.jpg&expires=1789229656&sig=f076e9ba3319604326edb9e9622d0051bb461f5f8446193803d97aac8fca1561"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5166.preview.jpg&expires=1789231046&sig=33e781cf08611964e5456c31a8d0437b48022dd123baee49e5386f2f9998f69d"
       }
     },
     {
@@ -2073,10 +2257,10 @@
         "media_type": "photo",
         "size": 196749,
         "object_key": "telegram-media/-1001313313883/35494.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35494.jpg&expires=1789229656&sig=b3e9e535b146eb97bfff324cee38a85b7e5b3a552ce0bb2f925813866802f57a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35494.jpg&expires=1789231046&sig=c83498e5d629a962043753144fd12826f0a5744a831d9a5a2b299bae7dbb159a",
         "preview_size": 47253,
         "preview_object_key": "telegram-media/-1001313313883/35494.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35494.preview.jpg&expires=1789229656&sig=cf57a9f2efaafc282149779d6e571665edf6098e89ad2b21a12bb2e909f8cb70"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35494.preview.jpg&expires=1789231046&sig=4e614879bf5613c102c40966e4bdf0c934593292f685b41e25a9b0c00b60f7be"
       }
     },
     {
@@ -2161,7 +2345,7 @@
         "media_type": "photo",
         "size": 90891,
         "object_key": "telegram-media/-1001203560567/384316.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384316.jpg&expires=1789229656&sig=6dba75797130df87e872e27e077a3de723de013f47d85215c39b5de54eeef0cc",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001203560567%2F384316.jpg&expires=1789231046&sig=412489d9194b64a5e92873c345355c790183609aeb9268b571ce599d6651c443",
         "preview_size": null,
         "preview_object_key": null,
         "preview_url": null
@@ -2217,10 +2401,10 @@
         "media_type": "photo",
         "size": 49455,
         "object_key": "telegram-media/-1001343028414/59957.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59957.jpg&expires=1789229656&sig=e5ffef81edfe5ac283c2f660dbb3bb1404f518fe45135239433027a1748bfc52",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59957.jpg&expires=1789231046&sig=5f61233848f75c98d1e7c2fa34f2452dd4b9f432ca1a54e1e53b6f3534b11448",
         "preview_size": 50901,
         "preview_object_key": "telegram-media/-1001343028414/59957.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59957.preview.jpg&expires=1789229656&sig=083e7eebe57b999747c438343e6136ffadec0a3a8f3c269ae2d0f3f0694bc921"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59957.preview.jpg&expires=1789231046&sig=34afe11735bc7edd32c67a163dff51589e63c74ea779c84616608e31e7b560fe"
       }
     },
     {
@@ -2241,10 +2425,10 @@
         "media_type": "photo",
         "size": 52751,
         "object_key": "telegram-media/-1001343028414/59956.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59956.jpg&expires=1789229656&sig=671b62544c64438c7bd73eb5b8cb182441b05d33be4047d40de7adf4fdb3c0d9",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59956.jpg&expires=1789231046&sig=39208f5d63b0133f52b16b8436b62b08d901b5641889b9244b4e88a2cc8fe3f2",
         "preview_size": 47242,
         "preview_object_key": "telegram-media/-1001343028414/59956.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59956.preview.jpg&expires=1789229656&sig=84b74acea2176b457ca746e50eb01d8d02cb7c4c23ad87eafc7c2712baa50c63"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59956.preview.jpg&expires=1789231046&sig=01f1c6e5e87a8ba9c3fa0911036a18784d96cb24cfd41c9e4593a5cd73e7e4bb"
       }
     },
     {
@@ -2265,10 +2449,10 @@
         "media_type": "photo",
         "size": 37017,
         "object_key": "telegram-media/-1001343028414/59955.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59955.jpg&expires=1789229656&sig=a82d73c7598dfd3f7ca7b81dc0aea76217773a76876c81aba1f810552680b927",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59955.jpg&expires=1789231046&sig=a87d3b784e49e7250b8349be83ae6384cb421baddb286416fd8b5ce3fdf6a0c5",
         "preview_size": 37605,
         "preview_object_key": "telegram-media/-1001343028414/59955.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59955.preview.jpg&expires=1789229656&sig=f3c31ee24f3990c34e666c9d35a78646301cce9440dd7992805045611c2d1f01"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59955.preview.jpg&expires=1789231046&sig=b3344d514b4a3551269d49ef8950e5c58a590770aca0c84c7f42baa14c2a3861"
       }
     },
     {
@@ -2353,10 +2537,10 @@
         "media_type": "photo",
         "size": 106767,
         "object_key": "telegram-media/-1004471816254/17768.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17768.jpg&expires=1789229656&sig=7f31f031b0129a6ee5511ccdcde33e40e9f9d7da1a0eec9a75b9e46f4ae48bfc",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17768.jpg&expires=1789231046&sig=40056f57317366d6147d14b61f526ea371db1a8651b6575dc1d55bf531be042d",
         "preview_size": 42939,
         "preview_object_key": "telegram-media/-1004471816254/17768.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17768.preview.jpg&expires=1789229656&sig=9d94fd3aad17eba1390d5676ccc485a1f9d0a5779bce0b24dbc3d8c455125bdd"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17768.preview.jpg&expires=1789231046&sig=0efef183854080a04a913b62e108f8640d5a671c2b4e8ff77cc2d8dfad4290b9"
       }
     },
     {
@@ -2377,10 +2561,10 @@
         "media_type": "photo",
         "size": 29599,
         "object_key": "telegram-media/-1004471816254/17769.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17769.jpg&expires=1789229656&sig=fb66a6dfcf4d813d31f81aa08faaef4f1913b9ede325623e7fe8e91935b85ace",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17769.jpg&expires=1789231046&sig=55fc9f9cd71263f65e81b7d39392071fce075f5e46b3ad1c4e9f81556a0915ae",
         "preview_size": 12815,
         "preview_object_key": "telegram-media/-1004471816254/17769.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17769.preview.jpg&expires=1789229656&sig=d5bd8522fac9605c8ca356e4df1bc76fff13f7fb11a657a16824db82a1b9969e"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17769.preview.jpg&expires=1789231046&sig=831833617668fcfdf8016a91e65d73253e816d05a67a4d6a6b4e8d477d67cc58"
       }
     },
     {
@@ -2401,10 +2585,10 @@
         "media_type": "photo",
         "size": 61216,
         "object_key": "telegram-media/-1004471816254/17767.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17767.jpg&expires=1789229656&sig=c21be26dccb618ad3067915acee072df4721d5c92b1193181e4bf75f46e9f5e5",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17767.jpg&expires=1789231046&sig=8816c05044b5d9b8840bd8f30e28836985ffe1ae56abff359a158b03d7fad83d",
         "preview_size": 26226,
         "preview_object_key": "telegram-media/-1004471816254/17767.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17767.preview.jpg&expires=1789229656&sig=ccf6244f3d5bd36271e1d96a5a2349b707f0d609164ba7ec065dde3859f544f9"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1004471816254%2F17767.preview.jpg&expires=1789231046&sig=23c3a6bea3bfd1efc5de7866cfe9edc200fad9be404a9f3e832a757d93835295"
       }
     },
     {
@@ -2537,10 +2721,10 @@
         "media_type": "photo",
         "size": 225001,
         "object_key": "telegram-media/-1001313313883/35492.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35492.jpg&expires=1789229656&sig=b68572f8f5456636f4ca9d7a2346ba0ff2c3f3ccef0cbb91d7d6b094eac76e6f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35492.jpg&expires=1789231046&sig=c77a4843ff4ba99b6d45e7672a52a5838f0a9cc33777948d61342b55747bf877",
         "preview_size": 48671,
         "preview_object_key": "telegram-media/-1001313313883/35492.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35492.preview.jpg&expires=1789229656&sig=75e2c80eab4e114a2ab3c9318da5d0155c4883f27b28c29b1f48f7769d2ef882"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35492.preview.jpg&expires=1789231046&sig=d7869b3efd8c1447301317a564c8928046c32bcd27c02dc138e2fedf38683fba"
       }
     },
     {
@@ -2593,10 +2777,10 @@
         "media_type": "photo",
         "size": 94558,
         "object_key": "telegram-media/-1001453563350/5165.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5165.jpg&expires=1789229656&sig=fe09606e69335f4f3f59de62234e4fb58a2015c634c77b8f0ff7d0839d011562",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5165.jpg&expires=1789231046&sig=48087b6fba1cd87c3f146439b439b4f35b9cb8798752993f2ab4aeaf6e808152",
         "preview_size": 44525,
         "preview_object_key": "telegram-media/-1001453563350/5165.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5165.preview.jpg&expires=1789229656&sig=5f304f309195aa463852afc0b5c8a633385a371b3884ed9c3526c1c73ac5cbf6"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5165.preview.jpg&expires=1789231046&sig=72ca86690f70e7d528db81bd433dc1a346f31cad9941c6008fef9f6c410183bd"
       }
     },
     {
@@ -2809,10 +2993,10 @@
         "media_type": "photo",
         "size": 175392,
         "object_key": "telegram-media/-1001313313883/35491.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35491.jpg&expires=1789229656&sig=797330277b95dc85e46fb6efa7e32f66e93c26ee7f471a9de343c94f881a5249",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35491.jpg&expires=1789231046&sig=0657f59e591f7169456e8b75be7bb42f36501ea2675acb5020b60efb37dde9f9",
         "preview_size": 41473,
         "preview_object_key": "telegram-media/-1001313313883/35491.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35491.preview.jpg&expires=1789229656&sig=e8a8fcbf9a99087a6334511f51da1e9a9d4b52c970db1e0c7debd67c949d9c25"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35491.preview.jpg&expires=1789231046&sig=6d0963442c0e94d14d706ec9866e4192bc64d96b163d4c6b9e32c74122edf544"
       }
     },
     {
@@ -2849,10 +3033,10 @@
         "media_type": "photo",
         "size": 88359,
         "object_key": "telegram-media/-1001343028414/59950.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59950.jpg&expires=1789229656&sig=bc22cceff15ec4d5240405358fc729306482cafe8a763b7c416d0c53e6ccabe3",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59950.jpg&expires=1789231046&sig=739aa6deb6d90b15e719eb6019a2242cf053a2853b8910e6905754d1acfb7831",
         "preview_size": 33165,
         "preview_object_key": "telegram-media/-1001343028414/59950.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59950.preview.jpg&expires=1789229656&sig=0b8b5e67651886711215497dc3edda84a73c248290cf905f0bbe6c0717926f84"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59950.preview.jpg&expires=1789231046&sig=d7cff54b74085a189a2df1ac47d2f62e859fabd7150b11b54139df42a6351906"
       }
     },
     {
@@ -2985,10 +3169,10 @@
         "media_type": "photo",
         "size": 65711,
         "object_key": "telegram-media/-1001453563350/5164.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5164.jpg&expires=1789229656&sig=ae48a054a1e173baffe20e01d77cb7519153245c2c641c315bb94b3085422ed5",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5164.jpg&expires=1789231046&sig=8f2ed4ba021a89a0b14c7b10495e2cd5bdef20a5d192b77ff5bbca5bef486221",
         "preview_size": 34494,
         "preview_object_key": "telegram-media/-1001453563350/5164.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5164.preview.jpg&expires=1789229656&sig=1ff7e522ca51e086ba7a3ace2f87630f7168386e6487a71635a36ba435fc4e56"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5164.preview.jpg&expires=1789231046&sig=c0512cb75556e0373f69eca16c6de67a2eb7aa72328dad020fc5dcb54e62e6d1"
       }
     },
     {
@@ -3025,10 +3209,10 @@
         "media_type": "photo",
         "size": 143953,
         "object_key": "telegram-media/-1001313313883/35489.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35489.jpg&expires=1789229656&sig=2cf893ea104c7be8071ccdbd67e36ff752e9f324b83f9ad89cc395d6c902ac9c",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35489.jpg&expires=1789231046&sig=2566f778c430cba8fa479a8f2aac7397193540d8599ceeb251ca752a2d05b6fb",
         "preview_size": 31591,
         "preview_object_key": "telegram-media/-1001313313883/35489.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35489.preview.jpg&expires=1789229656&sig=6362dc0026bf4ed37ebd4e61023028eebfa5bc6879c46fc0229c3361e60870ce"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35489.preview.jpg&expires=1789231046&sig=33c5b51f3daf93df1e0d6ec06b32dfec8abbe53f5119187e9f271c1fcfa0781f"
       }
     },
     {
@@ -3081,10 +3265,10 @@
         "media_type": "photo",
         "size": 191118,
         "object_key": "telegram-media/-1001313313883/35488.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35488.jpg&expires=1789229656&sig=cc2ac7bc1d1b2ddc88b35158d0fff879040106aa096c80af2aff02ca760928f1",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35488.jpg&expires=1789231046&sig=fe6ab8b89d9b7784f22c5a8583d4e376af924cc82d3bc2f1da16c09dddfd3453",
         "preview_size": 44164,
         "preview_object_key": "telegram-media/-1001313313883/35488.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35488.preview.jpg&expires=1789229656&sig=2b44187feb0321f2cd05098f0376e83615339bd184e73344f9796fdcf48a8d3a"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35488.preview.jpg&expires=1789231046&sig=dbdac0cdcc4391b22e3e41e0fe6f67d2ca98e4fe6bac5d964e0df295f6a86651"
       }
     },
     {
@@ -3137,10 +3321,10 @@
         "media_type": "photo",
         "size": 74768,
         "object_key": "telegram-media/-1001313313883/35487.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35487.jpg&expires=1789229656&sig=a2e4b0f592c30c25a5e710c4f5e027947e4377e27857c4197d858f5836488d7c",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35487.jpg&expires=1789231046&sig=f007f79e85275061f88d3faecac46b6e587ddbb7f49864483e0f06b86980afa1",
         "preview_size": 33769,
         "preview_object_key": "telegram-media/-1001313313883/35487.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35487.preview.jpg&expires=1789229656&sig=0e29e182a2ade1960893a1f73e919872b1fde25998eef2a29540b043fef45aec"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35487.preview.jpg&expires=1789231046&sig=a7e3c3af61260239ccc4aa75e66511764c50fc6543727e0aeb125358a510c048"
       }
     },
     {
@@ -3177,10 +3361,10 @@
         "media_type": "photo",
         "size": 163781,
         "object_key": "telegram-media/-1001313313883/35485.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35485.jpg&expires=1789229656&sig=c3d366d5803b10f6ffa7ef255a055a161124a5dce466a2f4ab906a055339bad3",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35485.jpg&expires=1789231046&sig=547de9dd3b82cc896ff77aac3aa03b7d4d1416092b64d5589cf66cb4494caf20",
         "preview_size": 36699,
         "preview_object_key": "telegram-media/-1001313313883/35485.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35485.preview.jpg&expires=1789229656&sig=aaefe4c0ec44f16d27b1ef8f0806f748dc6c67a4e470ac24efc77816b5b628f7"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35485.preview.jpg&expires=1789231046&sig=cdeeefefd981eacc97ab2bee9dee02be41c77bd51c0af52cb9574632871ba8a7"
       }
     },
     {
@@ -3201,10 +3385,10 @@
         "media_type": "photo",
         "size": 179844,
         "object_key": "telegram-media/-1001313313883/35486.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35486.jpg&expires=1789229656&sig=5d3b5ed0963bcff81c26a3c5337439a356c4d1674a37f1d86958ccba18788c10",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35486.jpg&expires=1789231046&sig=e045148f09832efbef4a82d6bfcdb71b3764a38ba33ee157ba78fa7c0650fef7",
         "preview_size": 40230,
         "preview_object_key": "telegram-media/-1001313313883/35486.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35486.preview.jpg&expires=1789229656&sig=9603f76692d56eaff36d504dcb5105eec3f56580ccbce423c9149d4d7e2fbbbf"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35486.preview.jpg&expires=1789231046&sig=898849a5ed6f0060cb8e68412c418afdf3f5dc19a169d165536bf63d00b0e0e9"
       }
     },
     {
@@ -3705,10 +3889,10 @@
         "media_type": "photo",
         "size": 56489,
         "object_key": "telegram-media/-1001343028414/59948.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59948.jpg&expires=1789229656&sig=087e963d226cb7df2a9f0dfd16dfe20ca3e002f8ee14e564936c02903b99f6ac",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59948.jpg&expires=1789231046&sig=14308467d7e9ad159f57778ad9a56a5aa452596812b378dd63ed60ecf3b7c4d5",
         "preview_size": 16991,
         "preview_object_key": "telegram-media/-1001343028414/59948.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59948.preview.jpg&expires=1789229656&sig=e4be6a9695f165f09078daf894e4b2d0b98cab373a676e9f24c58762421eb67f"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59948.preview.jpg&expires=1789231046&sig=7ee161eb598b89bba4a411a8c22dc62d18a236d3ce3b79648c48ed7dee5d2f40"
       }
     },
     {
@@ -3729,10 +3913,10 @@
         "media_type": "photo",
         "size": 62316,
         "object_key": "telegram-media/-1001343028414/59949.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59949.jpg&expires=1789229656&sig=26391e2ffd5d1b177cce275a4c4e42414bb5492271c1a846121d9ab066c5294f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59949.jpg&expires=1789231046&sig=a8b99218a99c50a1f87ca28d450f8ba6c95933ac309560cc57b1875883f3031b",
         "preview_size": 20327,
         "preview_object_key": "telegram-media/-1001343028414/59949.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59949.preview.jpg&expires=1789229656&sig=4786b810907f31afb6094742c15ed70dd1f3659ee712a7f6eb1db314881c6df1"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59949.preview.jpg&expires=1789231046&sig=e32d11ee0d43f3905202515a0fb057a7361766ca4bce12727895f364667b20f4"
       }
     },
     {
@@ -3897,10 +4081,10 @@
         "media_type": "photo",
         "size": 318228,
         "object_key": "telegram-media/-1001261664652/10823.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10823.jpg&expires=1789229656&sig=211f0cc9e8a1c87cec0f023e39bc6a865404e4b932c3e86fe271f99d0d65a670",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10823.jpg&expires=1789231046&sig=912620c0c6ecbad8841b03f4bb53d561cf309f6d8d6d62b6ee10055b2042446f",
         "preview_size": 55906,
         "preview_object_key": "telegram-media/-1001261664652/10823.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10823.preview.jpg&expires=1789229656&sig=39fbc65dbe7e11d7170bcb23e8dc2c9d54d055fc8e1874c30fe599bdf8b2a380"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10823.preview.jpg&expires=1789231046&sig=dc65fd052a9c0da753517ea733b5749283bc31107eacccfd12d062501523c366"
       }
     },
     {
@@ -6289,10 +6473,10 @@
         "media_type": "photo",
         "size": 146403,
         "object_key": "telegram-media/-1001125288200/9624.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9624.jpg&expires=1789229656&sig=5c65883d7d930243defdae32a07a1f41d414eb39fcd3bf29ba93794faf29fcbc",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9624.jpg&expires=1789231046&sig=7367188e4abd5fa24a4cb4ef74dd0d33734b318012b30e61472ad0082c1620e8",
         "preview_size": 41527,
         "preview_object_key": "telegram-media/-1001125288200/9624.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9624.preview.jpg&expires=1789229656&sig=26b529fd5b2f051e89c2f33bb1450fad553fcb5056e6e7ff93f0f334711f68c1"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9624.preview.jpg&expires=1789231046&sig=d768b9e8bd443424eb2fbd0bed161ad0ca5794758027fc722e7d2049a8662911"
       }
     },
     {
@@ -6361,10 +6545,10 @@
         "media_type": "photo",
         "size": 244824,
         "object_key": "telegram-media/-1001313313883/35483.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35483.jpg&expires=1789229656&sig=cfce79df3fe4d68d5d6a5580db4ce08d1ed5e0c3334d4ae29a16189b41510961",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35483.jpg&expires=1789231046&sig=65d5107ad6e4018bb03433fbd932541ad3c8ae440364158293750fa6ea052134",
         "preview_size": 59559,
         "preview_object_key": "telegram-media/-1001313313883/35483.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35483.preview.jpg&expires=1789229656&sig=ed0a38c62af4224ef67b661f367a03674518a0756f26fa9c62935276783a200d"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35483.preview.jpg&expires=1789231046&sig=61166ba1a76ca7585c20ab26b3d8ea0516f3bf58c72419a339b3c3880282c91b"
       }
     },
     {
@@ -6513,10 +6697,10 @@
         "media_type": "photo",
         "size": 182262,
         "object_key": "telegram-media/-1001313313883/35481.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35481.jpg&expires=1789229656&sig=068f66bc7315b1f04180881ba532b3a501b600b00e7b11067cfec6984d68c963",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35481.jpg&expires=1789231046&sig=a105c41c1b5522f915a63a6b357b29291d25617d9065890059ee17f592ced195",
         "preview_size": 39097,
         "preview_object_key": "telegram-media/-1001313313883/35481.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35481.preview.jpg&expires=1789229656&sig=5135cd8a16777c79f7399167320c91213835f6bb9f33cbbdff02a9661c68febf"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35481.preview.jpg&expires=1789231046&sig=94de7d855ae8d750d0928bbaf5907b76b515a65a567dbc4d55b3243af2dcd7fe"
       }
     },
     {
@@ -6633,10 +6817,10 @@
         "media_type": "photo",
         "size": 173909,
         "object_key": "telegram-media/-1001313313883/35480.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35480.jpg&expires=1789229656&sig=26ee1dc1acbe4cdcdfdc60e4155aed9f238b2d1514209cfdf30b5a8d7b9ef8ec",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35480.jpg&expires=1789231046&sig=a38d1d753f42408146cebb6568b4e631bea97e436ef2ed8bffe7c2482301b5cd",
         "preview_size": 37102,
         "preview_object_key": "telegram-media/-1001313313883/35480.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35480.preview.jpg&expires=1789229656&sig=da512db93eaf7834a235f539a388a70db94b7dc069f22c53a32596dd36f7094c"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35480.preview.jpg&expires=1789231046&sig=cf01abe91523600df7a22c0721fe1f49114888d6dd449c0b7cc0254a6ed38dfe"
       }
     },
     {
@@ -6801,10 +6985,10 @@
         "media_type": "photo",
         "size": 50718,
         "object_key": "telegram-media/-1001453563350/5161.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5161.jpg&expires=1789229656&sig=19ed7489ae978c187c3dae0b01caf481ef3f787da21dc60e2fc0fd3f41b81a9e",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5161.jpg&expires=1789231046&sig=cc27a7ee448c703b87bd8aa00367df72e3d2d5415da0665143c66102fd550942",
         "preview_size": 19256,
         "preview_object_key": "telegram-media/-1001453563350/5161.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5161.preview.jpg&expires=1789229656&sig=8329f15a294ad6db467a8b875c68e8699ae17ed88f1bb1a5992ffbafdd0f6ba8"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5161.preview.jpg&expires=1789231046&sig=d9c6067aa37fa594362ee17c74f7ff30e571b26194e2b8d2428550167280a409"
       }
     },
     {
@@ -6825,10 +7009,10 @@
         "media_type": "photo",
         "size": 91211,
         "object_key": "telegram-media/-1001453563350/5162.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5162.jpg&expires=1789229656&sig=96255a4e037ab6b50aa7397bd44f0be454776c7b141dae0f6004b5536063f3a9",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5162.jpg&expires=1789231046&sig=5ae6cdb025f14468c51679887bdcd46fc18523a233f6ba32ad0c8547180e1074",
         "preview_size": 44637,
         "preview_object_key": "telegram-media/-1001453563350/5162.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5162.preview.jpg&expires=1789229656&sig=fafb48dfb4073f9df4e8c2b8ed14cded3eb9955d5559f928cca1bfe8931e27ec"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5162.preview.jpg&expires=1789231046&sig=dfd9046d5a6646a51d06132d37061e4026939a82751c988e399d74898ca9ace5"
       }
     },
     {
@@ -6849,10 +7033,10 @@
         "media_type": "photo",
         "size": 80351,
         "object_key": "telegram-media/-1001453563350/5163.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5163.jpg&expires=1789229656&sig=ae3e22ab1f110f5a7f307cd8835772a81187342f2e0f832d8aaa7bec24fa50b0",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5163.jpg&expires=1789231046&sig=f0ad11fde3b12c74fe0883cce4e628ec80ec63c27b659a9c991bc383b9a9d4c6",
         "preview_size": 40903,
         "preview_object_key": "telegram-media/-1001453563350/5163.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5163.preview.jpg&expires=1789229656&sig=2bd23d299c0e6e33d9bbfc73214d322a3d68ab27bed986b066df2914d7a18caf"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5163.preview.jpg&expires=1789231046&sig=2fa84eac38494f4d03795be6b497eb44a13674b248490aa990e80b2991f9c24c"
       }
     },
     {
@@ -6953,10 +7137,10 @@
         "media_type": "photo",
         "size": 213740,
         "object_key": "telegram-media/-1001313313883/35479.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35479.jpg&expires=1789229656&sig=26483d83bf44fc611dff98e08d2ada4963932dcfdae2ff551b2404b9b15b3db8",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35479.jpg&expires=1789231046&sig=e56903d57d74e7dea60c7d6e0b74f08f488196849129ef8cff56f7076b6fa4c6",
         "preview_size": 48165,
         "preview_object_key": "telegram-media/-1001313313883/35479.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35479.preview.jpg&expires=1789229656&sig=f78b5f8be979c50d7ec21d9bf79fcdae57ce7b7a264a125bb949aa0a437cf9d4"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35479.preview.jpg&expires=1789231046&sig=be39a2e3a083ddfc597efcb54f4fdb23d87b70c8894c336e337fdc701ca6161d"
       }
     },
     {
@@ -7121,10 +7305,10 @@
         "media_type": "photo",
         "size": 94466,
         "object_key": "telegram-media/-1001125288200/9615.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9615.jpg&expires=1789229656&sig=8ea6a35b52bcce285379f93971d581c038c5a97b97980e718542d07abdd5a20f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9615.jpg&expires=1789231046&sig=b2282188ff49d357314d5450dbb5436f9549b844614511be900402b806a4b995",
         "preview_size": 27999,
         "preview_object_key": "telegram-media/-1001125288200/9615.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9615.preview.jpg&expires=1789229656&sig=211c58cb02dabbeb18534c6b067212e33c9aff81ee0784f96cce3c2203194f50"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9615.preview.jpg&expires=1789231046&sig=fdd7285d7202dc0710c3d44796a8dacbb75b1b63325f640bfc14bac87c5ddb27"
       }
     },
     {
@@ -7145,10 +7329,10 @@
         "media_type": "photo",
         "size": 88378,
         "object_key": "telegram-media/-1001125288200/9616.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9616.jpg&expires=1789229656&sig=979188fc0059ded3719e1ed704fc6ed6d4f018b20bee0a4c6bca18da6ea1849a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9616.jpg&expires=1789231046&sig=e15ffb2f42e791d22760b16bbf8ca5464aa7cf11502d73d3efb01e0fc6e75815",
         "preview_size": 28852,
         "preview_object_key": "telegram-media/-1001125288200/9616.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9616.preview.jpg&expires=1789229656&sig=e2e033d1ffbd0bfb2c38934597a40758990cd6b8906906fb6e30c13230dde355"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9616.preview.jpg&expires=1789231046&sig=d8f4f2866fa212ce7fbbd418347e41f32289ebd20256a0eadd0fc2aa36d21843"
       }
     },
     {
@@ -7169,10 +7353,10 @@
         "media_type": "photo",
         "size": 100536,
         "object_key": "telegram-media/-1001125288200/9617.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9617.jpg&expires=1789229656&sig=26e7a87fcf8df25c374970582688ed21e9beed39a847493236cb43fb81ab3aa1",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9617.jpg&expires=1789231046&sig=dc3076a3d0c72b38b81edff2eb99431af5e4d07c6c3641e477e4fdb2a251bf5a",
         "preview_size": 31111,
         "preview_object_key": "telegram-media/-1001125288200/9617.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9617.preview.jpg&expires=1789229656&sig=4d5a85eb2d3ba6e4ab5206a493903cfa5c3ca7b667b179b2070c4899d0217e41"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9617.preview.jpg&expires=1789231046&sig=7afd48654810de04db82db8e1c325d15754f2786d4da360495779424a968f2e9"
       }
     },
     {
@@ -7193,10 +7377,10 @@
         "media_type": "photo",
         "size": 114685,
         "object_key": "telegram-media/-1001125288200/9618.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9618.jpg&expires=1789229656&sig=60b45c5b15273e9f5cc8380734479f41936f33fd6fff7c218db72551b5a894ab",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9618.jpg&expires=1789231046&sig=2848131e01ed3d536cf96cec82f30d6b1cd167fc82a0cc5854f00ac021796cdc",
         "preview_size": 37624,
         "preview_object_key": "telegram-media/-1001125288200/9618.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9618.preview.jpg&expires=1789229656&sig=cd8caa28831d2d8487435dc6357f74672bd5a8bfeb3b7ebdabe4070cc25e5190"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9618.preview.jpg&expires=1789231046&sig=f8ba10c251710b9ee6fbe65d5e1ec6f5dfa1f683b72ca092c12c0e7830fb4304"
       }
     },
     {
@@ -7217,10 +7401,10 @@
         "media_type": "photo",
         "size": 101587,
         "object_key": "telegram-media/-1001125288200/9619.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9619.jpg&expires=1789229656&sig=8a197cb972015311c137d93b0f33f7d8e2ad333fa2553871568858b1d746eb8b",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9619.jpg&expires=1789231046&sig=37e884377654d7251f7994af3f3d0fea1877342d6b405987bb95cf73d10d6d4a",
         "preview_size": 31379,
         "preview_object_key": "telegram-media/-1001125288200/9619.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9619.preview.jpg&expires=1789229656&sig=6dedd846bee5672f9ec60745b7d1d7105a1ca83f1fc6e415ef70a493b962defa"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9619.preview.jpg&expires=1789231046&sig=415d2afd53a2e62b83581518fb6837bd3bf6bdbc80365d4b62d73def88a6278d"
       }
     },
     {
@@ -7241,10 +7425,10 @@
         "media_type": "photo",
         "size": 110462,
         "object_key": "telegram-media/-1001125288200/9620.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9620.jpg&expires=1789229656&sig=f5cac4f0c5a2cd4b31591cb499031d3fd11ef787ac4b56ed71017b9c43a92ead",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9620.jpg&expires=1789231046&sig=73c988dc4ac6de31b924331b11149b79bc5effa934b24532fa941cf8ce7ca8a7",
         "preview_size": 34714,
         "preview_object_key": "telegram-media/-1001125288200/9620.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9620.preview.jpg&expires=1789229656&sig=0fdce7cd4fa8d4e1fc412e81af532035b206a329141ea11d97bca8f2888d4c23"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9620.preview.jpg&expires=1789231046&sig=e1a8387c0995d2f1c883e8c7d524a08627eeb7e2ec884d07dcd60cc2fdc86867"
       }
     },
     {
@@ -7265,10 +7449,10 @@
         "media_type": "photo",
         "size": 104474,
         "object_key": "telegram-media/-1001125288200/9621.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9621.jpg&expires=1789229656&sig=e929ac0ac4052257bd620749d769386d45a885316ec274835efa935656906028",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9621.jpg&expires=1789231046&sig=89e8d6d26869a922fc7b5b0b32a37e1d3394dec2cb6c25c3d453c4dfe7dacda7",
         "preview_size": 30944,
         "preview_object_key": "telegram-media/-1001125288200/9621.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9621.preview.jpg&expires=1789229656&sig=e700d0f9e34008300bd0406d06f151180b4f84d7c82acd7f157965f4750efb2d"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9621.preview.jpg&expires=1789231046&sig=c3ac8ceeaf1e9aa3dad3d80f3cff1fa73c3839c6f3038cd58de6fc85cbcded0e"
       }
     },
     {
@@ -7289,10 +7473,10 @@
         "media_type": "photo",
         "size": 96339,
         "object_key": "telegram-media/-1001125288200/9622.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9622.jpg&expires=1789229656&sig=872d6dff4ba4fdb28a945a307591d08ca01ada81dbeb2a8adcdbbbaf17815a39",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9622.jpg&expires=1789231046&sig=ed853d072a6972942fbbd07ec13924a394fdc40a7f2db55200e8c1342752eaa5",
         "preview_size": 31783,
         "preview_object_key": "telegram-media/-1001125288200/9622.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9622.preview.jpg&expires=1789229656&sig=bcd040a1e33ada297687e747f84e526058d7eaebfcbceb6a69729e2bedb20d46"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9622.preview.jpg&expires=1789231046&sig=bbc0aa98ebe7dc1fa37627facabd71da8fd7df0dd012db07e71a3c9b1e876831"
       }
     },
     {
@@ -7313,10 +7497,10 @@
         "media_type": "photo",
         "size": 96304,
         "object_key": "telegram-media/-1001125288200/9623.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9623.jpg&expires=1789229656&sig=7e2a1157449c7f12442ef2a5cccc62665da45973ec09458458bb6337da21a5c9",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9623.jpg&expires=1789231046&sig=6255e175f15e39e0c3ae08eec31b60607fdf584bf92305fb483135a2409d9787",
         "preview_size": 29945,
         "preview_object_key": "telegram-media/-1001125288200/9623.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9623.preview.jpg&expires=1789229656&sig=3a580377e51d4eabcfe47d11fec1115a6ce8e6a548d1c89928b25bd121494559"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9623.preview.jpg&expires=1789231046&sig=c3c4c1b670b7d18f61daee9098f50b6333d20443202ee04419c84e68302e0142"
       }
     },
     {
@@ -7833,10 +8017,10 @@
         "media_type": "photo",
         "size": 130475,
         "object_key": "telegram-media/-1001261664652/10822.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10822.jpg&expires=1789229656&sig=14aec5d1a7577914508003ee7afd7829e085d867e3f3d50c5b815e1bf94d930a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10822.jpg&expires=1789231046&sig=f7221f4361466d8037969781348238c20a2ec3d39c6271614093300d9619e07a",
         "preview_size": 30994,
         "preview_object_key": "telegram-media/-1001261664652/10822.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10822.preview.jpg&expires=1789229656&sig=35e8f1da83928887037bf8807434cee479a080bc4423c4d8f4d01f0efcf5d616"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10822.preview.jpg&expires=1789231046&sig=946f2b2bff86618c325f47108218dd79ba9645a750f1dadf84d159c2b93b0f24"
       }
     },
     {
@@ -8145,10 +8329,10 @@
         "media_type": "photo",
         "size": 166675,
         "object_key": "telegram-media/-1001313313883/35477.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35477.jpg&expires=1789229656&sig=7f09ffc62b91d2504e24cfc4a07f656d1deefb344fbce352feefd42cf5ed5aba",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35477.jpg&expires=1789231046&sig=bbe0313b9de6080bd6e752b8e08ef9974340510e62ea82ef23b799d14509a320",
         "preview_size": 37273,
         "preview_object_key": "telegram-media/-1001313313883/35477.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35477.preview.jpg&expires=1789229656&sig=f413e580e02e898d0d28b1cac1e10d349b880665ce5da73f80be8e753c46cb9d"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35477.preview.jpg&expires=1789231046&sig=64706879a5170806403bb523fbc36c8d437135dd5e20b6020e7a8ade98f304cc"
       }
     },
     {
@@ -8825,10 +9009,10 @@
         "media_type": "photo",
         "size": 97605,
         "object_key": "telegram-media/-1001453563350/5160.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5160.jpg&expires=1789229656&sig=ac075afde30c399d1af05b685c54635f7416548d79cae1095e8a057e3ab27c99",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5160.jpg&expires=1789231046&sig=494b10f121fe36b32090423fc1e62e34f3f172c3a708bec0ebc303aed3d8e57c",
         "preview_size": 20108,
         "preview_object_key": "telegram-media/-1001453563350/5160.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5160.preview.jpg&expires=1789229656&sig=b50b5239589118f8088bf304577bf72ed7fd40611df2fab240be44819ec186ad"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5160.preview.jpg&expires=1789231046&sig=77aec6c5ef8d4294777dd67f664e6f14842959d7d7b55ba58c84f66178e679d1"
       }
     },
     {
@@ -9153,10 +9337,10 @@
         "media_type": "photo",
         "size": 330376,
         "object_key": "telegram-media/-1001261664652/10821.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10821.jpg&expires=1789229656&sig=a89197eb32b491c70a3aa07065666717fdb8cdc9574e61400de00a01add347de",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10821.jpg&expires=1789231046&sig=7706d0fa3c94e829dd0e983478dacaf4014933ee01ec31a780b1e03f1479b66b",
         "preview_size": 60545,
         "preview_object_key": "telegram-media/-1001261664652/10821.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10821.preview.jpg&expires=1789229656&sig=3495c6e4c6bfc4c278f52ece915dc66914f52bb80a5fe41c2fd68f582f7b08b3"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10821.preview.jpg&expires=1789231046&sig=293ecda33f546d690be5e86d3eca87a01b8895b52ebc56695c98b25dbfd43d1b"
       }
     },
     {
@@ -9225,10 +9409,10 @@
         "media_type": "photo",
         "size": 170317,
         "object_key": "telegram-media/-1001313313883/35475.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35475.jpg&expires=1789229656&sig=ba66e69aa5c627d8479ca4e9048de95acf58d86135b5edafa95c192f6e1fb41f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35475.jpg&expires=1789231046&sig=af7675b27d366a1c9b92e8a79be67cb0aa82db1f9706d1022ab28ab87f11ba91",
         "preview_size": 37134,
         "preview_object_key": "telegram-media/-1001313313883/35475.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35475.preview.jpg&expires=1789229656&sig=1f1bfdb4db3846f244dfc6c9ddeefd770918ac8ffe946c35e639c2479966abb3"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35475.preview.jpg&expires=1789231046&sig=acd8bf59b20464cd6f5659366801079e37359235e5ecefa04896440c65d369ae"
       }
     },
     {
@@ -9425,10 +9609,10 @@
         "media_type": "photo",
         "size": 164206,
         "object_key": "telegram-media/-1001313313883/35472.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35472.jpg&expires=1789229656&sig=976ad0bf061ecd65329e03b1b33c4531ce34c83ad4ef5d039e7a6e9d2d1d803b",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35472.jpg&expires=1789231046&sig=6744c6aa4b0f37634aa1a2a00356ef4fbd0537bf3d717ad038da3956e71ddd23",
         "preview_size": 38723,
         "preview_object_key": "telegram-media/-1001313313883/35472.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35472.preview.jpg&expires=1789229656&sig=08e6719293624058b3fb5e4b27b627a65434667b953136708b54991289616f4d"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35472.preview.jpg&expires=1789231046&sig=723dbc8b6fb2d6f9132417a17b58e61a98eb3d34a1fa88edeb730db8a995836d"
       }
     },
     {
@@ -9465,10 +9649,10 @@
         "media_type": "photo",
         "size": 215291,
         "object_key": "telegram-media/-1001313313883/35471.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35471.jpg&expires=1789229656&sig=0b820fa93eb364aeb866ee91887de536c005f73cc00a182bba0562fa2926e514",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35471.jpg&expires=1789231046&sig=8c106338359196db906dec047f7816fb3c41c7e8e0cc24a02d56cf5e797f9fde",
         "preview_size": 51944,
         "preview_object_key": "telegram-media/-1001313313883/35471.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35471.preview.jpg&expires=1789229656&sig=5c80b8f95c53c9c85a603b638f32d7789340cb7df94521685f7ad76c36e0d91b"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35471.preview.jpg&expires=1789231046&sig=23bb8c1afc83cf46efaa09c557f5e595f60ea65547f3945351c3e606448b92f0"
       }
     },
     {
@@ -9569,10 +9753,10 @@
         "media_type": "photo",
         "size": 170998,
         "object_key": "telegram-media/-1001313313883/35470.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35470.jpg&expires=1789229656&sig=405f7aa9ab2aae00a0522e9063b1a3b35163978aaf045f6b8507ac0eb1232859",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35470.jpg&expires=1789231046&sig=eb2962d5f486d8b0fdc69d188a4f13129671f76ce87904e3a80c559a9fa9a455",
         "preview_size": 40267,
         "preview_object_key": "telegram-media/-1001313313883/35470.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35470.preview.jpg&expires=1789229656&sig=468b0ab3653f18b0f97759e865b31e55dfd6cb7174b29e31ef27c0114ad87f00"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35470.preview.jpg&expires=1789231046&sig=039ecaa2e229485321c5bfc7c6589284664135ba3928ba13ea69a125a7a15e76"
       }
     },
     {
@@ -9705,7 +9889,7 @@
         "media_type": "photo",
         "size": 227568,
         "object_key": "telegram-media/-1001313313883/35469.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35469.jpg&expires=1789229656&sig=47bab8b7cf12218a4755762c5b5debacbfc278c899e928aec9daccb6ab6d7295",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001313313883%2F35469.jpg&expires=1789231046&sig=a279cd6dcf727704e215c61f43a63b7c6aed08107278ef3eb01109d650bceb8c",
         "preview_size": null,
         "preview_object_key": null,
         "preview_url": null
@@ -10465,10 +10649,10 @@
         "media_type": "photo",
         "size": 277596,
         "object_key": "telegram-media/-1001261664652/10820.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10820.jpg&expires=1789229656&sig=181a473cf376e2e8a5b5d4c94a16f41548a09a2fb6abb18afd9e6b078aeaf091",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10820.jpg&expires=1789231046&sig=6f22274c3773bd4fb47c4c4a52aec793cf2462e03bd2efcaeb0cfded68777d5a",
         "preview_size": 48528,
         "preview_object_key": "telegram-media/-1001261664652/10820.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10820.preview.jpg&expires=1789229656&sig=4eca844342677c9b74669635157dfdaac247b49b16765c58f534e3666da6e6c2"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10820.preview.jpg&expires=1789231046&sig=040de82b222893d6eaf9ffe5ec8770cae34ee24dab3c09e141bde344136d7234"
       }
     },
     {
@@ -11337,10 +11521,10 @@
         "media_type": "photo",
         "size": 48778,
         "object_key": "telegram-media/-1001453563350/5157.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5157.jpg&expires=1789229656&sig=6ac8a5c732cfd13549fdbc39092eaa9aa6caebc170fe56dcc3b770088c0399e3",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5157.jpg&expires=1789231046&sig=a281e208f2effd7af9655dd6dee7bbe9ae30c5165db8d514013b9696c9020893",
         "preview_size": 19311,
         "preview_object_key": "telegram-media/-1001453563350/5157.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5157.preview.jpg&expires=1789229656&sig=f9ac1452dd5d218164f4a5b6abdc88d7a281600ed025c2b3da09c8e30062b383"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5157.preview.jpg&expires=1789231046&sig=884a3460856ad44833a1e31d1759fabe398b3aa0a6366838cf6436cea915b4fe"
       }
     },
     {
@@ -11361,10 +11545,10 @@
         "media_type": "photo",
         "size": 73017,
         "object_key": "telegram-media/-1001453563350/5158.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5158.jpg&expires=1789229656&sig=42f3decc14f28245d28b90d720002005596a421185a655750fe668c53e821d49",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5158.jpg&expires=1789231046&sig=6b65af6977d8cce3a4aee63292d51d16cda8de8718b66b09d64fe2b59fed9c4a",
         "preview_size": 36714,
         "preview_object_key": "telegram-media/-1001453563350/5158.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5158.preview.jpg&expires=1789229656&sig=1595ffc005a664234b2ca7659b30a9b7be08de6ec7eb28f0282c5fe89dc8bca6"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5158.preview.jpg&expires=1789231046&sig=4892c41fb1447d20b40a3a76b6c4c7c3f0f7c092a919bca02d70217b37cb6879"
       }
     },
     {
@@ -11385,10 +11569,10 @@
         "media_type": "photo",
         "size": 75946,
         "object_key": "telegram-media/-1001453563350/5159.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5159.jpg&expires=1789229656&sig=d3bd7a29545703a019b5ab30e980387c11c135e82150760e93d8b96ee0e73330",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5159.jpg&expires=1789231046&sig=0f6ad8e8a056902e05efe859f91a7072d55f3360a45e9457437aa664f73f78f5",
         "preview_size": 37878,
         "preview_object_key": "telegram-media/-1001453563350/5159.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5159.preview.jpg&expires=1789229656&sig=cbc100256c5ddb9829f5b9c681d98dc43a8b2647ffed2e8f4d3e2f3613c3239c"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5159.preview.jpg&expires=1789231046&sig=ae34789f45c884428ce3835e307e205695949d44da54a39cf1a3f575a3d5b64c"
       }
     },
     {
@@ -11409,10 +11593,10 @@
         "media_type": "photo",
         "size": 215148,
         "object_key": "telegram-media/-1001261664652/10819.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10819.jpg&expires=1789229656&sig=8bf6e0736f92a6cb9dd9ce9cbfb123e44be9063b76442c08262a84f07ccd2c0c",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10819.jpg&expires=1789231046&sig=1015ced80bb43efcff6752273c0bb40ffec3db2f353d3b8e8a24e20aef49ee0b",
         "preview_size": 46088,
         "preview_object_key": "telegram-media/-1001261664652/10819.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10819.preview.jpg&expires=1789229656&sig=6bcf737e5a85722e7b785499d711faebafe3653f5bed5f3700edeb390641d362"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10819.preview.jpg&expires=1789231046&sig=25500fe1875fe9bd6e86134a0b2ae7ea5ff50ea0fdeeab95a92baaeece03b638"
       }
     },
     {
@@ -11481,10 +11665,10 @@
         "media_type": "photo",
         "size": 52858,
         "object_key": "telegram-media/-1001453563350/5156.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5156.jpg&expires=1789229656&sig=a2525a4af4667722a15436529874f90f593018266ee553691c4f39667c4cbc9d",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5156.jpg&expires=1789231046&sig=be729c6bc168199504c15418faac03b68fe16ec64cdd00fd3f300942608c8ab8",
         "preview_size": 24561,
         "preview_object_key": "telegram-media/-1001453563350/5156.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5156.preview.jpg&expires=1789229656&sig=b72d2cdc52d73af1cf757674b500bcdc2685d3d02c76df26a6c4fc7e9b10e26c"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5156.preview.jpg&expires=1789231046&sig=19e9b12a1157ebd0e23dcf55cfa213aac80c6306fee20ae5f875596c75bc16df"
       }
     },
     {
@@ -11505,10 +11689,10 @@
         "media_type": "photo",
         "size": 218578,
         "object_key": "telegram-media/-1001261664652/10818.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10818.jpg&expires=1789229656&sig=e51cfa2c79bfec7b4816383e009c44fb12a0c03dbf59529434b13e0f8f90f75b",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10818.jpg&expires=1789231046&sig=0487213afc4a2da4ea9c8de5283cc9a39693e6aa827a74d0890b185568859523",
         "preview_size": 73114,
         "preview_object_key": "telegram-media/-1001261664652/10818.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10818.preview.jpg&expires=1789229656&sig=4892bf80e1530b60f1994599a042dd975179ac9b491d2b25b92fa7807260ac33"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10818.preview.jpg&expires=1789231046&sig=7e04c3e0c167ceed76a6a6737e89a7ed47d901623a9088049aed9d05b8de3813"
       }
     },
     {
@@ -11625,10 +11809,10 @@
         "media_type": "photo",
         "size": 358962,
         "object_key": "telegram-media/-1001261664652/10817.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10817.jpg&expires=1789229656&sig=a268428691976b5588fc97073e24c09783d8670e9797c3c7989d0946ec61f3c8",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10817.jpg&expires=1789231046&sig=f059b07326a6812598fee203cde42fc0d4cb2047cdda8645965ebc88fcb639e3",
         "preview_size": 48912,
         "preview_object_key": "telegram-media/-1001261664652/10817.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10817.preview.jpg&expires=1789229656&sig=2d05068ad8628180cc587c665c966db62ac315f037330292964c41341ebb1271"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10817.preview.jpg&expires=1789231046&sig=0a1bf58733361b1cb6802d2ce7276fa431c64076f3a73ac1bb4eaa1615efa188"
       }
     },
     {
@@ -11809,10 +11993,10 @@
         "media_type": "photo",
         "size": 150051,
         "object_key": "telegram-media/-1001261664652/10816.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10816.jpg&expires=1789229656&sig=c8c54876f607d593a40b860a1e1754ba2c00daca1b47c4b09eba3228a3c84df7",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10816.jpg&expires=1789231046&sig=3f967a88118eccd65b894adc494ea75aa03e7dcc5e53363e5a4be758415cc751",
         "preview_size": 34144,
         "preview_object_key": "telegram-media/-1001261664652/10816.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10816.preview.jpg&expires=1789229656&sig=a002200158172e21fc225acacf994c828bdf34fe7e5b59dcb2ad659bb9715061"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10816.preview.jpg&expires=1789231046&sig=ef6d8bb6ab50e01dad509cecc7eeabb6ffa47f99c07b8ea7fd3ef59260dd5d22"
       }
     },
     {
@@ -12137,10 +12321,10 @@
         "media_type": "photo",
         "size": 325838,
         "object_key": "telegram-media/-1001261664652/10815.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10815.jpg&expires=1789229656&sig=67021d1f91a3dd86bfd56395fce721136772646694d77068cdfe5587d74b8912",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10815.jpg&expires=1789231046&sig=fa97841211739368f8faef2a2f2e0b9b518729e0e665db15651b38b130b08812",
         "preview_size": 56930,
         "preview_object_key": "telegram-media/-1001261664652/10815.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10815.preview.jpg&expires=1789229656&sig=83c8eec7a72d698eb1be6e4d1e1a57558f530a6d6041db5ebe4dfd671a9399be"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10815.preview.jpg&expires=1789231046&sig=677168bd3a15bdf7c749965bb073c546b6d00a208431b22f13353c9453a09031"
       }
     },
     {
@@ -12785,10 +12969,10 @@
         "media_type": "photo",
         "size": 75539,
         "object_key": "telegram-media/-1001261664652/10814.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10814.jpg&expires=1789229656&sig=3bb0883f584aa86f4b9c6441edfbea2b8ba30f5b570bf48ad0f38b0a3ae0b98b",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10814.jpg&expires=1789231046&sig=d6f155d84a980a764116fdea5bbd8e248f6b0a8c944ba441208fd219ae8d2627",
         "preview_size": 29767,
         "preview_object_key": "telegram-media/-1001261664652/10814.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10814.preview.jpg&expires=1789229656&sig=f2c2c702402b3848e1671e575d9fdb9482b0d2a55d21172087b538a5881dd8c8"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10814.preview.jpg&expires=1789231046&sig=44d099fc2175befc35a82a423018449ef0cac5bc1024af88dad90e9e75af0ac6"
       }
     },
     {
@@ -12937,10 +13121,10 @@
         "media_type": "photo",
         "size": 121925,
         "object_key": "telegram-media/-1001125288200/9604.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9604.jpg&expires=1789229656&sig=c4a747f705add73c12eb7012a4a6e2512904832f7c23415b1fa388d8ac4b85cc",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9604.jpg&expires=1789231046&sig=5346acf23ac529a77a9b3bc6a9afb2e5ca252f15e132c9892d917016b5e0daf6",
         "preview_size": 34160,
         "preview_object_key": "telegram-media/-1001125288200/9604.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9604.preview.jpg&expires=1789229656&sig=c63d341fb9d614be893c088283545af0079172facd8685998d2ddf49bf7eae68"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9604.preview.jpg&expires=1789231046&sig=b50dd38e58022b35e916e7ac10399f5190185aebfbd1cc699949b5bb0418c7f4"
       }
     },
     {
@@ -12961,10 +13145,10 @@
         "media_type": "photo",
         "size": 131224,
         "object_key": "telegram-media/-1001125288200/9605.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9605.jpg&expires=1789229656&sig=8d3cfd97d8b27450a87611bdfeda06905dbbce592c05ae4b89064c85a943fd7f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9605.jpg&expires=1789231046&sig=e707929e4d0843f1818e50ea932ef3d2d0692d1bf2ea2b13fb324ad577c3891e",
         "preview_size": 37828,
         "preview_object_key": "telegram-media/-1001125288200/9605.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9605.preview.jpg&expires=1789229656&sig=91cd87bdc0f79a91354279e7c7837b898a67e6d60dd796bf99317cd6aafe4e4a"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9605.preview.jpg&expires=1789231046&sig=4e470d4bfa1ee607f14d76715ddf8fc89836b7024a881d17ca8ad8356004f951"
       }
     },
     {
@@ -12985,10 +13169,10 @@
         "media_type": "photo",
         "size": 140840,
         "object_key": "telegram-media/-1001125288200/9606.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9606.jpg&expires=1789229656&sig=22d9a2f7b3bcc704aa0cb124d6f85ebf7967e51db7c5e012b758ad9b65410ef3",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9606.jpg&expires=1789231046&sig=a555e637d0b1659b06c1786499b1a5ccdfea8864ca51661a9eac9f56a34b2f08",
         "preview_size": 45514,
         "preview_object_key": "telegram-media/-1001125288200/9606.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9606.preview.jpg&expires=1789229656&sig=dbaba105a336ec64c8e50295a2c929c48cd48f37718d4d284d54b7f8421ab3da"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9606.preview.jpg&expires=1789231046&sig=56cb528f65c199aa57ea8e72f85864ed4634f02161384a2ed9324ee0e4cdda8b"
       }
     },
     {
@@ -13009,10 +13193,10 @@
         "media_type": "photo",
         "size": 127484,
         "object_key": "telegram-media/-1001125288200/9607.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9607.jpg&expires=1789229656&sig=a85c250ec4c44800e70a955db6168c1f04b16cce22ce83f0994881fac7a07b17",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9607.jpg&expires=1789231046&sig=0b8bc2744a220addee4a003c14148b0ab76990c575c4f97dcc9774dc5768524c",
         "preview_size": 36708,
         "preview_object_key": "telegram-media/-1001125288200/9607.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9607.preview.jpg&expires=1789229656&sig=e241fbcf472cce098606c2511e50c0af690bcc78dfbeb2a11fc85191671b94d1"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9607.preview.jpg&expires=1789231046&sig=6b6f0304106af5612d377b2adc2ce05c4ed89230d622018e79a7380cb448a6e7"
       }
     },
     {
@@ -13033,10 +13217,10 @@
         "media_type": "photo",
         "size": 132403,
         "object_key": "telegram-media/-1001125288200/9608.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9608.jpg&expires=1789229656&sig=27fe2ee622f3a8a3e6edbfe9f30490bbc920e80325d27dc6d36fc14cee20dde9",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9608.jpg&expires=1789231046&sig=cbe0e7ad1ba28b85e830a7cda0b17dc4a37555fb6651ce9ef6c04e61a3b0b543",
         "preview_size": 40530,
         "preview_object_key": "telegram-media/-1001125288200/9608.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9608.preview.jpg&expires=1789229656&sig=ff933b5aaeafffbbf86931f074c681ad1b4534e0f52a1957ad1f96ec04ba8226"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9608.preview.jpg&expires=1789231046&sig=9ea4108752e9670b3b98591e2a5db8c7037bbf03810c45d4ea94e81212a99753"
       }
     },
     {
@@ -13057,10 +13241,10 @@
         "media_type": "photo",
         "size": 139849,
         "object_key": "telegram-media/-1001125288200/9609.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9609.jpg&expires=1789229656&sig=c8e08d5079935b6768001e4804893ed3b4aa65f5b399fc9808bdb1e0a79c73e4",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9609.jpg&expires=1789231046&sig=dc018ee5fde6d8b75b69330361664c96fd3313535003c81281e02ee765c5eea7",
         "preview_size": 43697,
         "preview_object_key": "telegram-media/-1001125288200/9609.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9609.preview.jpg&expires=1789229656&sig=8acac98435af21cad4acc7bef8e03f6f88c180c691a3c420bd0abdccd4007001"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9609.preview.jpg&expires=1789231046&sig=2c00bb6d712cc1738a3707648b12d98e1ef3e91b7409d966e821fc64db40f664"
       }
     },
     {
@@ -13081,10 +13265,10 @@
         "media_type": "photo",
         "size": 148075,
         "object_key": "telegram-media/-1001125288200/9610.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9610.jpg&expires=1789229656&sig=a85daacad9352b0949cc5aceab00c252345857eb39a49c134f71004b1cd62a1d",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9610.jpg&expires=1789231046&sig=aa9831049c0a4176379e00992329246e96b0b75cec0bebfdd3d1a0a2406d9c24",
         "preview_size": 46934,
         "preview_object_key": "telegram-media/-1001125288200/9610.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9610.preview.jpg&expires=1789229656&sig=30a92ca939168db4b782474808333f3d6c00917de3011406e6fdb1410b80a8b5"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9610.preview.jpg&expires=1789231046&sig=9af068db4a97a3ca4f9bcffa35b2d992a54af965a326198491dcf1f60e0da1ec"
       }
     },
     {
@@ -13105,10 +13289,10 @@
         "media_type": "photo",
         "size": 139674,
         "object_key": "telegram-media/-1001125288200/9611.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9611.jpg&expires=1789229656&sig=ea1ed519371b3430a7c2529afd3098411f5b45926971b4c6a5b03d8808a80bcf",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9611.jpg&expires=1789231046&sig=e83180a44224f2a8a33938fe6ba31ece818d0fac7d30f38a765a278b1ae94f13",
         "preview_size": 40168,
         "preview_object_key": "telegram-media/-1001125288200/9611.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9611.preview.jpg&expires=1789229656&sig=5b7e7aefb385dddde1ec1eef5008276c10959691ceeaa77925d551492b2ee2ae"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9611.preview.jpg&expires=1789231046&sig=12f7f4e4bb70309db9ca83172272ee0fcb7bb432a554c562e4c6a01b0b0d51eb"
       }
     },
     {
@@ -13129,10 +13313,10 @@
         "media_type": "photo",
         "size": 145351,
         "object_key": "telegram-media/-1001125288200/9612.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9612.jpg&expires=1789229656&sig=ad4815a411761013422fdcc2621fd3c054e9690f889c52380626603b21fcc899",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9612.jpg&expires=1789231046&sig=860cf482b9af528a27360e21b1b174a74ecd45fa214fe1831659ecce01cdeebe",
         "preview_size": 44819,
         "preview_object_key": "telegram-media/-1001125288200/9612.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9612.preview.jpg&expires=1789229656&sig=e853ef164ad36dd2f0cfba2ce9d68aee5335bed27d076e52d86cd95cab1e1a54"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9612.preview.jpg&expires=1789231046&sig=c86c0fcccc87ff7c10c25dac06fd56dde134cd0d3409c7e81b6faaea41e64901"
       }
     },
     {
@@ -13153,10 +13337,10 @@
         "media_type": "photo",
         "size": 152148,
         "object_key": "telegram-media/-1001125288200/9613.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9613.jpg&expires=1789229656&sig=35b6c8d9a6ae1875e75831d9e50240d003dbfef504de0d5e632fa275a798588b",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9613.jpg&expires=1789231046&sig=683b8c69b359cf77c1b8eb18bdbdbd743a0fceeab7a77693147464553bbee612",
         "preview_size": 48641,
         "preview_object_key": "telegram-media/-1001125288200/9613.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9613.preview.jpg&expires=1789229656&sig=b4557585a3d6ce1062b1ef87dead8845e4ce06620c6ff125b9f61ff54636373e"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001125288200%2F9613.preview.jpg&expires=1789231046&sig=47ae38f3964d0be8fb6330a0ce4984891fe62f19dbe9856407e7283cfd95d531"
       }
     },
     {
@@ -13177,10 +13361,10 @@
         "media_type": "photo",
         "size": 340560,
         "object_key": "telegram-media/-1001261664652/10813.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10813.jpg&expires=1789229656&sig=6481314a6cad2bf7b854bf3822677f01d6e583e20970b2b1863cc6681765c50e",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10813.jpg&expires=1789231046&sig=00eb8bb9d46b23db492d6f5e86bb2ebd49af5825b3b8ee008fdd95831ae3a9c9",
         "preview_size": 45686,
         "preview_object_key": "telegram-media/-1001261664652/10813.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10813.preview.jpg&expires=1789229656&sig=3f0539217370c5937f38aeb85fbb971e1b3efaa59878ef0c0b844b9f72999dcc"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10813.preview.jpg&expires=1789231046&sig=6f86f2f7d6aca2550dca84729110a46bf827aa4de1daf98463fa1afa587c2f1a"
       }
     },
     {
@@ -13217,10 +13401,10 @@
         "media_type": "photo",
         "size": 426644,
         "object_key": "telegram-media/-1001453563350/5146.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5146.jpg&expires=1789229656&sig=573fbac9407d8a321dbcf8c7b51486d4cb6745333bac92ddd165bf962440cec1",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5146.jpg&expires=1789231046&sig=f7ccb49c32e1520b04eab5a4e03ffd440b2486f737d7f32462ccbe29e9477873",
         "preview_size": 38602,
         "preview_object_key": "telegram-media/-1001453563350/5146.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5146.preview.jpg&expires=1789229656&sig=95ee8bcccc0b3c3566ab45720f50627d23f82a99aebc87846a264d1ec8bfcf76"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5146.preview.jpg&expires=1789231046&sig=465fe919486e05ab44db5f8c158e30532273b067d10b1dcf1744490251f6e6b4"
       }
     },
     {
@@ -13241,10 +13425,10 @@
         "media_type": "photo",
         "size": 504969,
         "object_key": "telegram-media/-1001453563350/5147.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5147.jpg&expires=1789229656&sig=2a7b8e55536f3c45a94118de311320eedd81b12034716bcb8a97f4873b29da14",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5147.jpg&expires=1789231046&sig=85824f2ee577fbfa790964dee84f5a2b82c331967f7056590ae95dbec4d261dc",
         "preview_size": 53378,
         "preview_object_key": "telegram-media/-1001453563350/5147.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5147.preview.jpg&expires=1789229656&sig=4758d185ca01661e797d8f8c33c0f493da39ef188e39d62d95f5644ad3bf0ede"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5147.preview.jpg&expires=1789231046&sig=19ccd73573c789a98799b3fb71ea6dd11e35427c621b771394f49b6db3c8f696"
       }
     },
     {
@@ -13265,10 +13449,10 @@
         "media_type": "photo",
         "size": 447987,
         "object_key": "telegram-media/-1001453563350/5148.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5148.jpg&expires=1789229656&sig=a13537f4168ea7399c2e2645f2a698c57f41a6fdf2f8af9a2f3544cb8ea76dfc",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5148.jpg&expires=1789231046&sig=eede3da823bafbb7e68f4f5fc67ff9ce2fb37fe12dbf79cefc080035ad7b95f8",
         "preview_size": 39161,
         "preview_object_key": "telegram-media/-1001453563350/5148.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5148.preview.jpg&expires=1789229656&sig=8662522cbbf3e8f0090c282639856b02b6a70fdafcb7a1515f722739da5e8135"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5148.preview.jpg&expires=1789231046&sig=8311000759df289aebd586c648fc63b824a35844121c272c9e00fe4a1e85a95b"
       }
     },
     {
@@ -13289,10 +13473,10 @@
         "media_type": "photo",
         "size": 151144,
         "object_key": "telegram-media/-1001453563350/5149.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5149.jpg&expires=1789229656&sig=67657e64bf7aa66c1e67b068f7b80ece79cd9f97c750d1dd27f61eab99c3b5c0",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5149.jpg&expires=1789231046&sig=c3313320abd57cd402dad5482467202e0f3f8ca6ef2a65eccb7b390dae26b680",
         "preview_size": 22929,
         "preview_object_key": "telegram-media/-1001453563350/5149.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5149.preview.jpg&expires=1789229656&sig=05057b4295d9db5928300e9f4eee684df5617a25e2e1deeffd9dac01297d02b1"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5149.preview.jpg&expires=1789231046&sig=0136f2f9136284c2519e59f65acf5c2454b08ae0fddbddbd28be07ed51ff070d"
       }
     },
     {
@@ -14353,10 +14537,10 @@
         "media_type": "photo",
         "size": 279331,
         "object_key": "telegram-media/-1001261664652/10811.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10811.jpg&expires=1789229656&sig=f87c75296b3ba38788df280730ed6fd62696dccb10b474166e1273496d6d2d03",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10811.jpg&expires=1789231046&sig=fe701bdada9d27f8def6de525c6c7489ad2e97e8df1e8cf9c7b973250c442048",
         "preview_size": 49152,
         "preview_object_key": "telegram-media/-1001261664652/10811.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10811.preview.jpg&expires=1789229656&sig=9f73c7aea4441a2cf559c2ce86df45dd8b3fdee83d90a7932acbd33980a1b051"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10811.preview.jpg&expires=1789231046&sig=2157e1cbfdb1f44f7ce15c47608e1576c53d846043f5240dc4020ecfc551c575"
       }
     },
     {
@@ -14841,10 +15025,10 @@
         "media_type": "photo",
         "size": 45944,
         "object_key": "telegram-media/-1001453563350/5143.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5143.jpg&expires=1789229656&sig=0cfa2a0d0fef94b22ed2e472ff9e4a0c6dfa42d2b47441ebef311d0caac3386f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5143.jpg&expires=1789231046&sig=03c7b6a672c0245f1cf90ef97fa220b075ccd9d054bf66939c41573bf43477a6",
         "preview_size": 22451,
         "preview_object_key": "telegram-media/-1001453563350/5143.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5143.preview.jpg&expires=1789229656&sig=c941a62afb13a1184f03fa23d786104c3b09cee708014b62c1149ccbdceb3461"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5143.preview.jpg&expires=1789231046&sig=87280f8c1a88af000a154d5b60e11abec9e7b5d5d6fba7a2929b4feeb8d650c5"
       }
     },
     {
@@ -14881,10 +15065,10 @@
         "media_type": "photo",
         "size": 48284,
         "object_key": "telegram-media/-1001453563350/5136.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5136.jpg&expires=1789229656&sig=99de955c4dc429c1f1d5e340edaaedb6ad2f460834d37435d64b30b0e6e4e1ab",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5136.jpg&expires=1789231046&sig=ed845edcce67bdaf4d97b838d33155ca7fb1eef7ebd8e7d85eeb5cded9bf4959",
         "preview_size": 19430,
         "preview_object_key": "telegram-media/-1001453563350/5136.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5136.preview.jpg&expires=1789229656&sig=1085a6204167adc49d4547a944dba777df961a61167fa5183ce829d68a41616e"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5136.preview.jpg&expires=1789231046&sig=e6cdd16653a96f2e625969880b4bb6d7430ebcccada0fd183646279ecce0b5d7"
       }
     },
     {
@@ -14905,10 +15089,10 @@
         "media_type": "photo",
         "size": 58142,
         "object_key": "telegram-media/-1001453563350/5137.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5137.jpg&expires=1789229656&sig=63d66cdcd69ba48d20d8f71be15db7a8b9bc341d6b520d005a7e12e8a3efc15a",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5137.jpg&expires=1789231046&sig=65899f318c1efc1f970964c51c56842888c9abacdbbf4491c1baff8c51ccbbe6",
         "preview_size": 29416,
         "preview_object_key": "telegram-media/-1001453563350/5137.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5137.preview.jpg&expires=1789229656&sig=2d6da301db4e61a7db45d65b663aa79377b8b4f1f8b1f570e4b1854c0d0f647f"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5137.preview.jpg&expires=1789231046&sig=09894a61deb8c9d53cb8fcb17540f7db590e45b2eed558331e8e34c9b4ad69ae"
       }
     },
     {
@@ -14929,10 +15113,10 @@
         "media_type": "photo",
         "size": 58826,
         "object_key": "telegram-media/-1001453563350/5138.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5138.jpg&expires=1789229656&sig=e25fae7e303e1418c8e137dcbf116eed8c16ca2f6627ad9922846eb868e74483",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5138.jpg&expires=1789231046&sig=729bf705f0d8711b65de80b65b6e4bd8d1030282ca1ee83e489e255013a8933b",
         "preview_size": 29322,
         "preview_object_key": "telegram-media/-1001453563350/5138.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5138.preview.jpg&expires=1789229656&sig=20c3a9c513ace1ec7970b5d654d43bc0ca98dbb6aab2f71736af7806197ced14"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001453563350%2F5138.preview.jpg&expires=1789231046&sig=a3ace25bf420dc5c11d08bd311b063d6cfd400ab34225ff37ed952d3331ebb78"
       }
     },
     {
@@ -15113,10 +15297,10 @@
         "media_type": "photo",
         "size": 225567,
         "object_key": "telegram-media/-1001261664652/10806.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10806.jpg&expires=1789229656&sig=4a8409930bc04891cf5a1815e8498f03d484413f23325feb76b66d3233c07c8c",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10806.jpg&expires=1789231046&sig=fbc05d39d6a2748c341a3d2e23871e1b8b73e245b232b6fd95408db3958fc72a",
         "preview_size": 76597,
         "preview_object_key": "telegram-media/-1001261664652/10806.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10806.preview.jpg&expires=1789229656&sig=d05799118be44a6c9b7f1ffaef49d01781eea6650c2ac6427c7c937cf474f2f4"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10806.preview.jpg&expires=1789231046&sig=e8cfb9110e1623521b284c68aa8c08d0c5da75ccbf999d235be4451e87430a0c"
       }
     },
     {
@@ -15377,10 +15561,10 @@
         "media_type": "photo",
         "size": 343006,
         "object_key": "telegram-media/-1001261664652/10805.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10805.jpg&expires=1789229656&sig=83e18f2c0a07ae03daca7b1675c8a61f74cbd73955b2e0cf95a5b3010f7bc30f",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10805.jpg&expires=1789231046&sig=a6ad970e871c31e97a8f27df98104e7f7633057e67da7615d4251f6a015786a4",
         "preview_size": 59344,
         "preview_object_key": "telegram-media/-1001261664652/10805.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10805.preview.jpg&expires=1789229656&sig=dd8871bf246eae00d557e7bc197f31c771e7c8c8b94b3f5270c79dc080b63364"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10805.preview.jpg&expires=1789231046&sig=655b434966cf070096e60dac4ea8cffadcf680324a8326940f3acb9564d7119c"
       }
     },
     {
@@ -15417,10 +15601,10 @@
         "media_type": "photo",
         "size": 47596,
         "object_key": "telegram-media/-1001261664652/10804.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10804.jpg&expires=1789229656&sig=0fb6332595576df9f182456668547612e15a8919030270fb5ad9d6872c903692",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10804.jpg&expires=1789231046&sig=503913a00a29360ad5197fffd7f9899b0c4767c66060339edd1061bf5436ff2e",
         "preview_size": 18329,
         "preview_object_key": "telegram-media/-1001261664652/10804.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10804.preview.jpg&expires=1789229656&sig=7303c3b8b745c27583bcf4786ddef65d2ff767b5c3b25e19bfe2693f9f9dbf64"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10804.preview.jpg&expires=1789231046&sig=f6eb86cdf706faa664cf5b6a945fed00b9df875763f712d9857f2a94c2234f5b"
       }
     },
     {
@@ -15521,10 +15705,10 @@
         "media_type": "photo",
         "size": 223495,
         "object_key": "telegram-media/-1001261664652/10803.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10803.jpg&expires=1789229656&sig=8740e45131c9fd1de9a3f44ac133a5094fbc1349f3ccfff6359be35ea3023397",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10803.jpg&expires=1789231046&sig=e7efd812f2c1648b173c31249485f6fe3f728f8091f39c880aa6587db182536f",
         "preview_size": 53649,
         "preview_object_key": "telegram-media/-1001261664652/10803.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10803.preview.jpg&expires=1789229656&sig=861dddc32006cadc8bfa09e6017e58dc72817f7435c42af527678bfb9ffe25b6"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10803.preview.jpg&expires=1789231046&sig=f6b8aa8acda3a847827764a03eb92373e4e02fd0ee50d8e5f3f3aeaf55c2686b"
       }
     },
     {
@@ -15625,10 +15809,10 @@
         "media_type": "photo",
         "size": 245378,
         "object_key": "telegram-media/-1001261664652/10802.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10802.jpg&expires=1789229656&sig=7a7983a5d7acaadfff9f9a08333e1d014f81950063092e9513c50736a35cf664",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10802.jpg&expires=1789231046&sig=21298b0a83305ca421a48a4b0bf0826f8aa3df87b311497e53274f5b1ad60114",
         "preview_size": 44208,
         "preview_object_key": "telegram-media/-1001261664652/10802.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10802.preview.jpg&expires=1789229656&sig=02f7382c6005ede0422524a0c3d55c2463f84ed08dcf380af2339994aca10cb8"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10802.preview.jpg&expires=1789231046&sig=c3615881eb382d01885c56b498c1da4ecb6405419c330955801c71ffebd5e443"
       }
     },
     {
@@ -16017,10 +16201,10 @@
         "media_type": "photo",
         "size": 308273,
         "object_key": "telegram-media/-1001261664652/10801.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10801.jpg&expires=1789229656&sig=17411713c5e9fdf6c16c5cc6b287b68c0a074e54bc95e7f1c706722ce90b8a0c",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10801.jpg&expires=1789231046&sig=bd152e6ac98603f7eb63d89e9dd323ea82f98fde2a581f24b90d795de19661f7",
         "preview_size": 53483,
         "preview_object_key": "telegram-media/-1001261664652/10801.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10801.preview.jpg&expires=1789229656&sig=21a6fd36e8e657dc8a290bf5f05b13fcac7e60b0006670c373c90c580425ad44"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10801.preview.jpg&expires=1789231046&sig=72a807fb9e6299c338d8d8503ab34801128615e5163d4bf543a2d24b76d2dc57"
       }
     },
     {
@@ -16057,59 +16241,11 @@
         "media_type": "photo",
         "size": 218560,
         "object_key": "telegram-media/-1001261664652/10800.jpg",
-        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10800.jpg&expires=1789229656&sig=665c46bc653ec05bcf950cb03f36b7eee090d75c56f3cca9cf2d79a62c3840f5",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10800.jpg&expires=1789231046&sig=7b35fd564807292236baab48cd3a12273665ad75229e701f4bc6960d16e36be8",
         "preview_size": 40426,
         "preview_object_key": "telegram-media/-1001261664652/10800.preview.jpg",
-        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10800.preview.jpg&expires=1789229656&sig=83c9aaecda2763a3d01c83f2de05fa11bfee3947218274c610ae088a8b4d7ac6"
+        "preview_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001261664652%2F10800.preview.jpg&expires=1789231046&sig=136e38474dab60489562019a8c779d66e3b4d05c171b6a3421acd20f0ef0a2ae"
       }
-    },
-    {
-      "chat_id": -1001313313883,
-      "message_id": 35359,
-      "chat_title": "Биржевик | Акции",
-      "datetime": "2026-09-02T16:22:08+00:00",
-      "sender_id": -1001313313883,
-      "text": "💬 Обозрение: бензин подорожал за неделю на 0,9%\n\nБензин в цене растет! Рубль падает! Инфляционная спираль крутится - вертится! Откуда дефляция?\n\n#бензин #инфляция #рубль #экономика #Россия #топливо\n\n🤝 Биржевик в MAX | ВК | Академия",
-      "url": "https://t.me/birzhevikstocksofficial2/35359",
-      "media_type": "photo",
-      "views": 10013,
-      "forwards": 12,
-      "reply_to_message_id": null,
-      "collected_at": "2026-09-10T08:12:30.061297+00:00",
-      "username": null,
-      "media_asset": null
-    },
-    {
-      "chat_id": -1001313313883,
-      "message_id": 35358,
-      "chat_title": "Биржевик | Акции",
-      "datetime": "2026-09-02T16:19:01+00:00",
-      "sender_id": -1001313313883,
-      "text": "🇷🇺 Отчет: дефляция в Рф с 25 по 31 августа составила 0,01%, с начала года потребительские цены выросли на 4,67% — Росстат\n\nИнфляция в России на 31 августа составила 6,32% в годовом выражении — Минэкономразвития\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n\nИтог: откуда дефляция? Не пойму! Рост топлива в цене, девальвация рубля на 25% , бл*ть, откуда дефляция?\n\n#инфляция #россия #отчетность\n\n🤝 Биржевик в MAX | ВК | Академия",
-      "url": "https://t.me/birzhevikstocksofficial2/35358",
-      "media_type": null,
-      "views": 9438,
-      "forwards": 15,
-      "reply_to_message_id": null,
-      "collected_at": "2026-09-10T08:12:30.061297+00:00",
-      "username": null,
-      "media_asset": null
-    },
-    {
-      "chat_id": -1001313313883,
-      "message_id": 35357,
-      "chat_title": "Биржевик | Акции",
-      "datetime": "2026-09-02T16:15:42+00:00",
-      "sender_id": -1001313313883,
-      "text": "🇷🇺🇺🇦🇺🇸Новость: Уиткофф и Кушнер полностью сосредоточены на переговорах по мирным соглашениям, включая урегулирование конфликта на Украине — Рубио\n_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _\n\nИтог: рынок пока особо не возбужден этой новостью...\n\n#сша #украина #Россия #геополитика \n\n🤝 Биржевик в MAX | ВК | Академия",
-      "url": "https://t.me/birzhevikstocksofficial2/35357",
-      "media_type": null,
-      "views": 9422,
-      "forwards": 3,
-      "reply_to_message_id": null,
-      "collected_at": "2026-09-10T08:12:30.061297+00:00",
-      "username": null,
-      "media_asset": null
     }
   ]
 }
