@@ -9,6 +9,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: telegram-reader-final-release
+  cancel-in-progress: false
+
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -60,11 +64,10 @@ jobs:
           set -euo pipefail
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "IMAGE='$IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
-          for f in /opt/telegram-reader/runtime.env /state/telegram_news.session /state/allowed_chats.yaml /state/setup.complete; do
-            if [ -f "$f" ]; then echo "STATE_EXISTS $(basename "$f")"; else echo "STATE_MISSING $(basename "$f")"; fi
-          done
           test -f /opt/telegram-reader/runtime.env
+          test -f /state/telegram_news.session
           test -f /state/allowed_chats.yaml
+          test -f /state/setup.complete
           sudo mkdir -p /state/media /state/exports
           sudo chown -R 10001:10001 /state/media /state/exports
           echo STATE_PASS
@@ -77,7 +80,7 @@ jobs:
           set -euo pipefail
           IMAGE='$IMAGE'
           while true; do
-            if [ ! -f /state/allowed_chats.yaml ] || [ ! -f /opt/telegram-reader/runtime.env ]; then sleep 5; continue; fi
+            if [ ! -f /state/telegram_news.session ] || [ ! -f /state/allowed_chats.yaml ] || [ ! -f /opt/telegram-reader/runtime.env ]; then sleep 5; continue; fi
             mkdir -p /state/media /state/exports
             chown -R 10001:10001 /state/media /state/exports
             docker rm -f telegram-reader >/dev/null 2>&1 || true
