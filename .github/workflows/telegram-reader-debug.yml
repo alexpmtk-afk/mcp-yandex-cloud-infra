@@ -10,7 +10,7 @@ jobs:
   debug:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -32,24 +32,25 @@ jobs:
           chmod 600 "$key"
           yc config profile create telegram-reader-debug || true
           yc config set service-account-key "$key"
-      - name: Capture setup container logs to serial
+      - name: Open ephemeral SSH and diagnose
         shell: bash
         run: |
           set -euo pipefail
-          cat > "$RUNNER_TEMP/debug.sh" <<'SH'
-          #!/bin/bash
-          exec >/dev/ttyS0 2>&1
-          echo TG_SETUP_DEBUG_BEGIN
-          for i in $(seq 1 60); do docker info >/dev/null 2>&1 && break; sleep 2; done
-          sleep 15
-          docker ps -a --format 'CONTAINER {{.Names}} {{.Status}} {{.Image}}'
-          echo TG_SETUP_DOCKER_LOGS
-          docker logs --tail 200 telegram-reader-setup 2>&1 || true
-          echo TG_SETUP_DEBUG_END
-          SH
-          yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file startup-script="$RUNNER_TEMP/debug.sh"
-          yc compute instance restart telegram-news-reader --folder-id b1gk4p83brasi8g811jv
-          sleep 35
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          ip="$(curl -fsS https://api.ipify.org)"
+          old="$(yc compute instance get telegram-news-reader --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --add-rule "description=github-ephemeral,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          sleep 5
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'set -e; echo SSH_PASS; sudo docker ps -a --format "{{.Names}} {{.Status}} {{.Image}}"; echo PROBE; curl -sS http://127.0.0.1:8081/probe || true; echo LOGS; sudo docker logs --tail 120 telegram-reader-setup 2>&1 | sed -E "s/[A-Za-z0-9_-]{35,}/[REDACTED]/g"'
       - name: Cleanup
         if: always()
-        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/debug.sh"
+        shell: bash
+        run: |
+          set +e
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.rules[] | select(.description=="github-ephemeral") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --delete-rule-id "$id"; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
