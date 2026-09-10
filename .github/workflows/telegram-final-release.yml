@@ -65,9 +65,14 @@ jobs:
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "IMAGE='$IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
           sudo test -f /opt/telegram-reader/runtime.env
-          sudo test -f /state/telegram_news.session
-          sudo test -f /state/allowed_chats.yaml
-          sudo test -f /state/setup.complete
+          for attempt in $(seq 1 60); do
+            if mountpoint -q /state && sudo test -f /state/telegram_news.session && sudo test -f /state/allowed_chats.yaml && sudo test -f /state/setup.complete; then
+              echo STATE_READY_PASS
+              break
+            fi
+            [ "$attempt" -eq 60 ] && { echo STATE_READY_FAIL >&2; findmnt -T /state || true; ls -la /state || true; exit 1; }
+            sleep 2
+          done
           sudo mkdir -p /state/media /state/exports
           sudo chown -R 10001:10001 /state/media /state/exports
           echo STATE_PASS
@@ -105,7 +110,7 @@ jobs:
 
           for attempt in $(seq 1 60); do
             body="$(curl -fsS http://127.0.0.1:8080/health 2>/dev/null || true)"
-            if printf '%s' "$body" | jq -e '.status=="ok" and .telegram_connected==true and .telegram_authorized==true and .allowed_chats>=1' >/dev/null 2>&1; then
+            if printf '%s' "$body" | jq -e '.status=="ok" and .telegram_connected==true and .telegram_authorized==true and .allowed_chats==9' >/dev/null 2>&1; then
               echo RUNTIME_HEALTH_PASS
               printf '%s' "$body" | jq '{status,telegram_connected,telegram_authorized,allowed_chats,messages,media_storage}'
               break
@@ -143,7 +148,7 @@ jobs:
           d=json.load(open('/state/exports/TELEGRAM_NEWS_LATEST.json',encoding='utf-8'))
           assert d['schema']=='TELEGRAM_NEWS_READER_V1'
           assert d['window_hours']==192
-          assert d['allowed_chats']>=1 and d['message_count']>=1
+          assert d['allowed_chats']==9 and d['message_count']>=1
           assert 'media_message_count' in d and 'preview_message_count' in d
           print('EXPORT_FINAL_PASS', d['allowed_chats'], d['message_count'], d['media_message_count'], d['preview_message_count'])
           PY
@@ -155,7 +160,7 @@ jobs:
           set -euo pipefail
           mkdir -p telegram-news-reader/export
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'sudo cat /state/exports/TELEGRAM_NEWS_LATEST.json' > telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
-          jq -e '.schema=="TELEGRAM_NEWS_READER_V1" and .window_hours==192 and .message_count>=1' telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json >/dev/null
+          jq -e '.schema=="TELEGRAM_NEWS_READER_V1" and .window_hours==192 and .allowed_chats==9 and .message_count>=1' telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json >/dev/null
           git config user.name telegram-final-release
           git config user.email telegram-final-release@users.noreply.github.com
           git add telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
