@@ -27,6 +27,9 @@ mcp = build_mcp(whitelist, storage)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 DIALOGS_TIMEOUT_SECONDS = 25
+CONNECT_TIMEOUT_SECONDS = 25
+RECONNECT_DELAY_SECONDS = 30
+_telegram_connect_lock = asyncio.Lock()
 
 
 async def _collector_loop() -> None:
@@ -38,8 +41,61 @@ async def _collector_loop() -> None:
         await asyncio.sleep(service_settings.collect_interval_seconds)
 
 
+async def _connect_reader_once() -> bool:
+    async with _telegram_connect_lock:
+        if reader.is_connected():
+            return True
+        try:
+            await asyncio.wait_for(
+                reader.connect(interactive_login=False), timeout=CONNECT_TIMEOUT_SECONDS
+            )
+            print("telegram_connect=ok")
+            return True
+        except AuthorizationRequired:
+            print("telegram_session=authorization_required")
+            return False
+        except asyncio.TimeoutError:
+            print("telegram_connect_error=TimeoutError")
+            try:
+                await asyncio.wait_for(reader.disconnect(), timeout=5)
+            except Exception:
+                pass
+            return False
+        except Exception as exc:
+            print(f"telegram_connect_error={type(exc).__name__}")
+            try:
+                await asyncio.wait_for(reader.disconnect(), timeout=5)
+            except Exception:
+                pass
+            return False
+
+
+async def _telegram_runtime_loop() -> None:
+    """Keep Telegram connectivity alive without blocking HTTP application startup."""
+    collector_task: asyncio.Task | None = None
+    try:
+        while True:
+            if not reader.is_connected():
+                connected = await _connect_reader_once()
+                if connected and collector_task is None:
+                    collector_task = asyncio.create_task(_collector_loop())
+            await asyncio.sleep(RECONNECT_DELAY_SECONDS)
+    finally:
+        if collector_task:
+            collector_task.cancel()
+            try:
+                await collector_task
+            except asyncio.CancelledError:
+                pass
+
+
 async def _list_dialogs_resilient():
     """Fetch dialogs with a hard timeout and one clean reconnect attempt."""
+    if not reader.is_connected():
+        connected = await _connect_reader_once()
+        if not connected:
+            raise HTTPException(503, "TELEGRAM_UNAVAILABLE")
+
     try:
         return await asyncio.wait_for(reader.list_dialogs(), timeout=DIALOGS_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
@@ -47,46 +103,49 @@ async def _list_dialogs_resilient():
     except Exception as exc:
         print(f"telegram_dialogs_error=first_attempt:{type(exc).__name__}")
 
-    try:
-        await asyncio.wait_for(reader.disconnect(), timeout=5)
-    except Exception:
-        pass
+    async with _telegram_connect_lock:
+        try:
+            await asyncio.wait_for(reader.disconnect(), timeout=5)
+        except Exception:
+            pass
+
+        try:
+            await asyncio.wait_for(
+                reader.connect(interactive_login=False), timeout=CONNECT_TIMEOUT_SECONDS
+            )
+        except AuthorizationRequired:
+            raise HTTPException(503, "TELEGRAM_AUTHORIZATION_REQUIRED")
+        except asyncio.TimeoutError:
+            print("telegram_dialogs_timeout=reconnect_attempt")
+            raise HTTPException(504, "TELEGRAM_DIALOGS_TIMEOUT")
+        except Exception as exc:
+            print(f"telegram_dialogs_error=reconnect_attempt:{type(exc).__name__}")
+            raise HTTPException(503, f"TELEGRAM_UNAVAILABLE:{type(exc).__name__}")
 
     try:
-        await asyncio.wait_for(reader.connect(interactive_login=False), timeout=DIALOGS_TIMEOUT_SECONDS)
         return await asyncio.wait_for(reader.list_dialogs(), timeout=DIALOGS_TIMEOUT_SECONDS)
-    except AuthorizationRequired:
-        raise HTTPException(503, "TELEGRAM_AUTHORIZATION_REQUIRED")
     except asyncio.TimeoutError:
-        print("telegram_dialogs_timeout=reconnect_attempt")
         raise HTTPException(504, "TELEGRAM_DIALOGS_TIMEOUT")
     except Exception as exc:
-        print(f"telegram_dialogs_error=reconnect_attempt:{type(exc).__name__}")
         raise HTTPException(503, f"TELEGRAM_UNAVAILABLE:{type(exc).__name__}")
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = None
+    runtime_task = None
     async with mcp_app.lifespan(app):
-        try:
-            await reader.connect(interactive_login=False)
-            task = asyncio.create_task(_collector_loop())
-        except AuthorizationRequired:
-            print("telegram_session=authorization_required")
-        except Exception as exc:
-            print(f"telegram_connect_error={type(exc).__name__}")
+        runtime_task = asyncio.create_task(_telegram_runtime_loop())
         try:
             yield
         finally:
-            if task:
-                task.cancel()
+            if runtime_task:
+                runtime_task.cancel()
                 try:
-                    await task
+                    await runtime_task
                 except asyncio.CancelledError:
                     pass
             try:
-                await reader.disconnect()
+                await asyncio.wait_for(reader.disconnect(), timeout=5)
             except Exception:
                 pass
 
@@ -201,18 +260,24 @@ async def access_denied_handler(request: Request, exc: AccessDenied):
 
 @app.get("/health")
 async def health():
-    try:
-        authorized = await asyncio.wait_for(reader.is_authorized(), timeout=10)
-        telegram_status = "ok" if authorized else "authorization_required"
-    except asyncio.TimeoutError:
+    connected = reader.is_connected()
+    if not connected:
         authorized = False
-        telegram_status = "unavailable:timeout"
-    except Exception as exc:
-        authorized = False
-        telegram_status = f"unavailable:{type(exc).__name__}"
+        telegram_status = "unavailable:disconnected"
+    else:
+        try:
+            authorized = await asyncio.wait_for(reader.is_authorized(), timeout=3)
+            telegram_status = "ok" if authorized else "authorization_required"
+        except asyncio.TimeoutError:
+            authorized = False
+            telegram_status = "unavailable:timeout"
+        except Exception as exc:
+            authorized = False
+            telegram_status = f"unavailable:{type(exc).__name__}"
     return {
         "status": "ok",
         "telegram_status": telegram_status,
+        "telegram_connected": connected,
         "telegram_authorized": authorized,
         "allowed_chats": len(whitelist.list_allowed()),
         "messages": storage.count_messages(),
