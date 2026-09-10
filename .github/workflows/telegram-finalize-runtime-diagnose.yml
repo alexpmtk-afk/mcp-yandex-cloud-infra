@@ -49,7 +49,7 @@ jobs:
           yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-finalize-diagnose,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
           sleep 20
-          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'sudo docker inspect telegram-reader --format "IMAGE={{.Config.Image}} RESTART={{.HostConfig.RestartPolicy.Name}} NET={{.HostConfig.NetworkMode}} PORTS={{json .HostConfig.PortBindings}} MOUNTS={{json .Mounts}}"; echo SYSTEMD; sudo systemctl list-unit-files | grep -Ei "telegram|reader" || true; echo OPT; sudo find /opt/telegram-reader -maxdepth 2 -type f -printf "%p\n" 2>/dev/null | sort'
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'echo CONTAINER; sudo docker inspect telegram-reader --format "IMAGE={{.Config.Image}} RESTART={{.HostConfig.RestartPolicy.Name}} NET={{.HostConfig.NetworkMode}} PORTS={{json .HostConfig.PortBindings}} MOUNTS={{json .Mounts}}"; echo FINAL_UNIT; sudo systemctl cat telegram-reader-final.service; echo LAUNCHER_UNIT; sudo systemctl cat telegram-reader-launcher.service'
       - name: Cleanup
         if: always()
         shell: bash
