@@ -85,7 +85,7 @@ def _token_ok(request: Request) -> bool:
 
 @app.middleware("http")
 async def setup_auth(request: Request, call_next):
-    if request.url.path == "/healthz":
+    if request.url.path in {"/healthz", "/probe"}:
         return await call_next(request)
     if COMPLETE_MARKER.exists():
         return JSONResponse({"detail": "SETUP_COMPLETE"}, status_code=410)
@@ -97,6 +97,35 @@ async def setup_auth(request: Request, call_next):
 @app.get("/healthz")
 async def healthz():
     return {"status": "complete" if COMPLETE_MARKER.exists() else "setup_required"}
+
+
+@app.get("/probe")
+async def probe():
+    relay = None
+    client = None
+    try:
+        kwargs: dict[str, object] = {}
+        if WS_RELAY_URL:
+            relay = WebSocketRelayAdapter(WS_RELAY_URL, WS_RELAY_TOKEN, WS_RELAY_PORT)
+            await relay.start()
+            kwargs["connection"] = connection.ConnectionTcpMTProxyAbridged
+            kwargs["proxy"] = relay.mtproxy_tuple()
+        client = TelegramClient(None, 1, "00000000000000000000000000000000", **kwargs)
+        await asyncio.wait_for(client.connect(), timeout=15)
+        return {"status": "ok", "relay": bool(WS_RELAY_URL), "connected": bool(client.is_connected())}
+    except Exception as exc:
+        return {"status": "error", "stage": "transport", "error": type(exc).__name__}
+    finally:
+        if client is not None:
+            try:
+                await client.disconnect()
+            except Exception:
+                pass
+        if relay is not None:
+            try:
+                await relay.stop()
+            except Exception:
+                pass
 
 
 @app.get("/", response_class=HTMLResponse)
