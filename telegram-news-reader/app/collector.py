@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from app.media_pipeline import MediaPipeline
 from app.storage import Storage
 from app.telegram_client import TelegramReader
 
@@ -8,6 +9,7 @@ class Collector:
     def __init__(self, reader: TelegramReader, storage: Storage):
         self.reader = reader
         self.storage = storage
+        self.media = MediaPipeline(reader)
 
     async def sync_chat(self, chat_id: int, bootstrap_limit: int = 200) -> int:
         last_message_id = self.storage.get_last_message_id(chat_id)
@@ -18,6 +20,7 @@ class Collector:
 
         inserted = self.storage.insert_messages(messages)
         if messages:
+            await self.media.capture(messages)
             self.storage.update_sync_state(chat_id, messages)
         return inserted
 
