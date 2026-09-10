@@ -1,0 +1,109 @@
+name: Apply Telegram Media Runtime
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-media-runtime-apply.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-media-runtime || true
+          yc config profile activate telegram-media-runtime
+          yc config set service-account-key "$key"
+
+      - name: Deploy media-enabled Reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder="b1gk4p83brasi8g811jv"
+          registry="$(yc container registry get --name telegram-news-reader --folder-id "$folder" --format json | jq -r .id)"
+          image="cr.yandex/$registry/telegram-news-reader:446d65861f7ae69062ba55da04a2a773722828d0"
+          ip="$(curl -fsS https://api.ipify.org)"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-media-runtime,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          sleep 20
+
+          cat > "$RUNNER_TEMP/remote.sh" <<'REMOTE'
+          set -euo pipefail
+          image="$1"
+          envfile=/opt/telegram-reader/runtime.env
+          setenv() {
+            key="$1"; value="$2"
+            sudo sed -i "/^${key}=/d" "$envfile"
+            printf '%s=%s\n' "$key" "$value" | sudo tee -a "$envfile" >/dev/null
+          }
+          setenv TELEGRAM_MEDIA_BUCKET telegram-reader-media-alexpmtk-20260910
+          setenv TELEGRAM_MEDIA_PATH /state/media
+          setenv TELEGRAM_PUBLIC_BASE_URL https://111-88-248-156.sslip.io
+          setenv TELEGRAM_MEDIA_URL_TTL 172800
+
+          token="$(curl -sf --max-time 10 -H Metadata-Flavor:Google 169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | jq -r .access_token)"
+          echo "$token" | timeout 30 sudo docker login --username iam --password-stdin cr.yandex >/dev/null
+          timeout 120 sudo docker pull "$image" >/dev/null
+          sudo mkdir -p /state/media /state/exports
+          sudo docker rm -f telegram-reader >/dev/null 2>&1 || true
+          sudo docker run -d --name telegram-reader --restart unless-stopped -p 127.0.0.1:8080:8080 --env-file "$envfile" -v /state:/state "$image" >/dev/null
+
+          for i in $(seq 1 30); do
+            if curl -fsS --max-time 3 http://127.0.0.1:8080/health >/tmp/tg-health 2>/dev/null; then break; fi
+            sleep 2
+          done
+          cat /tmp/tg-health
+          jq -e '.status == "ok" and .media_storage == "enabled"' /tmp/tg-health >/dev/null
+          for i in $(seq 1 20); do
+            if curl -fsS --max-time 4 http://127.0.0.1:8080/health | jq -e '.telegram_authorized == true' >/dev/null 2>&1; then
+              echo TELEGRAM_AUTH_PASS
+              break
+            fi
+            sleep 3
+          done
+          curl -fsS --max-time 4 http://127.0.0.1:8080/health
+          echo MEDIA_RUNTIME_APPLY_PASS
+          REMOTE
+
+          chmod +x "$RUNNER_TEMP/remote.sh"
+          scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/remote.sh" ubuntu@111.88.248.156:/tmp/telegram-media-runtime.sh
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "bash /tmp/telegram-media-runtime.sh '$image'; rm -f /tmp/telegram-media-runtime.sh"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate telegram-media-runtime >/dev/null 2>&1 || true
+          folder="b1gk4p83brasi8g811jv"
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json | jq -r '.rules[] | select(.description=="github-telegram-media-runtime") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --delete-rule-id "$id"; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys" "$RUNNER_TEMP/remote.sh"
