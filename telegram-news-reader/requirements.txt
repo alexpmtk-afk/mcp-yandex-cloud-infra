@@ -6,4 +6,3 @@ fastapi==0.141.1
 uvicorn[standard]==0.52.4
 fastmcp==4.0.3
 websockets==15.0.1
-boto3==1.40.21
