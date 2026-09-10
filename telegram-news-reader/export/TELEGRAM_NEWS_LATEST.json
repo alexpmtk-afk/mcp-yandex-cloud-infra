@@ -1,6 +1,6 @@
 {
   "schema": "TELEGRAM_NEWS_READER_V1",
-  "generated_at": "2026-09-10T12:22:41.492538+00:00",
+  "generated_at": "2026-09-10T12:27:34.345271+00:00",
   "window_hours": 36,
   "allowed_chats": 9,
   "message_count": 549,
@@ -83,7 +83,12 @@
       "reply_to_message_id": null,
       "collected_at": "2026-09-10T12:06:03.530814+00:00",
       "username": null,
-      "media_asset": null
+      "media_asset": {
+        "media_type": "photo",
+        "size": 124862,
+        "object_key": "telegram-media/-1001343028414/59959.jpg",
+        "media_url": "https://111-88-248-156.sslip.io/media/object?key=telegram-media%2F-1001343028414%2F59959.jpg&expires=1789216054&sig=5442bcc6eb744722c600e055ed80ea8dffc3edc46eef2e1d40b979236ef77be0"
+      }
     },
     {
       "chat_id": -1001203560567,
