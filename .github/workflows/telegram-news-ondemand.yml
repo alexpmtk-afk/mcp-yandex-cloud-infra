@@ -54,9 +54,9 @@ jobs:
           request="telegram-news-reader/requests/ondemand.json"
           test -f "$request"
 
-          limit="$(jq -er '(.limit // 20) | numbers' "$request")"
+          limit="$(jq -er '(.limit // 200) | numbers' "$request")"
           if [ "$limit" -lt 1 ]; then limit=1; fi
-          if [ "$limit" -gt 100 ]; then limit=100; fi
+          if [ "$limit" -gt 2000 ]; then limit=2000; fi
 
           chat_ids="$(jq -cer '
             if (.chat_ids? | type) == "array" then .chat_ids
@@ -67,6 +67,14 @@ jobs:
             | if length == 0 then error("no chat ids") else . end
             | if length > 5 then error("maximum 5 chats per on-demand request") else . end
           ' "$request")"
+
+          period_hours="$(jq -r '(.period_hours // 24) | tostring' "$request")"
+          if ! [[ "$period_hours" =~ ^[0-9]+$ ]]; then period_hours=24; fi
+          if [ "$period_hours" -lt 1 ]; then period_hours=1; fi
+          if [ "$period_hours" -gt 192 ]; then period_hours=192; fi
+
+          date_from="$(jq -r '.date_from // "-"' "$request")"
+          date_to="$(jq -r '.date_to // "-"' "$request")"
 
           folder="b1gk4p83brasi8g811jv"
           ip="$(curl -fsS https://api.ipify.org)"
@@ -80,12 +88,12 @@ jobs:
 
           mkdir -p telegram-news-reader/ondemand
           ids_csv="$(echo "$chat_ids" | jq -r 'join(",")')"
-          remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone; from app.runtime import build_runtime; _,w,_,s=build_runtime(); ids=[int(x) for x in sys.argv[1].split(\",\") if x]; lim=int(sys.argv[2]); out=[]; [w.assert_allowed(cid) for cid in ids]; [out.append({\"chat_id\":cid,\"messages\":s.get_recent_local(cid,lim)}) for cid in ids]; print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V2\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"chat_count\":len(out),\"chats\":out},ensure_ascii=False))' $ids_csv $limit"
+          remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone,timedelta; from app.runtime import build_runtime; _,w,_,s=build_runtime(); ids=[int(x) for x in sys.argv[1].split(\",\") if x]; lim=int(sys.argv[2]); ph=int(sys.argv[3]); raw_from=sys.argv[4]; raw_to=sys.argv[5]; parse=lambda x: datetime.fromisoformat(x.replace(\"Z\",\"+00:00\")) if x!=\"-\" else None; dt_to=parse(raw_to) or datetime.now(timezone.utc); dt_from=parse(raw_from) or (dt_to-timedelta(hours=ph)); out=[]; [w.assert_allowed(cid) for cid in ids]; [out.append({\"chat_id\":cid,\"messages\":s.get_messages_local(cid,date_from=dt_from,date_to=dt_to,limit=lim)}) for cid in ids]; print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V3\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"date_from\":dt_from.isoformat(),\"date_to\":dt_to.isoformat(),\"period_hours\":ph,\"chat_count\":len(out),\"chats\":out},ensure_ascii=False))' $ids_csv $limit $period_hours $date_from $date_to"
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote_cmd" > telegram-news-reader/ondemand/latest.json
 
-          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V2" and (.chat_count | type == "number") and (.chats | type == "array") and ((.chats | length) == .chat_count)' telegram-news-reader/ondemand/latest.json >/dev/null
+          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V3" and (.chat_count | type == "number") and (.chats | type == "array") and ((.chats | length) == .chat_count) and (.date_from | type == "string") and (.date_to | type == "string")' telegram-news-reader/ondemand/latest.json >/dev/null
           echo "ONDEMAND_EXPORT_PASS"
-          jq '{generated_at,chat_count,chats:[.chats[]|{chat_id,message_count:(.messages|length),latest_datetime:(.messages[0].datetime // null),latest_message_id:(.messages[0].message_id // null)}]}' telegram-news-reader/ondemand/latest.json
+          jq '{generated_at,date_from,date_to,period_hours,chat_count,chats:[.chats[]|{chat_id,message_count:(.messages|length),latest_datetime:(.messages[0].datetime // null),oldest_datetime:(.messages[-1].datetime // null),latest_message_id:(.messages[0].message_id // null)}]}' telegram-news-reader/ondemand/latest.json
 
       - name: Commit latest on-demand response
         shell: bash
@@ -97,7 +105,7 @@ jobs:
           if git diff --cached --quiet; then
             echo ONDEMAND_UNCHANGED
           else
-            git commit -m "telegram-news: refresh on-demand chats"
+            git commit -m "telegram-news: refresh on-demand period"
             git push origin HEAD:main
             echo ONDEMAND_PUSH_PASS
           fi
