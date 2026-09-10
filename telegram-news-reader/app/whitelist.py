@@ -1,15 +1,19 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+
 import yaml
+
 from app.errors import AccessDenied
+
 
 @dataclass(frozen=True)
 class AllowedChat:
     chat_id: int
     name: str
     enabled: bool = True
+
 
 class Whitelist:
     def __init__(self, path: str | Path):
@@ -22,7 +26,11 @@ class Whitelist:
         payload = yaml.safe_load(self.path.read_text(encoding="utf-8")) or {}
         result: dict[int, AllowedChat] = {}
         for item in payload.get("allowed_chats", []) or []:
-            chat = AllowedChat(chat_id=int(item["chat_id"]), name=str(item.get("name") or item["chat_id"]), enabled=bool(item.get("enabled", True)))
+            chat = AllowedChat(
+                chat_id=int(item["chat_id"]),
+                name=str(item.get("name") or item["chat_id"]),
+                enabled=bool(item.get("enabled", True)),
+            )
             result[chat.chat_id] = chat
         return result
 
@@ -31,9 +39,17 @@ class Whitelist:
 
     def replace(self, items: list[AllowedChat]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        temp = self.path.with_suffix('.tmp')
-        payload = {"allowed_chats": [{"chat_id": x.chat_id, "name": x.name, "enabled": x.enabled} for x in items]}
-        temp.write_text(yaml.safe_dump(payload, allow_unicode=True, sort_keys=False), encoding="utf-8")
+        temp = self.path.with_suffix(".tmp")
+        payload = {
+            "allowed_chats": [
+                {"chat_id": x.chat_id, "name": x.name, "enabled": x.enabled}
+                for x in items
+            ]
+        }
+        temp.write_text(
+            yaml.safe_dump(payload, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
         temp.chmod(0o600)
         temp.replace(self.path)
         self.reload()
