@@ -1,0 +1,79 @@
+name: Audit Reusable VPC Networks
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-vpc-audit.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=45 --tries=4 -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate read-only audit session
+        id: auth
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // empty' "$KEY_FILE")"
+          test -n "$CI_SA_ID"
+          echo "ci_sa_id=$CI_SA_ID" >> "$GITHUB_OUTPUT"
+          yc config profile create telegram-vpc-audit || true
+          yc config set service-account-key "$KEY_FILE"
+      - name: Audit CI access on shared network folder
+        shell: bash
+        env:
+          CI_SA_ID: ${{ steps.auth.outputs.ci_sa_id }}
+        run: |
+          set -euo pipefail
+          SOURCE_FOLDER=b1gnd0dqoq3ljod88i8t
+          MEMBER="serviceAccount:${CI_SA_ID}"
+          OUT="$RUNNER_TEMP/shared-vpc-ci-roles.txt"
+          yc resource-manager folder list-access-bindings --id "$SOURCE_FOLDER" --format json > "$RUNNER_TEMP/bindings.json"
+          printf 'SOURCE_FOLDER=%s\nCI_MEMBER=%s\n' "$SOURCE_FOLDER" "$MEMBER" > "$OUT"
+          jq -r --arg member "$MEMBER" '.[]? | select(.subject.id==$member or ((.subject.type // "") + ":" + (.subject.id // ""))==$member) | .role_id' "$RUNNER_TEMP/bindings.json" | sort -u | tee -a "$OUT"
+          echo 'SHARED_VPC_IAM_AUDIT=PASS'
+      - name: Inventory shared network and CIDRs
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_FOLDER=b1gnd0dqoq3ljod88i8t
+          NETWORK_ID=enp3vuoau0hkv7hcb6mh
+          OUT="$RUNNER_TEMP/shared-vpc-inventory.txt"
+          printf 'SOURCE_FOLDER=%s\nNETWORK_ID=%s\n' "$SOURCE_FOLDER" "$NETWORK_ID" > "$OUT"
+          yc vpc network get --id "$NETWORK_ID" --format json | jq -r '[.id,.name,.folder_id] | @tsv' | tee -a "$OUT"
+          yc vpc subnet list --folder-id "$SOURCE_FOLDER" --format json | jq -r --arg network "$NETWORK_ID" '.[] | select(.network_id==$network) | [.id,.name,.zone_id,((.v4_cidr_blocks // [])|join(","))] | @tsv' | sort | tee -a "$OUT"
+          echo 'VPC_AUDIT=PASS'
+      - name: Upload inventory
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-vpc-inventory
+          path: |
+            ${{ runner.temp }}/shared-vpc-ci-roles.txt
+            ${{ runner.temp }}/shared-vpc-inventory.txt
+          if-no-files-found: error
+          retention-days: 7
+      - name: Remove key
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/bindings.json"

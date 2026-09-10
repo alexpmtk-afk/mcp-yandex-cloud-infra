@@ -1,0 +1,8 @@
+Telethon==1.44.0
+python-socks[asyncio]==3.1.1
+python-dotenv==1.1.1
+PyYAML==6.0.2
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
+fastmcp==4.0.3
+websockets==15.0.1

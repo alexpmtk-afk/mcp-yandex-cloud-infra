@@ -1,0 +1,181 @@
+name: Apply Telegram Reader Foundation
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-foundation-apply.yml"
+
+permissions:
+  contents: read
+
+# Deliberately self-triggered: real cloud apply only when this workflow is reviewed and changed.
+# This run also converges least-scoped runtime prerequisite IAM while runtime_enabled remains false.
+concurrency:
+  group: telegram-reader-foundation
+  cancel-in-progress: false
+
+jobs:
+  foundation:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 35
+    steps:
+      - name: Checkout exact branch commit
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget --quiet --timeout=45 --tries=4 --output-document="$ARCHIVE" "$URL"
+          tar -tzf "$ARCHIVE" >/dev/null
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // empty' "$KEY_FILE")"
+          test -n "$CI_SA_ID"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "TF_VAR_ci_service_account_id=$CI_SA_ID" >> "$GITHUB_ENV"
+          yc config profile create telegram-reader-ci || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Initialize isolated Telegram Reader state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/telegram_reader init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build foundation-only saved plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader plan \
+            -input=false -no-color -out=foundation.tfplan \
+            -var='runtime_enabled=false'
+          terraform -chdir=terraform/telegram_reader show -json foundation.tfplan > "$RUNNER_TEMP/foundation-plan.json"
+          terraform -chdir=terraform/telegram_reader show -no-color foundation.tfplan > "$RUNNER_TEMP/foundation-plan.txt"
+
+      - name: Assert no runtime or destructive changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan = json.loads(Path(os.environ['RUNNER_TEMP']).joinpath('foundation-plan.json').read_text())
+          forbidden_prefixes = (
+              'yandex_compute_instance.',
+              'yandex_compute_disk.',
+              'yandex_vpc_address.',
+              'yandex_vpc_security_group.',
+          )
+          bad = []
+          for item in plan.get('resource_changes', []):
+              actions = item.get('change', {}).get('actions', [])
+              address = item.get('address', '')
+              if any(a in actions for a in ('delete', 'update')):
+                  bad.append((address, actions))
+              if actions != ['no-op'] and address.startswith(forbidden_prefixes):
+                  bad.append((address, actions))
+          if bad:
+              raise SystemExit(f'Unsafe foundation plan: {bad!r}')
+          print('FOUNDATION_SAFETY_GATE=PASS')
+          PY
+
+      - name: Apply reviewed foundation plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader apply -input=false -no-color foundation.tfplan | tee "$RUNNER_TEMP/foundation-apply.txt"
+
+      - name: Resolve foundation outputs
+        id: outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          FOLDER_ID="$(terraform -chdir=terraform/telegram_reader output -raw folder_id)"
+          REGISTRY_ID="$(terraform -chdir=terraform/telegram_reader output -raw registry_id)"
+          RUNTIME_SA="$(terraform -chdir=terraform/telegram_reader output -raw runtime_service_account_id)"
+          CREDS_SECRET="$(terraform -chdir=terraform/telegram_reader output -raw telegram_credentials_secret_id)"
+          AUTH_SECRET="$(terraform -chdir=terraform/telegram_reader output -raw reader_auth_secret_id)"
+          for v in FOLDER_ID REGISTRY_ID RUNTIME_SA CREDS_SECRET AUTH_SECRET; do test -n "${!v}"; done
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY_ID" >> "$GITHUB_OUTPUT"
+          echo "runtime_sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
+          echo "creds_secret=$CREDS_SECRET" >> "$GITHUB_OUTPUT"
+          echo "auth_secret=$AUTH_SECRET" >> "$GITHUB_OUTPUT"
+          printf 'folder_id=%s\nregistry_id=%s\nruntime_sa=%s\ntelegram_credentials_secret_id=%s\nreader_auth_secret_id=%s\n' \
+            "$FOLDER_ID" "$REGISTRY_ID" "$RUNTIME_SA" "$CREDS_SECRET" "$AUTH_SECRET" \
+            > "$RUNNER_TEMP/foundation-outputs.txt"
+
+      - name: Build and push Telegram Reader image
+        id: image
+        shell: bash
+        env:
+          REGISTRY_ID: ${{ steps.outputs.outputs.registry }}
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/${REGISTRY_ID}/telegram-news-reader:${GITHUB_SHA}"
+          yc container registry configure-docker
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" --tag "$IMAGE" telegram-news-reader
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          printf '%s\n' "$IMAGE" > "$RUNNER_TEMP/image-url.txt"
+          echo 'IMAGE_PUBLISH=PASS'
+
+      - name: Verify runtime remains absent
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/telegram_reader state list | sort > "$RUNNER_TEMP/state-after.txt"
+          ! grep -q '^yandex_compute_instance.runtime' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q '^yandex_compute_disk.state' "$RUNNER_TEMP/state-after.txt"
+          ! grep -q '^yandex_vpc_address.public' "$RUNNER_TEMP/state-after.txt"
+          echo 'RUNTIME_NOT_CREATED=PASS'
+
+      - name: Upload deployment evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-foundation-evidence
+          path: |
+            ${{ runner.temp }}/foundation-plan.txt
+            ${{ runner.temp }}/foundation-apply.txt
+            ${{ runner.temp }}/foundation-outputs.txt
+            ${{ runner.temp }}/image-url.txt
+            ${{ runner.temp }}/state-after.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove ephemeral provider key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"

@@ -1,0 +1,102 @@
+name: Validate Telegram News Reader
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - "telegram-news-reader/**"
+      - "terraform/telegram_reader/**"
+      - ".github/workflows/telegram-reader-validate.yml"
+  pull_request:
+    paths:
+      - "telegram-news-reader/**"
+      - "terraform/telegram_reader/**"
+      - ".github/workflows/telegram-reader-validate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  app-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: telegram-news-reader/requirements-dev.txt
+      - name: Install dependencies
+        run: python -m pip install -r telegram-news-reader/requirements-dev.txt
+      - name: Run tests
+        working-directory: telegram-news-reader
+        run: python -m pytest -q
+      - name: Import service with dummy non-secret values
+        working-directory: telegram-news-reader
+        env:
+          TELEGRAM_API_ID: "12345"
+          TELEGRAM_API_HASH: "dummy"
+          TELEGRAM_PHONE: "+10000000000"
+          TELEGRAM_SESSION_PATH: "/tmp/telegram_news"
+          TELEGRAM_DATABASE_PATH: "/tmp/telegram.db"
+          TELEGRAM_WHITELIST_PATH: "config/allowed_chats.example.yaml"
+          READER_API_TOKEN: "dummy-ci-token"
+        run: python -c "import app.service; print('SERVICE_IMPORT_PASS')"
+      - name: Build Docker image
+        run: docker build -t telegram-news-reader:ci telegram-news-reader
+      - name: Import service inside image
+        run: |
+          docker run --rm --entrypoint python \
+            -e TELEGRAM_API_ID=12345 \
+            -e TELEGRAM_API_HASH=dummy \
+            -e TELEGRAM_PHONE=+10000000000 \
+            -e READER_API_TOKEN=dummy-ci-token \
+            telegram-news-reader:ci \
+            -c "import app.service; print('CONTAINER_IMPORT_PASS')"
+
+  terraform-plan:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+      - name: Prepare ephemeral Yandex provider key
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+      - name: Terraform format
+        run: terraform -chdir=terraform/telegram_reader fmt -check -diff -recursive
+      - name: Terraform init
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          terraform -chdir=terraform/telegram_reader init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+      - name: Terraform validate
+        run: terraform -chdir=terraform/telegram_reader validate
+      - name: Foundation-only targeted plan
+        run: |
+          terraform -chdir=terraform/telegram_reader plan -input=false -no-color \
+            -var='runtime_enabled=false' \
+            -target=yandex_resourcemanager_folder.this \
+            -target=yandex_vpc_subnet.this \
+            -target=yandex_container_registry.this \
+            -target=yandex_iam_service_account.runtime \
+            -target=yandex_resourcemanager_folder_iam_member.runtime_registry_pull \
+            -target=yandex_lockbox_secret.telegram_credentials \
+            -target=yandex_lockbox_secret.reader_auth \
+            -target=yandex_lockbox_secret_version.reader_auth \
+            -target=yandex_lockbox_secret_iam_member.runtime_credentials \
+            -target=yandex_lockbox_secret_iam_member.runtime_credentials_setup_editor \
+            -target=yandex_lockbox_secret_iam_member.runtime_auth

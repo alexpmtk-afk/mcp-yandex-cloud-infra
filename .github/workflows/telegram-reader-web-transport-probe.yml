@@ -1,0 +1,117 @@
+name: Telegram Reader Official Web Transport Probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/telegram-reader-web-transport-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install and authenticate YC
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          "$RUNNER_TEMP/yc/yc" config profile create tg-web-transport || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
+
+      - name: Create disposable Yandex VM
+        id: vm
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(echo "$prod" | jq -r .zone_id)"
+          subnet="$(echo "$prod" | jq -r '.network_interfaces[0].subnet_id')"
+          name="tg-web-transport-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import socket, ssl, time, urllib.request, urllib.error
+          hosts=['pluto.web.telegram.org','venus.web.telegram.org','aurora.web.telegram.org','vesta.web.telegram.org','flora.web.telegram.org']
+          any_tls=False
+          for i,h in enumerate(hosts,1):
+              try:
+                  ips=sorted({x[4][0] for x in socket.getaddrinfo(h,443,socket.AF_UNSPEC,socket.SOCK_STREAM)})
+                  print(f'DC{i}_DNS=PASS host={h} ips={",".join(ips[:6])}',flush=True)
+              except Exception as e:
+                  print(f'DC{i}_DNS=FAIL host={h} error={type(e).__name__}',flush=True); continue
+              try:
+                  t=time.monotonic(); s=socket.create_connection((h,443),5); peer=s.getpeername(); print(f'DC{i}_TCP=PASS peer={peer[0]}:{peer[1]} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+              except Exception as e:
+                  print(f'DC{i}_TCP=FAIL error={type(e).__name__}',flush=True); continue
+              try:
+                  ctx=ssl.create_default_context(); t=time.monotonic(); ss=ctx.wrap_socket(s,server_hostname=h); cert=ss.getpeercert(); print(f'DC{i}_TLS=PASS version={ss.version()} subject={cert.get("subject",())[:1]} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); ss.close(); any_tls=True
+              except Exception as e:
+                  print(f'DC{i}_TLS=FAIL error={type(e).__name__}',flush=True); continue
+              for path in ['/api','/apiw','/apiws']:
+                  url=f'https://{h}{path}'
+                  req=urllib.request.Request(url,data=b'',method='POST',headers={'Content-Type':'application/octet-stream','User-Agent':'telegram-reader-transport-probe/1'})
+                  try:
+                      t=time.monotonic(); r=urllib.request.urlopen(req,timeout=7); code=r.status; body=r.read(32); print(f'DC{i}_HTTPS_{path[1:].upper()}=PASS code={code} bytes={len(body)} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+                  except urllib.error.HTTPError as e:
+                      print(f'DC{i}_HTTPS_{path[1:].upper()}=PASS_HTTP code={e.code} latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+                  except Exception as e:
+                      print(f'DC{i}_HTTPS_{path[1:].upper()}=FAIL error={type(e).__name__}',flush=True)
+          print('TELEGRAM_WEB_TLS_GATE=PASS' if any_tls else 'TELEGRAM_WEB_TLS_GATE=FAIL',flush=True)
+          raise SystemExit(0 if any_tls else 1)
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/pi"
+          {
+            echo '#cloud-config'
+            echo 'write_files:'
+            echo '  - path: /opt/probe.py'
+            echo "    permissions: '0644'"
+            echo '    content: |'
+            cat "$RUNNER_TEMP/pi"
+            echo 'runcmd:'
+            echo '  - [bash, -lc, "python3 /opt/probe.py >/tmp/result 2>&1; rc=$?; echo ===WEB_TRANSPORT_BEGIN=== >/dev/ttyS0; cat /tmp/result >/dev/ttyS0; echo ===WEB_TRANSPORT_END=== >/dev/ttyS0; exit $rc"]'
+          } > "$RUNNER_TEMP/cloud.yaml"
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read result
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 72); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true
+            if grep -q '===WEB_TRANSPORT_END===' "$RUNNER_TEMP/s"; then
+              sed -n '/===WEB_TRANSPORT_BEGIN===/,/===WEB_TRANSPORT_END===/p' "$RUNNER_TEMP/s"
+              grep -q 'TELEGRAM_WEB_TLS_GATE=PASS' "$RUNNER_TEMP/s"
+              exit $?
+            fi
+            sleep 5
+          done
+          echo TELEGRAM_WEB_TLS_GATE=TIMEOUT
+          exit 1
+
+      - name: Destroy disposable VM
+        if: always()
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e
+          [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/key.json"

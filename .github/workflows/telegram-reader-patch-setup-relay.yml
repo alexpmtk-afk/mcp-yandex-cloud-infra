@@ -1,0 +1,39 @@
+name: Patch Telegram Setup Relay
+on:
+  push:
+    branches: [feature/telegram-news-reader]
+    paths: [.github/workflows/telegram-reader-patch-setup-relay.yml]
+permissions:
+  contents: write
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature/telegram-news-reader
+      - name: Patch setup service
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p=Path('telegram-news-reader/app/setup_service.py')
+          s=p.read_text()
+          s=s.replace('from app.formatting import dialog_type\n', 'from app.formatting import dialog_type\nfrom app.ws_relay import WebSocketRelayAdapter\n')
+          s=s.replace('COMPLETE_MARKER = Path(os.getenv("SETUP_COMPLETE_MARKER", "/state/setup.complete"))\n', 'COMPLETE_MARKER = Path(os.getenv("SETUP_COMPLETE_MARKER", "/state/setup.complete"))\nWS_RELAY_URL = os.getenv("TELEGRAM_WS_RELAY_URL", "").strip()\nWS_RELAY_TOKEN = os.getenv("TELEGRAM_WS_RELAY_TOKEN", "").strip()\nWS_RELAY_PORT = int(os.getenv("TELEGRAM_WS_RELAY_LOCAL_PORT", "18888"))\n')
+          s=s.replace('        self.dialogs: dict[int, dict[str, object]] = {}\n', '        self.dialogs: dict[int, dict[str, object]] = {}\n        self.relay: WebSocketRelayAdapter | None = None\n')
+          s=s.replace('        if self.client is not None:\n            await self.client.disconnect()\n        self.client = None\n', '        if self.client is not None:\n            await self.client.disconnect()\n        if self.relay is not None:\n            await self.relay.stop()\n        self.client = None\n        self.relay = None\n')
+          old='''        SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)\n        client = TelegramClient(str(SESSION_PATH), payload.api_id, payload.api_hash)\n        await client.connect()\n        state.client = client\n'''
+          new='''        SESSION_PATH.parent.mkdir(parents=True, exist_ok=True)\n        relay = None\n        proxy = None\n        if WS_RELAY_URL and WS_RELAY_TOKEN:\n            relay = WebSocketRelayAdapter(WS_RELAY_URL, WS_RELAY_TOKEN, WS_RELAY_PORT)\n            await relay.start()\n            proxy = relay.proxy_mapping()\n        client = TelegramClient(str(SESSION_PATH), payload.api_id, payload.api_hash, proxy=proxy)\n        try:\n            await client.connect()\n        except Exception:\n            if relay is not None:\n                await relay.stop()\n            raise\n        state.relay = relay\n        state.client = client\n'''
+          if old not in s:
+              raise SystemExit('begin block not found')
+          s=s.replace(old,new)
+          p.write_text(s)
+          PY
+      - name: Commit patch
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add telegram-news-reader/app/setup_service.py
+          git diff --cached --quiet && exit 0
+          git commit -m 'route one-time Telegram setup through WSS relay'
+          git push origin HEAD:feature/telegram-news-reader

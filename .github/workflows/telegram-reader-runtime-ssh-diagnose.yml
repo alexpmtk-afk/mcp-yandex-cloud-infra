@@ -1,0 +1,179 @@
+name: Diagnose Telegram Reader Runtime via Ephemeral SSH
+
+on:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-runtime-ssh-diagnose.yml"
+  pull_request:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/telegram-reader-runtime-ssh-diagnose.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-reader-ssh-diagnose || true
+          yc config set service-account-key "$key"
+
+      - name: Add ephemeral SSH access
+        id: access
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          vm='telegram-news-reader'
+          runner_ip="$(curl -fsSL https://api.ipify.org)"
+          test -n "$runner_ip"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/id_ed25519"
+          pub="$(cat "$RUNNER_TEMP/id_ed25519.pub")"
+          yc compute instance get --name "$vm" --folder-id "$folder" --full --format json > "$RUNNER_TEMP/vm-full.json"
+          ip="$(jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address' "$RUNNER_TEMP/vm-full.json")"
+          sg="$(jq -r '.network_interfaces[0].security_group_ids[0]' "$RUNNER_TEMP/vm-full.json")"
+          test -n "$ip"; test -n "$sg"
+          yc compute instance add-metadata --name "$vm" --folder-id "$folder" \
+            --metadata "ssh-keys=ubuntu:${pub}" >/dev/null
+          yc vpc security-group update-rules --id "$sg" \
+            --add-rule "description=ephemeral-runtime-debug,direction=ingress,port=22,protocol=tcp,v4-cidrs=[$runner_ip/32]" >/dev/null
+          rule_id="$(yc vpc security-group get --id "$sg" --format json | jq -r '.rules[] | select(.description=="ephemeral-runtime-debug") | .id' | tail -1)"
+          test -n "$rule_id"
+          echo "ip=$ip" >> "$GITHUB_OUTPUT"
+          echo "sg=$sg" >> "$GITHUB_OUTPUT"
+          echo "rule_id=$rule_id" >> "$GITHUB_OUTPUT"
+
+      - name: Collect Telegram network diagnostics
+        shell: bash
+        env:
+          VM_IP: ${{ steps.access.outputs.ip }}
+        run: |
+          set -euo pipefail
+          ssh_opts=(-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$RUNNER_TEMP/id_ed25519")
+          ready=0
+          for i in $(seq 1 18); do
+            if ssh "${ssh_opts[@]}" ubuntu@"$VM_IP" true; then
+              ready=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ready" = 1
+          scp "${ssh_opts[@]}" terraform/telegram_reader/scripts/network-diagnose.py ubuntu@"$VM_IP":/tmp/network-diagnose.py
+          {
+            echo '===NETWORK===' 
+            ssh "${ssh_opts[@]}" ubuntu@"$VM_IP" "sudo python3 /tmp/network-diagnose.py"
+            echo '===SETUP_LOG===' 
+            ssh "${ssh_opts[@]}" ubuntu@"$VM_IP" "sudo docker logs telegram-reader-setup --tail 80 2>&1 || true"
+          } > "$RUNNER_TEMP/runtime-diagnostic.txt"
+          cat "$RUNNER_TEMP/runtime-diagnostic.txt"
+
+      - name: Probe MTProto through verified MTProxy nodes
+        if: always()
+        shell: bash
+        env:
+          VM_IP: ${{ steps.access.outputs.ip }}
+        run: |
+          set -euo pipefail
+          test -n "$VM_IP"
+          ssh_opts=(-o BatchMode=yes -o ConnectTimeout=8 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -i "$RUNNER_TEMP/id_ed25519")
+          cat > "$RUNNER_TEMP/mtproxy_probe.py" <<'PY'
+          import asyncio, urllib.parse, urllib.request
+          from telethon import TelegramClient, connection
+          from telethon.sessions import MemorySession
+
+          URL='https://raw.githubusercontent.com/aviamastersgh/mtproto-free-russia/main/verified_proxies.txt'
+          raw=urllib.request.urlopen(URL, timeout=15).read().decode()
+          proxies=[]
+          for line in raw.splitlines():
+              line=line.strip()
+              if not line.startswith('tg://proxy?'):
+                  continue
+              q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
+              try:
+                  proxies.append((q['server'][0], int(q['port'][0]), q['secret'][0]))
+              except Exception:
+                  pass
+              if len(proxies) >= 20:
+                  break
+
+          async def probe(i, host, port, secret):
+              client=TelegramClient(MemorySession(), 1, '0'*32,
+                  connection=connection.ConnectionTcpMTProxyRandomizedIntermediate,
+                  proxy=(host, port, secret), connection_retries=1, retry_delay=0, timeout=8)
+              try:
+                  ok=await asyncio.wait_for(client.connect(), timeout=12)
+                  if ok and client.is_connected():
+                      print(f'PROXY_{i}=PASS {host}:{port}')
+                      return True
+              except Exception as e:
+                  print(f'PROXY_{i}=FAIL {host}:{port} {type(e).__name__}')
+              finally:
+                  try: await client.disconnect()
+                  except Exception: pass
+              return False
+
+          async def main():
+              print(f'PROXIES_LOADED={len(proxies)}')
+              for i,p in enumerate(proxies,1):
+                  if await probe(i,*p):
+                      print('MTPROXY_GATE=PASS')
+                      return
+              print('MTPROXY_GATE=FAIL')
+              raise SystemExit(1)
+          asyncio.run(main())
+          PY
+          scp "${ssh_opts[@]}" "$RUNNER_TEMP/mtproxy_probe.py" ubuntu@"$VM_IP":/tmp/mtproxy_probe.py
+          ssh "${ssh_opts[@]}" ubuntu@"$VM_IP" "sudo apt-get update -qq && sudo apt-get install -y -qq python3-venv >/dev/null && rm -rf /tmp/mtproxy-venv && python3 -m venv /tmp/mtproxy-venv && /tmp/mtproxy-venv/bin/pip -q install telethon==1.44.0 && /tmp/mtproxy-venv/bin/python /tmp/mtproxy_probe.py"
+
+      - name: Upload diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-runtime-ssh-diagnostic
+          path: ${{ runner.temp }}/runtime-diagnostic.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+      - name: Remove ephemeral access
+        if: always()
+        shell: bash
+        env:
+          SG_ID: ${{ steps.access.outputs.sg }}
+          RULE_ID: ${{ steps.access.outputs.rule_id }}
+        run: |
+          set +e
+          folder='b1gk4p83brasi8g811jv'
+          vm='telegram-news-reader'
+          yc compute instance remove-metadata --name "$vm" --folder-id "$folder" --keys ssh-keys >/dev/null 2>&1 || true
+          if [ -n "$SG_ID" ] && [ -n "$RULE_ID" ]; then
+            yc vpc security-group update-rules --id "$SG_ID" --delete-rule-id "$RULE_ID" >/dev/null
+          fi
+          rm -f "$RUNNER_TEMP/id_ed25519" "$RUNNER_TEMP/id_ed25519.pub" "$RUNNER_TEMP/yc-key.json"

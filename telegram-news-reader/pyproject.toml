@@ -1,0 +1,17 @@
+[project]
+name = "telegram-news-reader"
+version = "0.1.0"
+description = "Read-only Telegram user-client for personal news monitoring"
+requires-python = ">=3.12"
+dependencies = [
+  "Telethon==1.44.0",
+  "python-dotenv==1.1.1",
+  "PyYAML==6.0.2",
+  "fastapi==0.141.1",
+  "uvicorn[standard]==0.52.4",
+  "fastmcp==4.0.3",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

@@ -1,0 +1,70 @@
+name: Telegram Reader Official Web Transport IPv4 Probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/telegram-reader-web-transport-ipv4-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install and authenticate YC
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"; wget -q -O "$RUNNER_TEMP/yc/a.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz; tar -xzf "$RUNNER_TEMP/yc/a.tgz" -C "$RUNNER_TEMP/yc"; chmod +x "$RUNNER_TEMP/yc/yc"; echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"; chmod 600 "$RUNNER_TEMP/key.json"; "$RUNNER_TEMP/yc/yc" config profile create tg-web4 || true; "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/key.json"
+      - name: Create disposable Yandex VM
+        id: vm
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'; prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"; zone="$(echo "$prod"|jq -r .zone_id)"; subnet="$(echo "$prod"|jq -r '.network_interfaces[0].subnet_id')"; name="tg-web4-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/p.py" <<'PY'
+          import socket,ssl,time,http.client
+          hosts=['pluto.web.telegram.org','venus.web.telegram.org','aurora.web.telegram.org','vesta.web.telegram.org','flora.web.telegram.org']
+          ok=False
+          for i,h in enumerate(hosts,1):
+              try:
+                  ips=sorted({x[4][0] for x in socket.getaddrinfo(h,443,socket.AF_INET,socket.SOCK_STREAM)})
+                  print(f'DC{i}_DNS4=PASS host={h} ips={",".join(ips)}',flush=True)
+              except Exception as e: print(f'DC{i}_DNS4=FAIL error={type(e).__name__}:{e}',flush=True); continue
+              ip=ips[0]; s=socket.socket(socket.AF_INET,socket.SOCK_STREAM); s.settimeout(6); t=time.monotonic()
+              try: s.connect((ip,443)); print(f'DC{i}_TCP4=PASS ip={ip}:443 latency_ms={int((time.monotonic()-t)*1000)}',flush=True)
+              except Exception as e: print(f'DC{i}_TCP4=FAIL ip={ip}:443 error={type(e).__name__}:{e}',flush=True); s.close(); continue
+              try:
+                  ctx=ssl.create_default_context(); t=time.monotonic(); ss=ctx.wrap_socket(s,server_hostname=h); print(f'DC{i}_TLS4=PASS version={ss.version()} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); ss.close(); ok=True
+              except Exception as e: print(f'DC{i}_TLS4=FAIL error={type(e).__name__}:{e}',flush=True); continue
+              try:
+                  c=http.client.HTTPSConnection(h,443,timeout=7); t=time.monotonic(); c.request('POST','/api',body=b'',headers={'Content-Type':'application/octet-stream'}); r=c.getresponse(); r.read(16); print(f'DC{i}_HTTPS_API=PASS code={r.status} latency_ms={int((time.monotonic()-t)*1000)}',flush=True); c.close()
+              except Exception as e: print(f'DC{i}_HTTPS_API=FAIL error={type(e).__name__}:{e}',flush=True)
+          print('TELEGRAM_WEB_IPV4_GATE=PASS' if ok else 'TELEGRAM_WEB_IPV4_GATE=FAIL',flush=True); raise SystemExit(0 if ok else 1)
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/p.py" > "$RUNNER_TEMP/pi"
+          { echo '#cloud-config'; echo 'write_files:'; echo '  - path: /opt/p.py'; echo "    permissions: '0644'"; echo '    content: |'; cat "$RUNNER_TEMP/pi"; echo 'runcmd:'; echo '  - [bash, -lc, "python3 /opt/p.py >/tmp/r 2>&1; rc=$?; echo ===WEB4_BEGIN=== >/dev/ttyS0; cat /tmp/r >/dev/ttyS0; echo ===WEB4_END=== >/dev/ttyS0; exit $rc"]'; } > "$RUNNER_TEMP/cloud.yaml"
+          yc compute instance create --name "$name" --folder-id "$folder" --zone "$zone" --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd --network-interface subnet-id="$subnet",nat-ip-version=ipv4 --metadata-from-file user-data="$RUNNER_TEMP/cloud.yaml" --metadata serial-port-enable=1 >/dev/null; echo "name=$name" >> "$GITHUB_OUTPUT"; echo "folder=$folder" >> "$GITHUB_OUTPUT"
+      - name: Read result
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 72); do yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/s" 2>/dev/null || true; if grep -q '===WEB4_END===' "$RUNNER_TEMP/s"; then sed -n '/===WEB4_BEGIN===/,/===WEB4_END===/p' "$RUNNER_TEMP/s"; grep -q 'TELEGRAM_WEB_IPV4_GATE=PASS' "$RUNNER_TEMP/s"; exit $?; fi; sleep 5; done; echo WEB4_GATE=TIMEOUT; exit 1
+      - name: Destroy disposable VM
+        if: always()
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e; [ -n "$VM_NAME" ] && yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true; rm -f "$RUNNER_TEMP/key.json"

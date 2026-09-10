@@ -1,0 +1,48 @@
+#cloud-config
+write_files:
+  - path: /usr/local/bin/telegram-warp-probe.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      set +e
+      install_status=FAIL
+      warp_status=FAIL
+      telegram=FAIL
+
+      apt-get update -y >/tmp/warp-apt-update.log 2>&1
+      apt-get install -y curl gnupg lsb-release ca-certificates >/tmp/warp-prereq.log 2>&1
+
+      curl -fsSL https://pkg.cloudflareclient.com/pubkey.gpg \
+        | gpg --yes --dearmor --output /usr/share/keyrings/cloudflare-warp-archive-keyring.gpg \
+        >/tmp/warp-key.log 2>&1
+      echo "deb [signed-by=/usr/share/keyrings/cloudflare-warp-archive-keyring.gpg] https://pkg.cloudflareclient.com/ noble main" \
+        >/etc/apt/sources.list.d/cloudflare-client.list
+      apt-get update -y >/tmp/warp-repo-update.log 2>&1
+      apt-get install -y cloudflare-warp >/tmp/warp-install.log 2>&1
+
+      if command -v warp-cli >/dev/null 2>&1; then
+        install_status=PASS
+        systemctl enable --now warp-svc >/tmp/warp-service.log 2>&1 || true
+        warp-cli --accept-tos registration new >/tmp/warp-registration.log 2>&1 || true
+        warp-cli --accept-tos mode warp+doh >/tmp/warp-mode.log 2>&1 || true
+        warp-cli --accept-tos connect >/tmp/warp-connect.log 2>&1 || true
+
+        for i in $(seq 1 18); do
+          if curl -fsS --max-time 8 https://www.cloudflare.com/cdn-cgi/trace 2>/dev/null | grep -q '^warp=on$'; then
+            warp_status=PASS
+            break
+          fi
+          sleep 5
+        done
+      fi
+
+      if timeout 8 bash -c 'exec 3<>/dev/tcp/149.154.167.51/443' >/dev/null 2>&1; then
+        telegram=PASS
+      fi
+
+      result="WARP_RESULT INSTALL=$install_status WARP=$warp_status TG_DC2_443=$telegram WARP_TEST_DONE"
+      printf '%s\n' "$result" >/dev/console
+      printf '<6>%s\n' "$result" >/dev/kmsg 2>/dev/null || true
+
+runcmd:
+  - [bash, -lc, '/usr/local/bin/telegram-warp-probe.sh || true']

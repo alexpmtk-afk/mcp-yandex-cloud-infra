@@ -1,0 +1,173 @@
+name: Telegram Reader MTProxy Cloud-init Probe
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/workflows/telegram-reader-mtproxy-cloudinit-probe.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Install YC CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-mtproxy-cloudinit || true
+          yc config set service-account-key "$key"
+
+      - name: Create disposable probe VM
+        id: vm
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          prod="$(yc compute instance get --name telegram-news-reader --folder-id "$folder" --full --format json)"
+          zone="$(printf '%s' "$prod" | jq -r '.zone_id')"
+          subnet="$(printf '%s' "$prod" | jq -r '.network_interfaces[0].subnet_id')"
+          name="telegram-mtproxy-probe-${GITHUB_RUN_ID}"
+          cat > "$RUNNER_TEMP/probe.py" <<'PY'
+          import asyncio, urllib.parse, urllib.request
+          from telethon import TelegramClient, connection
+          from telethon.sessions import MemorySession
+
+          URL='https://raw.githubusercontent.com/aviamastersgh/mtproto-free-russia/main/verified_proxies.txt'
+          try:
+              raw=urllib.request.urlopen(URL, timeout=20).read().decode()
+          except Exception as e:
+              print(f'PROXY_LIST=FAIL {type(e).__name__}', flush=True)
+              raise SystemExit(2)
+          proxies=[]
+          for line in raw.splitlines():
+              line=line.strip()
+              if not line.startswith('tg://proxy?'):
+                  continue
+              q=urllib.parse.parse_qs(urllib.parse.urlsplit(line).query)
+              try:
+                  host=q['server'][0]; port=int(q['port'][0]); secret=q['secret'][0]
+                  if all(c in '0123456789abcdefABCDEF' for c in secret) and len(secret)>=32:
+                      proxies.append((host,port,secret))
+              except Exception:
+                  pass
+              if len(proxies)>=12:
+                  break
+          print(f'PROXIES_LOADED={len(proxies)}', flush=True)
+
+          async def one(i, host, port, secret):
+              client=TelegramClient(
+                  MemorySession(), 1, '0'*32,
+                  connection=connection.ConnectionTcpMTProxyRandomizedIntermediate,
+                  proxy=(host, port, secret),
+                  connection_retries=1, retry_delay=0, timeout=7,
+              )
+              try:
+                  await asyncio.wait_for(client.connect(), timeout=10)
+                  if client.is_connected():
+                      print(f'PROXY_{i}=PASS {host}:{port}', flush=True)
+                      return True
+              except Exception as e:
+                  print(f'PROXY_{i}=FAIL {host}:{port} {type(e).__name__}', flush=True)
+              finally:
+                  try: await client.disconnect()
+                  except Exception: pass
+              return False
+
+          async def main():
+              for i,p in enumerate(proxies,1):
+                  if await one(i,*p):
+                      print('MTPROXY_GATE=PASS', flush=True)
+                      return 0
+              print('MTPROXY_GATE=FAIL', flush=True)
+              return 1
+          raise SystemExit(asyncio.run(main()))
+          PY
+          sed 's/^/      /' "$RUNNER_TEMP/probe.py" > "$RUNNER_TEMP/probe.indented"
+          {
+            echo '#cloud-config'
+            echo 'package_update: true'
+            echo 'packages:'
+            echo '  - python3-venv'
+            echo 'write_files:'
+            echo '  - path: /opt/mtproxy_probe.py'
+            echo "    permissions: '0644'"
+            echo '    content: |'
+            cat "$RUNNER_TEMP/probe.indented"
+            echo '  - path: /usr/local/sbin/run-mtproxy-probe'
+            echo "    permissions: '0755'"
+            echo '    content: |'
+            echo '      #!/usr/bin/env bash'
+            echo '      set -uo pipefail'
+            echo '      python3 -m venv /opt/mtproxy-venv'
+            echo '      /opt/mtproxy-venv/bin/pip -q install telethon==1.44.0 python-socks'
+            echo '      /opt/mtproxy-venv/bin/python /opt/mtproxy_probe.py > /tmp/result.txt 2>&1'
+            echo '      rc=$?'
+            echo "      echo '===MTPROXY_PROBE_BEGIN===' > /dev/ttyS0"
+            echo '      cat /tmp/result.txt > /dev/ttyS0'
+            echo "      echo '===MTPROXY_PROBE_END===' > /dev/ttyS0"
+            echo '      exit $rc'
+            echo 'runcmd:'
+            echo '  - [bash, -lc, "/usr/local/sbin/run-mtproxy-probe || true"]'
+          } > "$RUNNER_TEMP/cloud-init.yaml"
+          yc compute instance create \
+            --name "$name" --folder-id "$folder" --zone "$zone" \
+            --platform standard-v3 --cores 2 --memory 1GB --core-fraction 20 \
+            --create-boot-disk image-folder-id=standard-images,image-family=ubuntu-2404-lts-oslogin,size=10,type=network-hdd \
+            --network-interface subnet-id="$subnet",nat-ip-version=ipv4 \
+            --metadata-from-file user-data="$RUNNER_TEMP/cloud-init.yaml" \
+            --metadata serial-port-enable=1 >/dev/null
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          echo "folder=$folder" >> "$GITHUB_OUTPUT"
+
+      - name: Read probe result from serial console
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set -euo pipefail
+          for n in $(seq 1 72); do
+            yc compute instance get-serial-port-output --name "$VM_NAME" --folder-id "$FOLDER_ID" > "$RUNNER_TEMP/serial.txt" 2>/dev/null || true
+            if grep -q '===MTPROXY_PROBE_END===' "$RUNNER_TEMP/serial.txt"; then
+              sed -n '/===MTPROXY_PROBE_BEGIN===/,/===MTPROXY_PROBE_END===/p' "$RUNNER_TEMP/serial.txt" | tee "$RUNNER_TEMP/result.txt"
+              grep -q 'MTPROXY_GATE=PASS' "$RUNNER_TEMP/result.txt"
+              exit $?
+            fi
+            sleep 5
+          done
+          echo 'MTPROXY_GATE=TIMEOUT'
+          tail -n 120 "$RUNNER_TEMP/serial.txt" || true
+          exit 1
+
+      - name: Destroy disposable probe VM
+        if: always()
+        shell: bash
+        env:
+          VM_NAME: ${{ steps.vm.outputs.name }}
+          FOLDER_ID: ${{ steps.vm.outputs.folder }}
+        run: |
+          set +e
+          if [ -n "$VM_NAME" ] && [ -n "$FOLDER_ID" ]; then
+            yc compute instance delete --name "$VM_NAME" --folder-id "$FOLDER_ID" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/yc-key.json"

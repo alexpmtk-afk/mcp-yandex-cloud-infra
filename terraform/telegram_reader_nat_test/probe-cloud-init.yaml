@@ -1,0 +1,23 @@
+#cloud-config
+write_files:
+  - path: /usr/local/bin/telegram-nat-probe.sh
+    permissions: '0755'
+    content: |
+      #!/usr/bin/env bash
+      generic=FAIL
+      telegram=FAIL
+
+      if curl -fsS --max-time 8 https://api.ipify.org >/dev/null 2>&1; then
+        generic=PASS
+      fi
+
+      if timeout 8 bash -c 'exec 3<>/dev/tcp/149.154.167.51/443' >/dev/null 2>&1; then
+        telegram=PASS
+      fi
+
+      result="NAT_RESULT GENERIC_HTTPS=$generic TG_DC2_443=$telegram NAT_TEST_DONE"
+      printf '%s\n' "$result" >/dev/console
+      printf '<6>%s\n' "$result" >/dev/kmsg 2>/dev/null || true
+
+runcmd:
+  - [bash, -lc, '/usr/local/bin/telegram-nat-probe.sh || true']

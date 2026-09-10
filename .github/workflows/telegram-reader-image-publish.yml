@@ -1,0 +1,61 @@
+name: Publish Telegram Reader Image
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - feature/telegram-news-reader
+    paths:
+      - ".github/workflows/telegram-reader-image-publish.yml"
+      - "telegram-news-reader/**"
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-reader-image || true
+          yc config set service-account-key "$key"
+      - name: Build and publish immutable image
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          registry="$(yc container registry get --name telegram-news-reader --folder-id "$folder" --format json | jq -r .id)"
+          image="cr.yandex/$registry/telegram-news-reader:$GITHUB_SHA"
+          yc container registry configure-docker
+          docker build --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$image" telegram-news-reader
+          docker push "$image"
+          printf '%s\n' "$image" | tee "$RUNNER_TEMP/runtime-image.txt"
+      - name: Upload image evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: telegram-reader-image
+          path: ${{ runner.temp }}/runtime-image.txt
+          retention-days: 30
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json"

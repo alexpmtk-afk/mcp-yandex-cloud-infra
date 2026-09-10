@@ -1,0 +1,168 @@
+#cloud-config
+datasource:
+  Ec2:
+    strict_id: false
+  secrets:
+    telegram_credentials: ${credentials_secret_id}
+    reader_auth: ${auth_secret_id}
+    telegram_relay: ${relay_secret_id}
+package_update: true
+packages:
+  - docker.io
+  - jq
+  - curl
+  - e2fsprogs
+write_files:
+  - path: /opt/telegram-reader/Caddyfile
+    permissions: '0644'
+    content: |
+      ${replace(public_ip, ".", "-")}.sslip.io {
+        handle_path /setup* {
+          reverse_proxy 127.0.0.1:8081
+        }
+        handle {
+          reverse_proxy 127.0.0.1:8080
+        }
+      }
+  - path: /usr/local/sbin/telegram-reader-launcher
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      CREDS_ID='${credentials_secret_id}'
+      AUTH_ID='${auth_secret_id}'
+      RELAY_ID='${relay_secret_id}'
+      IMAGE='${image_url}'
+      marker=/state/setup.complete
+
+      metadata_token() {
+        curl -sf -H Metadata-Flavor:Google \
+          169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token |
+          jq -r .access_token
+      }
+      fetch_secret() {
+        token="$(metadata_token)"
+        curl -sf -H "Authorization: Bearer $token" \
+          "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$1/payload"
+      }
+      secret_value() {
+        printf '%s' "$1" | jq -r --arg key "$2" '.entries[]? | select(.key==$key) | .textValue' | head -1
+      }
+
+      while true; do
+        if [ ! -f "$marker" ] || [ ! -f /state/telegram_news.session ] || [ ! -f /state/allowed_chats.yaml ]; then
+          sleep 5
+          continue
+        fi
+        creds="$(fetch_secret "$CREDS_ID" 2>/dev/null || true)"
+        auth="$(fetch_secret "$AUTH_ID" 2>/dev/null || true)"
+        relay="$(fetch_secret "$RELAY_ID" 2>/dev/null || true)"
+        api_id="$(secret_value "$creds" api_id)"
+        api_hash="$(secret_value "$creds" api_hash)"
+        api_token="$(secret_value "$auth" bearer_token)"
+        proxy_type="$(secret_value "$relay" proxy_type)"
+        proxy_host="$(secret_value "$relay" proxy_host)"
+        proxy_port="$(secret_value "$relay" proxy_port)"
+        proxy_username="$(secret_value "$relay" proxy_username)"
+        proxy_password="$(secret_value "$relay" proxy_password)"
+        if [ -z "$api_id" ] || [ "$api_id" = null ] || [ -z "$api_hash" ] || [ "$api_hash" = null ] || [ -z "$api_token" ] || [ "$api_token" = null ]; then
+          sleep 5
+          continue
+        fi
+        if [ -z "$proxy_type" ] || [ "$proxy_type" = null ] || [ -z "$proxy_host" ] || [ "$proxy_host" = null ] || [ -z "$proxy_port" ] || [ "$proxy_port" = null ]; then
+          sleep 5
+          continue
+        fi
+
+        umask 077
+        {
+          printf 'TELEGRAM_API_ID=%s\n' "$api_id"
+          printf 'TELEGRAM_API_HASH=%s\n' "$api_hash"
+          printf '%s\n' 'TELEGRAM_SESSION_PATH=/state/telegram_news'
+          printf '%s\n' 'TELEGRAM_DATABASE_PATH=/state/telegram.db'
+          printf '%s\n' 'TELEGRAM_WHITELIST_PATH=/state/allowed_chats.yaml'
+          printf 'TELEGRAM_PROXY_TYPE=%s\n' "$proxy_type"
+          printf 'TELEGRAM_PROXY_HOST=%s\n' "$proxy_host"
+          printf 'TELEGRAM_PROXY_PORT=%s\n' "$proxy_port"
+          if [ -n "$proxy_username" ] && [ "$proxy_username" != null ]; then
+            printf 'TELEGRAM_PROXY_USERNAME=%s\n' "$proxy_username"
+          fi
+          if [ -n "$proxy_password" ] && [ "$proxy_password" != null ]; then
+            printf 'TELEGRAM_PROXY_PASSWORD=%s\n' "$proxy_password"
+          fi
+          printf 'READER_API_TOKEN=%s\n' "$api_token"
+          printf '%s\n' 'COLLECT_INTERVAL_SECONDS=60'
+          printf '%s\n' 'COLLECT_BOOTSTRAP_LIMIT=200'
+        } >/opt/telegram-reader/runtime.env
+
+        docker rm -f telegram-reader >/dev/null 2>&1 || true
+        docker run -d --name telegram-reader --restart unless-stopped \
+          -p 127.0.0.1:8080:8080 \
+          --env-file /opt/telegram-reader/runtime.env \
+          -v /state:/state \
+          "$IMAGE"
+        docker rm -f telegram-reader-setup >/dev/null 2>&1 || true
+        exit 0
+      done
+  - path: /etc/systemd/system/telegram-reader-launcher.service
+    permissions: '0644'
+    content: |
+      [Unit]
+      Description=Telegram News Reader launcher
+      Wants=network-online.target docker.service
+      After=network-online.target docker.service
+      [Service]
+      Type=simple
+      ExecStart=/usr/local/sbin/telegram-reader-launcher
+      Restart=on-failure
+      RestartSec=10
+      [Install]
+      WantedBy=multi-user.target
+  - path: /usr/local/sbin/telegram-reader-bootstrap
+    permissions: '0750'
+    content: |
+      #!/usr/bin/env bash
+      set -euo pipefail
+      STATE_DEV=/dev/disk/by-id/virtio-telegram-state
+      mkdir -p /state /opt/telegram-reader
+      for attempt in $(seq 1 60); do
+        [ -e "$STATE_DEV" ] && break
+        udevadm settle 2>/dev/null || true
+        sleep 2
+      done
+      test -e "$STATE_DEV"
+      if ! blkid "$STATE_DEV" >/dev/null 2>&1; then
+        mkfs.ext4 -F "$STATE_DEV"
+      fi
+      uuid="$(blkid -s UUID -o value "$STATE_DEV")"
+      grep -q "$uuid" /etc/fstab || echo "UUID=$uuid /state ext4 defaults,nofail 0 2" >> /etc/fstab
+      mountpoint -q /state || mount /state
+      chown 10001:10001 /state
+      chmod 700 /state
+
+      token="$(curl -sf -H Metadata-Flavor:Google \
+        169.254.169.254/computeMetadata/v1/instance/service-accounts/default/token | jq -r .access_token)"
+      echo "$token" | docker login --username iam --password-stdin cr.yandex >/dev/null
+      docker pull '${image_url}'
+
+      docker rm -f telegram-reader-setup caddy >/dev/null 2>&1 || true
+      if [ ! -f /state/setup.complete ]; then
+        docker run -d --name telegram-reader-setup --restart unless-stopped --network host \
+          -e SETUP_TOKEN_SHA256='${setup_token_sha256}' \
+          -e TELEGRAM_CREDENTIALS_SECRET_ID='${credentials_secret_id}' \
+          -e TELEGRAM_SESSION_PATH=/state/telegram_news \
+          -e TELEGRAM_WHITELIST_PATH=/state/allowed_chats.yaml \
+          -e SETUP_COMPLETE_MARKER=/state/setup.complete \
+          -v /state:/state \
+          '${image_url}' \
+          uvicorn app.setup_service:app --host 127.0.0.1 --port 8081 --workers 1
+      fi
+
+      docker run -d --name caddy --restart unless-stopped --network host \
+        -v /opt/telegram-reader/Caddyfile:/etc/caddy/Caddyfile:ro \
+        -v caddy_data:/data -v caddy_config:/config caddy:2-alpine
+
+      systemctl daemon-reload
+      systemctl enable --now telegram-reader-launcher.service
+runcmd:
+  - [bash, -lc, '/usr/local/sbin/telegram-reader-bootstrap > /var/log/telegram-reader-bootstrap.log 2>&1']
