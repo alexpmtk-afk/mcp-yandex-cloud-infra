@@ -1,0 +1,99 @@
+name: Telegram News Bridge
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-news-bridge.yml]
+  workflow_dispatch:
+  schedule:
+    - cron: '*/30 * * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: telegram-news-bridge
+  cancel-in-progress: false
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-news-bridge || true
+          yc config profile activate telegram-news-bridge
+          yc config set service-account-key "$key"
+
+      - name: Export rolling Telegram snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder="b1gk4p83brasi8g811jv"
+          ip="$(curl -fsS https://api.ipify.org)"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-news-bridge,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          sleep 20
+
+          mkdir -p telegram-news-reader/export
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 \
+            'sudo docker exec telegram-reader python -m app.export_cli >/dev/null && sudo cat /state/exports/TELEGRAM_NEWS_LATEST.json' \
+            > telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
+
+          jq -e '.schema == "TELEGRAM_NEWS_READER_V1" and (.allowed_chats >= 0) and (.message_count >= 0)' telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json >/dev/null
+          echo "BRIDGE_EXPORT_PASS"
+          jq '{generated_at,window_hours,allowed_chats,message_count,media_messages:([.messages[] | select(.media_asset != null)] | length)}' telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
+
+      - name: Commit latest snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name telegram-news-bridge
+          git config user.email telegram-news-bridge@users.noreply.github.com
+          git add telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
+          if git diff --cached --quiet; then
+            echo SNAPSHOT_UNCHANGED
+          else
+            git commit -m "telegram-news: refresh latest snapshot"
+            git push origin HEAD:main
+            echo SNAPSHOT_PUSH_PASS
+          fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate telegram-news-bridge >/dev/null 2>&1 || true
+          folder="b1gk4p83brasi8g811jv"
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json | jq -r '.rules[] | select(.description=="github-telegram-news-bridge") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --delete-rule-id "$id"; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
