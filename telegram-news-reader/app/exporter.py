@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
+from app.media_pipeline import media_manifest
 from app.storage import Storage
 from app.whitelist import Whitelist
 
@@ -16,6 +18,7 @@ class TelegramNewsExporter:
         self.whitelist = whitelist
         self.output_path = Path(output_path)
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self.media_root = Path(os.getenv("TELEGRAM_MEDIA_PATH", "/state/media"))
 
     def export_incremental(self, limit: int = 5000) -> dict:
         allowed_ids = [item.chat_id for item in self.whitelist.list_allowed()]
@@ -27,6 +30,16 @@ class TelegramNewsExporter:
         for row in rows:
             max_rowid = max(max_rowid, int(row.pop("_rowid")))
             row.setdefault("username", None)
+            media = media_manifest(self.media_root, int(row["chat_id"]), int(row["message_id"]))
+            if media:
+                row["media_asset"] = {
+                    "media_type": media.get("media_type"),
+                    "size": media.get("size"),
+                    "object_key": media.get("object_key"),
+                    "media_url": media.get("media_url"),
+                }
+            else:
+                row["media_asset"] = None
             messages.append(row)
 
         payload = {
