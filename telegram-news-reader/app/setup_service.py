@@ -113,16 +113,20 @@ async def begin(payload: BeginPayload):
         kwargs: dict[str, object] = {}
         if WS_RELAY_URL:
             relay = WebSocketRelayAdapter(WS_RELAY_URL, WS_RELAY_TOKEN, WS_RELAY_PORT)
-            await relay.start()
+            try:
+                await relay.start()
+            except Exception as exc:
+                await state.clear()
+                raise HTTPException(502, f"TELEGRAM_RELAY_START_FAILED:{type(exc).__name__}")
             kwargs["connection"] = connection.ConnectionTcpMTProxyAbridged
             kwargs["proxy"] = relay.mtproxy_tuple()
         client = TelegramClient(str(SESSION_PATH), payload.api_id, payload.api_hash, **kwargs)
         try:
             await client.connect()
-        except Exception:
+        except Exception as exc:
             if relay is not None:
                 await relay.stop()
-            raise
+            raise HTTPException(502, f"TELEGRAM_CONNECT_FAILED:{type(exc).__name__}")
         state.relay = relay
         state.client = client
         state.api_id = payload.api_id
