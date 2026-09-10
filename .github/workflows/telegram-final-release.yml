@@ -92,6 +92,17 @@ jobs:
           sudo systemctl daemon-reload
           sudo systemctl restart telegram-reader-launcher.service
 
+          for attempt in $(seq 1 30); do
+            if ! sudo systemctl is-active --quiet telegram-reader-launcher.service; then
+              break
+            fi
+            [ "$attempt" -eq 30 ] && { echo LAUNCHER_WAIT_FAIL >&2; exit 1; }
+            sleep 1
+          done
+          sudo systemctl is-failed --quiet telegram-reader-launcher.service && { echo LAUNCHER_FAILED >&2; exit 1; } || true
+          sudo docker inspect telegram-reader --format '{{.State.Running}}' | grep -qx true
+          echo LAUNCHER_COMPLETE_PASS
+
           for attempt in $(seq 1 60); do
             body="$(curl -fsS http://127.0.0.1:8080/health 2>/dev/null || true)"
             if printf '%s' "$body" | jq -e '.status=="ok" and .telegram_connected==true and .telegram_authorized==true and .allowed_chats>=1' >/dev/null 2>&1; then
