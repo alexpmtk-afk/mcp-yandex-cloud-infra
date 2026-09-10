@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 jobs:
-  diagnose:
+  cleanup:
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 10
@@ -36,7 +36,7 @@ jobs:
           yc config profile create telegram-finalize || true
           yc config profile activate telegram-finalize
           yc config set service-account-key "$key"
-      - name: Inspect container lifecycle
+      - name: Remove obsolete service and verify reader
         shell: bash
         run: |
           set -euo pipefail
@@ -51,21 +51,19 @@ jobs:
           sleep 20
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'bash -s' <<'REMOTE'
           set -euo pipefail
-          echo '=== DOCKER PS ==='
-          sudo docker ps -a --filter name=telegram-reader --format 'table {{.Names}}\t{{.Status}}\t{{.Image}}'
-          echo '=== INSPECT STATE ==='
-          sudo docker inspect telegram-reader --format 'Status={{.State.Status}} ExitCode={{.State.ExitCode}} Error={{.State.Error}} OOMKilled={{.State.OOMKilled}} RestartCount={{.RestartCount}} FinishedAt={{.State.FinishedAt}}' || true
-          echo '=== LAST LOGS ==='
-          sudo docker logs --tail 120 telegram-reader 2>&1 || true
-          echo '=== LAUNCHER SERVICE ==='
-          sudo systemctl status telegram-reader-launcher.service --no-pager -l || true
-          echo '=== LAUNCHER UNIT ==='
-          sudo systemctl cat telegram-reader-launcher.service || true
-          echo '=== RELATED UNITS ==='
-          sudo systemctl list-units --all --type=service | grep -i telegram || true
-          echo '=== JOURNAL ==='
-          sudo journalctl -u telegram-reader-launcher.service --since '-10 min' --no-pager -n 120 || true
-          echo LIFECYCLE_DIAG_PASS
+          sudo systemctl disable --now telegram-reader-final.service >/dev/null 2>&1 || true
+          sudo rm -f /etc/systemd/system/telegram-reader-final.service
+          sudo systemctl daemon-reload
+          sudo systemctl reset-failed
+          test "$(sudo docker inspect telegram-reader --format '{{.State.Running}}')" = true
+          body="$(curl -fsS http://127.0.0.1:8080/health)"
+          printf '%s' "$body" | jq -e '.status=="ok" and .telegram_connected==true and .telegram_authorized==true and .allowed_chats>=1' >/dev/null
+          if sudo systemctl list-unit-files | grep -q '^telegram-reader-final.service'; then
+            echo OBSOLETE_SERVICE_STILL_PRESENT >&2
+            exit 1
+          fi
+          echo OBSOLETE_SERVICE_REMOVED_PASS
+          printf '%s' "$body" | jq '{status,telegram_connected,telegram_authorized,allowed_chats,messages,media_storage}'
           REMOTE
       - name: Cleanup
         if: always()
