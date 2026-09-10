@@ -7,7 +7,7 @@ import os
 from contextlib import asynccontextmanager
 from datetime import datetime
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
 from pydantic import BaseModel
 
@@ -15,6 +15,7 @@ from app.admin_page import ADMIN_PAGE
 from app.collector import Collector
 from app.errors import AccessDenied, AuthorizationRequired
 from app.mcp_server import build_mcp
+from app.object_storage import ObjectStorage
 from app.runtime import build_runtime
 from app.service_config import load_service_settings
 from app.whitelist import AllowedChat
@@ -23,6 +24,7 @@ service_settings = load_service_settings()
 manage_token_sha256 = os.getenv("MANAGE_TOKEN_SHA256", "").strip().lower()
 settings, whitelist, reader, storage = build_runtime()
 collector = Collector(reader, storage)
+object_storage = ObjectStorage()
 mcp = build_mcp(whitelist, storage)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
@@ -163,13 +165,12 @@ def _admin_token_ok(request: Request) -> bool:
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    if request.url.path == "/health":
+    if request.url.path in {"/health", "/media/object"}:
         return await call_next(request)
     if request.url.path == "/manage" or request.url.path.startswith("/api/admin/"):
         if _admin_token_ok(request):
             return await call_next(request)
         if request.url.path == "/manage":
-            # Allow the login shell to load without exposing any Telegram data.
             return await call_next(request)
         return JSONResponse({"detail": "UNAUTHORIZED"}, status_code=401)
     supplied = request.headers.get("authorization", "")
@@ -219,7 +220,6 @@ async def admin_whitelist(payload: ManageWhitelistPayload):
     return {"status": "saved", "allowed_chats": len(chosen)}
 
 
-# Backward-compatible endpoints for old bookmarked manager pages.
 @app.get("/manage/dialogs")
 async def manage_dialogs_legacy(request: Request):
     if not _admin_token_ok(request):
@@ -281,7 +281,20 @@ async def health():
         "telegram_authorized": authorized,
         "allowed_chats": len(whitelist.list_allowed()),
         "messages": storage.count_messages(),
+        "media_storage": "enabled" if object_storage.enabled else "disabled",
     }
+
+
+@app.get("/media/object")
+async def media_object(key: str, expires: int, sig: str):
+    if not object_storage.verify_proxy_link(key, expires, sig):
+        raise HTTPException(403, "MEDIA_LINK_INVALID_OR_EXPIRED")
+    try:
+        data, content_type = await asyncio.to_thread(object_storage.get_object, key)
+    except Exception as exc:
+        print(f"media_fetch_error={type(exc).__name__}")
+        raise HTTPException(502, "MEDIA_UNAVAILABLE")
+    return Response(content=data, media_type=content_type, headers={"Cache-Control": "private, max-age=300"})
 
 
 @app.get("/api/chats")
