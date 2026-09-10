@@ -1,0 +1,169 @@
+name: Telegram Final Pre-Cron Audit
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-final-precron-audit.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 18
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and open temporary SSH
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-final-precron || true
+          yc config profile activate telegram-final-precron
+          yc config set service-account-key "$key"
+          folder='b1gk4p83brasi8g811jv'
+          ip="$(curl -fsS https://api.ipify.org)"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-final-precron,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          sleep 20
+
+      - name: Preflight and repair missing previews
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          findmnt -T /state >/dev/null
+          sudo test -f /state/telegram_news.session
+          sudo test -f /state/allowed_chats.yaml
+          sudo test -f /state/telegram.db
+          sudo docker inspect telegram-reader --format '{{.State.Running}}' | grep -qx true
+          body="$(curl -fsS http://127.0.0.1:8080/health)"
+          printf '%s' "$body" | jq -e '.status=="ok" and .telegram_connected==true and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null
+          echo PREFLIGHT_HEALTH_PASS
+
+          sudo docker exec telegram-reader python -m app.export_cli >/dev/null
+          sudo docker exec -i telegram-reader python - <<'PY'
+          import asyncio, json
+          from app.runtime import build_runtime
+          from app.media_pipeline import MediaPipeline
+
+          async def main():
+              data=json.load(open('/state/exports/TELEGRAM_NEWS_LATEST.json', encoding='utf-8'))
+              missing=[]
+              for item in data['messages']:
+                  asset=item.get('media_asset')
+                  if asset is not None and not asset.get('preview_url'):
+                      missing.append((int(item['chat_id']), int(item['message_id']), item.get('media_type')))
+              print('PREVIEW_GAP_BEFORE', len(missing))
+              if missing:
+                  settings, whitelist, reader, storage = build_runtime()
+                  await reader.connect()
+                  try:
+                      pipe=MediaPipeline(reader)
+                      rows=[]
+                      for chat_id, message_id, kind in missing:
+                          row=storage.get_message_local(chat_id, message_id)
+                          if row:
+                              rows.append(row)
+                      if rows:
+                          repaired=await pipe.capture_local_rows(rows)
+                          print('PREVIEW_REPAIR_ATTEMPTED', len(rows), 'SAVED', repaired)
+                  finally:
+                      await reader.disconnect()
+          asyncio.run(main())
+          PY
+          sudo docker exec telegram-reader python -m app.export_cli >/dev/null
+          sudo docker exec -i telegram-reader python - <<'PY'
+          import json
+          d=json.load(open('/state/exports/TELEGRAM_NEWS_LATEST.json', encoding='utf-8'))
+          missing=[]
+          for x in d['messages']:
+              a=x.get('media_asset')
+              if a is not None and not a.get('preview_url'):
+                  missing.append((x['chat_id'],x['message_id'],x.get('media_type')))
+          print('PREVIEW_GAP_AFTER',len(missing))
+          if missing:
+              print('PREVIEW_GAP_ITEMS', missing)
+          assert d['window_hours']==192 and d['allowed_chats']==9
+          assert d['media_message_count']>=d['preview_message_count']
+          print('EXPORT_PREFLIGHT_PASS',d['message_count'],d['media_message_count'],d['preview_message_count'])
+          PY
+          REMOTE
+
+      - name: Reboot VM and verify autonomous recovery
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder='b1gk4p83brasi8g811jv'
+          yc compute instance restart telegram-news-reader --folder-id "$folder" >/dev/null
+          echo RESTART_REQUESTED
+          for attempt in $(seq 1 60); do
+            if ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=5 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'echo SSH_UP' >/dev/null 2>&1; then
+              echo SSH_RECOVERY_PASS
+              break
+            fi
+            [ "$attempt" -eq 60 ] && { echo SSH_RECOVERY_FAIL >&2; exit 1; }
+            sleep 5
+          done
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          for attempt in $(seq 1 60); do
+            if findmnt -T /state >/dev/null 2>&1 && sudo test -f /state/telegram_news.session && sudo docker inspect telegram-reader --format '{{.State.Running}}' 2>/dev/null | grep -qx true; then
+              body="$(curl -fsS http://127.0.0.1:8080/health 2>/dev/null || true)"
+              if printf '%s' "$body" | jq -e '.status=="ok" and .telegram_connected==true and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+                echo AUTONOMOUS_RECOVERY_PASS
+                printf '%s' "$body" | jq '{status,telegram_connected,telegram_authorized,allowed_chats,messages,media_storage}'
+                break
+              fi
+            fi
+            [ "$attempt" -eq 60 ] && { echo AUTONOMOUS_RECOVERY_FAIL >&2; exit 1; }
+            sleep 5
+          done
+          if sudo docker logs --since 5m telegram-reader 2>&1 | grep -q 'PermissionError'; then
+            echo POST_REBOOT_PERMISSION_ERROR >&2
+            exit 1
+          fi
+          sudo docker exec telegram-reader python -m app.export_cli >/dev/null
+          sudo docker exec -i telegram-reader python - <<'PY'
+          import json
+          d=json.load(open('/state/exports/TELEGRAM_NEWS_LATEST.json',encoding='utf-8'))
+          assert d['schema']=='TELEGRAM_NEWS_READER_V1'
+          assert d['window_hours']==192
+          assert d['allowed_chats']==9
+          assert d['message_count']>0
+          print('POST_REBOOT_EXPORT_PASS',d['message_count'],d['media_message_count'],d['preview_message_count'])
+          PY
+          REMOTE
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate telegram-final-precron >/dev/null 2>&1 || true
+          folder='b1gk4p83brasi8g811jv'
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json 2>/dev/null | jq -r '.rules[] | select(.description=="github-telegram-final-precron") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --delete-rule-id "$id" >/dev/null; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys" >/dev/null; fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
