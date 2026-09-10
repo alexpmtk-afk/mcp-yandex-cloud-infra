@@ -33,11 +33,14 @@ jobs:
           key="$RUNNER_TEMP/yc-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
           chmod 600 "$key"
+          yc config profile create telegram-manager || true
+          yc config profile activate telegram-manager
           yc config set service-account-key "$key"
       - name: Deploy manager
         shell: bash
         run: |
           set -euo pipefail
+          yc config profile activate telegram-manager
           ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
           ip="$(curl -fsS https://api.ipify.org)"
           old="$(yc compute instance get telegram-news-reader --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.metadata["ssh-keys"] // ""')"
@@ -58,6 +61,7 @@ jobs:
         shell: bash
         run: |
           set +e
+          yc config profile activate telegram-manager >/dev/null 2>&1 || true
           ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.rules[] | select(.description=="github-manager-deploy") | .id')
           for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --delete-rule-id "$id"; done
           if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
