@@ -7,23 +7,20 @@ from pathlib import Path
 from typing import Iterable
 
 from app.models import MessageRecord
+from app.object_storage import ObjectStorage
 from app.telegram_client import TelegramReader
 
 SUPPORTED_MEDIA = {"photo", "image", "gif", "animation"}
 
 
 class MediaPipeline:
-    """Read-only capture of visual Telegram media for allowed chats.
-
-    Files are persisted under /state so the Telegram session/database/media survive
-    container recreation. Optional S3-compatible upload is deliberately separate from
-    Telegram access and can point at Yandex Object Storage.
-    """
+    """Read-only capture of visual Telegram media for allowed chats."""
 
     def __init__(self, reader: TelegramReader, root: str | Path | None = None):
         self.reader = reader
         self.root = Path(root or os.getenv("TELEGRAM_MEDIA_PATH", "/state/media"))
         self.root.mkdir(parents=True, exist_ok=True)
+        self.objects = ObjectStorage()
 
     async def capture(self, records: Iterable[MessageRecord]) -> int:
         saved = 0
@@ -54,14 +51,25 @@ class MediaPipeline:
             return False
 
         actual = Path(downloaded)
+        object_key = None
+        media_url = None
+        if self.objects.enabled:
+            uploaded = self.objects.upload(
+                actual,
+                chat_id=record.chat_id,
+                message_id=record.message_id,
+            )
+            if uploaded:
+                object_key, media_url = uploaded
+
         metadata = {
             "chat_id": record.chat_id,
             "message_id": record.message_id,
             "media_type": record.media_type,
             "local_path": str(actual),
             "size": actual.stat().st_size if actual.exists() else None,
-            "object_key": None,
-            "media_url": None,
+            "object_key": object_key,
+            "media_url": media_url,
         }
         manifest.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         return True
