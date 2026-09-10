@@ -24,6 +24,13 @@ def media_type(message: Any) -> str | None:
     if "document" in name:
         document = getattr(media, "document", None)
         mime = (getattr(document, "mime_type", None) or "").lower()
+        attributes = getattr(document, "attributes", None) or []
+        if any("animated" in item.__class__.__name__.lower() for item in attributes):
+            return "animation"
+        if mime == "image/gif":
+            return "gif"
+        if mime.startswith("image/"):
+            return "image"
         if mime.startswith("video/"):
             return "video"
         if mime.startswith("audio/"):
