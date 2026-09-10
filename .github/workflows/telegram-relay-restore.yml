@@ -1,0 +1,63 @@
+name: Restore Telegram Relay
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-relay-restore.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  restore:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-relay-restore || true
+          yc config profile activate telegram-relay-restore
+          yc config set service-account-key "$key"
+      - name: Restore relay and verify
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc config profile activate telegram-relay-restore
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          ip="$(curl -fsS https://api.ipify.org)"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --add-rule "description=github-telegram-relay-restore,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          sleep 20
+          remote='set -euo pipefail; envfile=/opt/telegram-reader/runtime.env; relay=https://telegram-reader-relay.alexpmtk.workers.dev; if sudo grep -q "^TELEGRAM_WS_RELAY_URL=" "$envfile"; then sudo sed -i "s#^TELEGRAM_WS_RELAY_URL=.*#TELEGRAM_WS_RELAY_URL=$relay#" "$envfile"; else printf "\nTELEGRAM_WS_RELAY_URL=%s\n" "$relay" | sudo tee -a "$envfile" >/dev/null; fi; sudo docker rm -f telegram-reader >/dev/null 2>&1 || true; image=cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:5fe892657de62d56cf848c18b9ef5bdf7fbddb87; sudo docker run -d --name telegram-reader --restart unless-stopped -p 127.0.0.1:8080:8080 --env-file "$envfile" -v /state:/state "$image" >/dev/null; for i in $(seq 1 30); do health=$(curl -fsS --max-time 4 http://127.0.0.1:8080/health 2>/dev/null || true); if [ -n "$health" ]; then echo "$health"; if printf "%s" "$health" | jq -e ".telegram_authorized == true" >/dev/null 2>&1; then echo TELEGRAM_AUTH_PASS; exit 0; fi; fi; sleep 3; done; echo TELEGRAM_AUTH_FAIL; sudo docker logs --tail 100 telegram-reader 2>&1; exit 31'
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote"
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate telegram-relay-restore >/dev/null 2>&1 || true
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.rules[] | select(.description=="github-telegram-relay-restore") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --delete-rule-id "$id"; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
