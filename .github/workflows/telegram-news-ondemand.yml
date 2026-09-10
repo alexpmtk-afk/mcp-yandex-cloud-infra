@@ -83,7 +83,7 @@ jobs:
           remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone; from app.runtime import build_runtime; _,w,_,s=build_runtime(); ids=[int(x) for x in sys.argv[1].split(\",\") if x]; lim=int(sys.argv[2]); out=[]; [w.assert_allowed(cid) for cid in ids]; [out.append({\"chat_id\":cid,\"messages\":s.get_recent_local(cid,lim)}) for cid in ids]; print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V2\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"chat_count\":len(out),\"chats\":out},ensure_ascii=False))' $ids_csv $limit"
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote_cmd" > telegram-news-reader/ondemand/latest.json
 
-          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V2" and (.chat_count | type == "number") and (.chats | type == "array") and (.chats | length == .chat_count)' telegram-news-reader/ondemand/latest.json >/dev/null
+          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V2" and (.chat_count | type == "number") and (.chats | type == "array") and ((.chats | length) == .chat_count)' telegram-news-reader/ondemand/latest.json >/dev/null
           echo "ONDEMAND_EXPORT_PASS"
           jq '{generated_at,chat_count,chats:[.chats[]|{chat_id,message_count:(.messages|length),latest_datetime:(.messages[0].datetime // null),latest_message_id:(.messages[0].message_id // null)}]}' telegram-news-reader/ondemand/latest.json
 
