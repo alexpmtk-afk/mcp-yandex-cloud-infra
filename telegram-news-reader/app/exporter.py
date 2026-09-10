@@ -28,18 +28,32 @@ class TelegramNewsExporter:
         rows = self._latest_rows(allowed_ids, hours=hours, limit=limit)
 
         messages = []
+        media_messages = 0
+        preview_messages = 0
         for row in rows:
             row.setdefault("username", None)
             media = media_manifest(self.media_root, int(row["chat_id"]), int(row["message_id"]))
             if media:
                 object_key = media.get("object_key")
+                preview_object_key = media.get("preview_object_key")
                 media_url = self.objects.presigned_url(object_key) if object_key else media.get("media_url")
+                preview_url = (
+                    self.objects.presigned_url(preview_object_key)
+                    if preview_object_key
+                    else media.get("preview_url")
+                )
                 row["media_asset"] = {
                     "media_type": media.get("media_type"),
                     "size": media.get("size"),
                     "object_key": object_key,
                     "media_url": media_url,
+                    "preview_size": media.get("preview_size"),
+                    "preview_object_key": preview_object_key,
+                    "preview_url": preview_url,
                 }
+                media_messages += 1
+                if preview_url:
+                    preview_messages += 1
             else:
                 row["media_asset"] = None
             messages.append(row)
@@ -50,6 +64,8 @@ class TelegramNewsExporter:
             "window_hours": hours,
             "allowed_chats": len(allowed_ids),
             "message_count": len(messages),
+            "media_message_count": media_messages,
+            "preview_message_count": preview_messages,
             "messages": messages,
         }
         self._write(payload)
