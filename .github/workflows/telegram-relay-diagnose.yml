@@ -1,0 +1,63 @@
+name: Diagnose Telegram Relay
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-relay-diagnose.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-diag || true
+          yc config profile activate telegram-diag
+          yc config set service-account-key "$key"
+      - name: Diagnose relay
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc config profile activate telegram-diag
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          ip="$(curl -fsS https://api.ipify.org)"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --add-rule "description=github-telegram-diag,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          sleep 20
+          remote='set -e; relay=$(sudo sed -n "s/^TELEGRAM_WS_RELAY_URL=//p" /opt/telegram-reader/runtime.env | head -1); host=$(printf "%s" "$relay" | sed -E "s#^https?://##; s#/.*$##"); echo RELAY_HOST=$host; echo DNS; getent ahosts "$host" | head -6 || true; echo HTTPS; curl -sS -I --max-time 12 "https://$host" | head -10 || true; echo HTTP; curl -sS -I --max-time 12 "http://$host" | head -10 || true; echo CONTAINER; sudo docker ps --filter name=telegram-reader --format "{{.Image}} {{.Status}}"; echo HEALTH; curl -sS --max-time 5 http://127.0.0.1:8080/health; echo; echo LOGS; sudo docker logs --tail 60 telegram-reader 2>&1 | sed -E "s/(token|secret|hash|phone)=([^ ]+)/\1=REDACTED/Ig"'
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote"
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate telegram-diag >/dev/null 2>&1 || true
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.rules[] | select(.description=="github-telegram-diag") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --delete-rule-id "$id"; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
