@@ -1,0 +1,38 @@
+name: Telegram Media Visibility Test
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-media-visibility-test.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Download first exported media asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          json=telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
+          url="$(jq -r '[.messages[] | select(.media_asset.media_url != null)][0].media_asset.media_url' "$json")"
+          test -n "$url" && test "$url" != "null"
+          curl -fsSL "$url" -o /tmp/sample.jpg
+          file /tmp/sample.jpg
+          test -s /tmp/sample.jpg
+          base64 -w 0 /tmp/sample.jpg > telegram-news-reader/export/TELEGRAM_MEDIA_TEST.base64
+      - name: Commit test payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name telegram-media-test
+          git config user.email telegram-media-test@users.noreply.github.com
+          git add telegram-news-reader/export/TELEGRAM_MEDIA_TEST.base64
+          git commit -m "test: capture Telegram media payload"
+          git push origin HEAD:main
