@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import logging
+
 from app.media_pipeline import MediaPipeline
 from app.storage import Storage
 from app.telegram_client import TelegramReader
+
+LOGGER = logging.getLogger(__name__)
 
 
 class Collector:
@@ -20,11 +24,13 @@ class Collector:
 
         inserted = self.storage.insert_messages(messages)
         if messages:
-            await self.media.capture(messages)
+            # Persist Telegram progress before media work. A broken image must never
+            # block or duplicate the text/news sync cursor.
             self.storage.update_sync_state(chat_id, messages)
+            await self.media.capture(messages)
 
-        # Also backfill a small rolling window so visual media that existed before
-        # the media pipeline was deployed becomes available without a full rescan.
+        # Backfill a rolling visual window so media that existed before the media
+        # pipeline was deployed becomes available without a full Telegram rescan.
         recent_rows = self.storage.get_recent_local(chat_id, limit=30)
         if recent_rows:
             await self.media.capture_local_rows(recent_rows)
@@ -33,5 +39,13 @@ class Collector:
     async def sync_all_allowed(self, bootstrap_limit: int = 200) -> dict[int, int]:
         result: dict[int, int] = {}
         for item in self.reader.whitelist.list_allowed():
-            result[item.chat_id] = await self.sync_chat(item.chat_id, bootstrap_limit)
+            try:
+                result[item.chat_id] = await self.sync_chat(item.chat_id, bootstrap_limit)
+            except Exception as exc:
+                LOGGER.warning(
+                    "chat_sync_error chat_id=%s error=%s",
+                    item.chat_id,
+                    type(exc).__name__,
+                )
+                result[item.chat_id] = 0
         return result
