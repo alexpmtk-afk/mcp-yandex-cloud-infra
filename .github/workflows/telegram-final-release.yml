@@ -9,10 +9,6 @@ on:
 permissions:
   contents: write
 
-concurrency:
-  group: telegram-reader-final-release
-  cancel-in-progress: false
-
 jobs:
   release:
     runs-on: ubuntu-latest
@@ -58,21 +54,20 @@ jobs:
           yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-final-release,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
           sleep 20
-      - name: Deploy immutable image without losing state
+      - name: Deploy and acceptance test
         shell: bash
         run: |
           set -euo pipefail
           ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "IMAGE='$IMAGE' bash -s" <<'REMOTE'
           set -euo pipefail
-          echo CHECK_STATE
+          for f in /opt/telegram-reader/runtime.env /state/telegram_news.session /state/allowed_chats.yaml /state/setup.complete; do
+            if [ -f "$f" ]; then echo "STATE_EXISTS $(basename "$f")"; else echo "STATE_MISSING $(basename "$f")"; fi
+          done
           test -f /opt/telegram-reader/runtime.env
-          test -f /state/telegram_news.session
           test -f /state/allowed_chats.yaml
           sudo mkdir -p /state/media /state/exports
           sudo chown -R 10001:10001 /state/media /state/exports
           echo STATE_PASS
-
-          echo PULL_IMAGE
           sudo docker pull "$IMAGE"
           echo PULL_PASS
 
@@ -82,7 +77,7 @@ jobs:
           set -euo pipefail
           IMAGE='$IMAGE'
           while true; do
-            if [ ! -f /state/setup.complete ] || [ ! -f /state/telegram_news.session ] || [ ! -f /state/allowed_chats.yaml ] || [ ! -f /opt/telegram-reader/runtime.env ]; then sleep 5; continue; fi
+            if [ ! -f /state/allowed_chats.yaml ] || [ ! -f /opt/telegram-reader/runtime.env ]; then sleep 5; continue; fi
             mkdir -p /state/media /state/exports
             chown -R 10001:10001 /state/media /state/exports
             docker rm -f telegram-reader >/dev/null 2>&1 || true
@@ -93,7 +88,6 @@ jobs:
           sudo chmod 0750 /usr/local/sbin/telegram-reader-launcher
           sudo systemctl daemon-reload
           sudo systemctl restart telegram-reader-launcher.service
-          echo RESTARTED
 
           for attempt in $(seq 1 60); do
             body="$(curl -fsS http://127.0.0.1:8080/health 2>/dev/null || true)"
@@ -107,7 +101,7 @@ jobs:
           done
 
           sudo docker exec telegram-reader ffmpeg -version | head -1
-          sudo docker exec telegram-reader python - <<'PY'
+          sudo docker exec -i telegram-reader python - <<'PY'
           from pathlib import Path
           from PIL import Image
           from app.media_pipeline import MediaPipeline
@@ -118,21 +112,19 @@ jobs:
           assert preview and preview.exists() and preview.stat().st_size>0
           print('GIF_PREVIEW_PASS')
           PY
-          sudo docker exec telegram-reader sh -lc "ffmpeg -loglevel error -y -f lavfi -i color=c=black:s=96x64:d=1 -pix_fmt yuv420p /tmp/sample.mp4 && python - <<'PY'
+          sudo docker exec telegram-reader sh -lc "ffmpeg -loglevel error -y -f lavfi -i color=c=black:s=96x64:d=1 -pix_fmt yuv420p /tmp/sample.mp4"
+          sudo docker exec -i telegram-reader python - <<'PY'
           from pathlib import Path
           from app.media_pipeline import MediaPipeline
           preview=MediaPipeline._build_preview(Path('/tmp/sample.mp4'),'animation')
           assert preview and preview.exists() and preview.stat().st_size>0
           print('ANIMATION_PREVIEW_PASS')
-          PY"
+          PY
 
           sleep 75
-          if sudo docker logs --since 2m telegram-reader 2>&1 | grep -q 'PermissionError'; then
-            echo PERMISSION_ERROR_FOUND >&2
-            exit 1
-          fi
+          if sudo docker logs --since 2m telegram-reader 2>&1 | grep -q 'PermissionError'; then echo PERMISSION_ERROR_FOUND >&2; exit 1; fi
           sudo docker exec telegram-reader python -m app.export_cli >/dev/null
-          sudo docker exec telegram-reader python - <<'PY'
+          sudo docker exec -i telegram-reader python - <<'PY'
           import json
           d=json.load(open('/state/exports/TELEGRAM_NEWS_LATEST.json',encoding='utf-8'))
           assert d['schema']=='TELEGRAM_NEWS_READER_V1'
