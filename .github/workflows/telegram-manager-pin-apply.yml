@@ -53,31 +53,11 @@ jobs:
           { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
 
           yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
-
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id b1gk4p83brasi8g811jv --add-rule "description=github-telegram-manager-pin,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
 
           sleep 20
 
-          printf '%s' "$MANAGE_HASH" > "$RUNNER_TEMP/manage_hash"
-
-          scp -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/manage_hash" ubuntu@111.88.248.156:/tmp/manage_hash
-
-          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'set -euo pipefail
-h=$(cat /tmp/manage_hash)
-rm -f /tmp/manage_hash
-if grep -q "^MANAGE_TOKEN_SHA256=" /opt/telegram-reader/runtime.env; then
-  sudo sed -i "s/^MANAGE_TOKEN_SHA256=.*/MANAGE_TOKEN_SHA256=$h/" /opt/telegram-reader/runtime.env
-else
-  printf "\nMANAGE_TOKEN_SHA256=%s\n" "$h" | sudo tee -a /opt/telegram-reader/runtime.env >/dev/null
-fi
-sudo docker restart telegram-reader >/dev/null
-for i in $(seq 1 20); do
-  if curl -fsS --max-time 3 http://127.0.0.1:8080/health >/tmp/tg-health 2>/dev/null; then break; fi
-  sleep 2
-done
-cat /tmp/tg-health
-jq -e ".status == \"ok\"" /tmp/tg-health >/dev/null
-echo PIN_HASH_APPLY_PASS'
+          printf '%s\n' "$MANAGE_HASH" | ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'read -r h; set -euo pipefail; if grep -q "^MANAGE_TOKEN_SHA256=" /opt/telegram-reader/runtime.env; then sudo sed -i "s/^MANAGE_TOKEN_SHA256=.*/MANAGE_TOKEN_SHA256=$h/" /opt/telegram-reader/runtime.env; else printf "\nMANAGE_TOKEN_SHA256=%s\n" "$h" | sudo tee -a /opt/telegram-reader/runtime.env >/dev/null; fi; image=$(sudo docker inspect --format="{{.Config.Image}}" telegram-reader); sudo docker rm -f telegram-reader >/dev/null; sudo docker run -d --name telegram-reader --restart unless-stopped -p 127.0.0.1:8080:8080 --env-file /opt/telegram-reader/runtime.env -v /state:/state "$image" >/dev/null; for i in $(seq 1 20); do curl -fsS --max-time 3 http://127.0.0.1:8080/health >/tmp/tg-health 2>/dev/null && break; sleep 2; done; cat /tmp/tg-health; jq -e ".status == \"ok\"" /tmp/tg-health >/dev/null; echo PIN_HASH_APPLY_PASS'
 
       - name: Cleanup
         if: always()
@@ -92,4 +72,4 @@ echo PIN_HASH_APPLY_PASS'
           if [ -f "$RUNNER_TEMP/oldkeys" ]; then
             yc compute instance add-metadata telegram-news-reader --folder-id b1gk4p83brasi8g811jv --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"
           fi
-          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys" "$RUNNER_TEMP/manage_hash"
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
