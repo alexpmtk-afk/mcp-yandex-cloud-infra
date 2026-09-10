@@ -39,6 +39,8 @@ async def lifespan(app: FastAPI):
             task = asyncio.create_task(_collector_loop())
         except AuthorizationRequired:
             print("telegram_session=authorization_required")
+        except Exception as exc:
+            print(f"telegram_connect_error={type(exc).__name__}")
         try:
             yield
         finally:
@@ -48,7 +50,10 @@ async def lifespan(app: FastAPI):
                     await task
                 except asyncio.CancelledError:
                     pass
-            await reader.disconnect()
+            try:
+                await reader.disconnect()
+            except Exception:
+                pass
 
 
 app = FastAPI(title="Telegram News Reader", lifespan=lifespan)
@@ -72,9 +77,15 @@ async def access_denied_handler(request: Request, exc: AccessDenied):
 
 @app.get("/health")
 async def health():
-    authorized = await reader.is_authorized()
+    try:
+        authorized = await reader.is_authorized()
+        telegram_status = "ok" if authorized else "authorization_required"
+    except Exception as exc:
+        authorized = False
+        telegram_status = f"unavailable:{type(exc).__name__}"
     return {
-        "status": "ok" if authorized else "authorization_required",
+        "status": "ok",
+        "telegram_status": telegram_status,
         "telegram_authorized": authorized,
         "allowed_chats": len(whitelist.list_allowed()),
         "messages": storage.count_messages(),
