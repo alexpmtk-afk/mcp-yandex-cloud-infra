@@ -36,7 +36,7 @@ jobs:
           yc config profile create telegram-finalize || true
           yc config profile activate telegram-finalize
           yc config set service-account-key "$key"
-      - name: Inspect launcher scripts
+      - name: Inspect persistent state mount
         shell: bash
         run: |
           set -euo pipefail
@@ -49,7 +49,25 @@ jobs:
           yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-finalize-diagnose,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
           sleep 20
-          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'echo FINAL_SCRIPT; sudo sed -n "1,220p" /root/telegram-reader-final.sh 2>/dev/null || true; echo LAUNCHER_SCRIPT; sudo sed -n "1,220p" /usr/local/sbin/telegram-reader-launcher 2>/dev/null || true'
+          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          echo '=== HOST FINDMNT ==='
+          sudo findmnt -T /state -o TARGET,SOURCE,FSTYPE,OPTIONS || true
+          echo '=== LSBLK ==='
+          sudo lsblk -o NAME,FSTYPE,SIZE,LABEL,UUID,MOUNTPOINTS
+          echo '=== FSTAB RELEVANT ==='
+          sudo grep -Ei 'state|telegram|UUID' /etc/fstab || true
+          echo '=== HOST STATE NAMES ==='
+          sudo find /state -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null | sort | head -100 || true
+          echo '=== CONTAINER MOUNT INFO ==='
+          sudo docker inspect telegram-reader --format '{{range .Mounts}}{{println .Source "->" .Destination}}{{end}}'
+          pid="$(sudo docker inspect -f '{{.State.Pid}}' telegram-reader)"
+          echo "CONTAINER_PID=$pid"
+          sudo nsenter -t "$pid" -m -- findmnt -T /state -o TARGET,SOURCE,FSTYPE,OPTIONS || true
+          echo '=== CONTAINER STATE NAMES ==='
+          sudo nsenter -t "$pid" -m -- find /state -maxdepth 1 -mindepth 1 -printf '%f\n' 2>/dev/null | sort | head -100 || true
+          echo 'MOUNT_DIAG_PASS'
+          REMOTE
       - name: Cleanup
         if: always()
         shell: bash
