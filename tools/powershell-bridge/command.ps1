@@ -56,7 +56,7 @@ if (-not $match.Success) {
     throw 'Could not extract --token from the copied Configure command.'
 }
 $plainToken = $match.Groups[1].Value
-Set-Clipboard -Value ''
+Set-Clipboard -Value ' '
 $clip = $null
 
 Push-Location $root
