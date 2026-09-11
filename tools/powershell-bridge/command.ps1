@@ -1,5 +1,5 @@
 $ErrorActionPreference = 'Stop'
-Write-Host 'BRIDGE_V2_WORK_HEALTH_OK'
+Write-Host 'BRIDGE_V2_WORK_HEALTH_OK_2'
 Write-Host "Runner=$env:RUNNER_NAME"
 Write-Host "Computer=$env:COMPUTERNAME"
 whoami.exe
