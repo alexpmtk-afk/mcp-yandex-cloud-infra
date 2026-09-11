@@ -15,7 +15,7 @@ concurrency:
   group: telegram-news-bridge
   cancel-in-progress: false
 
-# Bridge publishes one rolling 36-hour snapshot every 30 minutes.
+# Bridge publishes one rolling 192-hour snapshot every 30 minutes.
 jobs:
   export:
     runs-on: ubuntu-latest
