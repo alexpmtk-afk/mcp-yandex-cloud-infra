@@ -33,65 +33,24 @@ jobs:
           echo 'USE_BRANCH=bridge-v2'
           echo 'USE_RUNNER=GPT-PowerShell-Work-MANAGER-MP2'
           echo 'USE_LABEL=gpt-powershell-work'
-          echo 'This public WORK bridge was retired on 2026-09-11. Read tools/powershell-bridge/README.md.'
+          echo 'This public WORK bridge is retired. Use the private bridge.'
           exit 64
 
-  home-legacy:
+  home-retired:
     if: >-
       startsWith(github.event.head_commit.message, 'bridge-safe-home:') ||
       startsWith(github.event.head_commit.message, 'bridge-write-home:') ||
       startsWith(github.event.head_commit.message, 'bridge-danger-home:')
-    runs-on:
-      - self-hosted
-      - Windows
-      - X64
-      - codex-bridge-service
-    timeout-minutes: 10
-
+    runs-on: ubuntu-latest
     steps:
-      - name: Checkout triggering commit
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ github.sha }}
-          fetch-depth: 1
-          persist-credentials: false
-
-      - name: Guard and execute PowerShell command
-        shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
-        env:
-          BRIDGE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
+      - name: HOME bridge migrated
+        shell: bash
         run: |
-          $ErrorActionPreference = 'Stop'
-          Write-Host '=== POWERSHELL_BRIDGE_V2_HOME_LEGACY_BEGIN ==='
-          Write-Host "Commit=$env:GITHUB_SHA"
-          Write-Host "Runner=$env:RUNNER_NAME"
-          Write-Host "Computer=$env:COMPUTERNAME"
-
-          $msg = $env:BRIDGE_COMMIT_MESSAGE
-          if ($msg -match '^bridge-safe-') { $mode = 'safe' }
-          elseif ($msg -match '^bridge-write-') { $mode = 'write' }
-          elseif ($msg -match '^bridge-danger-') { $mode = 'dangerous' }
-          else { throw 'Unsupported bridge execution prefix.' }
-
-          $commandFile = Join-Path $env:GITHUB_WORKSPACE 'tools\powershell-bridge\command.ps1'
-          $guardFile = Join-Path $env:GITHUB_WORKSPACE 'tools\powershell-bridge\guard.ps1'
-          $stdoutFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-stdout.txt'
-          $stderrFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-stderr.txt'
-
-          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $guardFile -Mode $mode -ScriptPath $commandFile
-          $guardExit = $LASTEXITCODE
-          if ($null -eq $guardExit) { $guardExit = 0 }
-          if ($guardExit -ne 0) { exit $guardExit }
-
-          $proc = Start-Process -FilePath 'powershell.exe' `
-            -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $commandFile) `
-            -NoNewWindow -Wait -PassThru `
-            -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
-
-          if (Test-Path $stdoutFile) { Get-Content $stdoutFile | ForEach-Object { Write-Host ([string]$_) } }
-          if (Test-Path $stderrFile) { Get-Content $stderrFile | ForEach-Object { Write-Host ('STDERR: ' + [string]$_) } }
-          $exit = $proc.ExitCode
-          Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
-          Write-Host "EXIT_CODE=$exit"
-          Write-Host '=== POWERSHELL_BRIDGE_V2_HOME_LEGACY_END ==='
-          if ($exit -ne 0) { exit $exit }
+          echo 'HOME_BRIDGE_RETIRED=TRUE'
+          echo 'COMMAND_EXECUTED=FALSE'
+          echo 'USE_REPOSITORY=alexpmtk-afk/gpt-powershell-bridge'
+          echo 'USE_BRANCH=bridge-v2'
+          echo 'USE_RUNNER=GPT-PowerShell-Home-DESKTOP-7F6KPIL'
+          echo 'USE_LABEL=gpt-powershell-home'
+          echo 'This public HOME bridge is retired. Use the private bridge.'
+          exit 64
