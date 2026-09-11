@@ -1,219 +1,111 @@
-# GPT-PowerShell Bridge — Canonical Operating Contract v1.1
+# GPT-PowerShell Bridge v2 — Operating Contract
 
-Дата: 01.09.2026
-Статус: CANONICAL
-Проект: `GPT-ПК`
-Управляющий чат: `GPT-PowerShell`
+Дата: 11.09.2026
+Статус: ACTIVE CANDIDATE
+Репозиторий: `alexpmtk-afk/mcp-yandex-cloud-infra`
+Ветка: `tooling/powershell-bridge-v2`
 
-Этот файл — постоянная инструкция для ChatGPT. При конфликте данных приоритет: текущий код ветки → фактические GitHub Actions logs → фактический PowerShell output → этот документ → старые сообщения.
+## Назначение
 
-## 1. Назначение
-
-PowerShell Bridge позволяет управлять Windows-ПК через обычный диалог с ChatGPT без ручного копирования команд после первичной установки runner.
+Bridge v2 даёт ChatGPT управляемый доступ к PowerShell на зарегистрированных Windows self-hosted runners без Desktop Commander и без ручного копирования каждой команды пользователем.
 
 Канал:
 
-`Пользователь → ChatGPT → GitHub → GitHub Actions → self-hosted Windows runner → PowerShell → Actions logs → ChatGPT`
+`ChatGPT -> GitHub commit -> GitHub Actions -> Windows self-hosted runner -> guard.ps1 -> PowerShell -> Actions log -> ChatGPT`
 
-## 2. GitHub
+## Компьютеры
 
-Repository: `alexpmtk-afk/mcp-yandex-cloud-infra`
+Домашний ПК:
+- Machine: `DESKTOP-7F6KPIL`
+- Runner: `Codex-Bridge-Service-DESKTOP-7F6KPIL`
+- Label: `codex-bridge-service`
 
-Branch: `tooling/powershell-bridge-v0.1`
+Рабочий ПК:
+- Machine: `MANAGER-MP2`
+- Runner: `Codex-Bridge-Work-MANAGER-MP2`
+- Label: `codex-bridge-work`
 
-Workflow: `.github/workflows/powershell-bridge.yml`
+## Файлы
 
-Исполняемый файл: `tools/powershell-bridge/command.ps1`
+- `.github/workflows/powershell-bridge.yml` — транспорт и исполнение.
+- `tools/powershell-bridge/guard.ps1` — техническая политика безопасности.
+- `tools/powershell-bridge/command.ps1` — одна исполняемая команда/задача.
 
-Каноническая инструкция: `tools/powershell-bridge/README.md`
+Workflow всегда загружает `guard.ps1` и `command.ps1` из точного triggering commit (`GITHUB_SHA`).
 
-## 3. Два компьютера и маршрутизация
+## Режимы
 
-### Домашний компьютер
+### SAFE
 
-Machine: `DESKTOP-7F6KPIL`
+Префиксы:
+- `bridge-safe-home:`
+- `bridge-safe-work:`
 
-Runner: `Codex-Bridge-Service-DESKTOP-7F6KPIL`
+SAFE выполняется без отдельного подтверждения пользователя.
+Разрешены только диагностические/read-only PowerShell-команды из allowlist, read-only git/yc операции и сетевые диагностические утилиты.
+Динамическое выполнение, файловая запись, .NET method invocation и потенциально секретные чтения блокируются.
 
-Labels: `self-hosted`, `Windows`, `X64`, `codex-bridge-service`
+### WRITE
 
-Execution prefix: `bridge-exec-home:`
+Префиксы:
+- `bridge-write-home:`
+- `bridge-write-work:`
 
-Для обратной совместимости старый prefix `bridge-exec:` также направляется на домашний компьютер.
+WRITE может выполняться без отдельного подтверждения пользователя, когда действие прямо следует из поставленной пользователем задачи.
+Разрешены обычные изменения файлов, репозитория и прикладной конфигурации в пределах прав runner.
+Guard блокирует удаление, дисковые операции, reboot/shutdown, ACL/user/service/firewall/Defender mutations, destructive git, Terraform apply/destroy и cloud delete/remove.
 
-### Рабочий компьютер
+### DANGEROUS
 
-Machine: `MANAGER-MP2`
+Префиксы:
+- `bridge-danger-home:`
+- `bridge-danger-work:`
 
-Runner: `Codex-Bridge-Work-MANAGER-MP2`
+В текущей версии всегда fail-closed. Для опасных административных действий должен использоваться отдельный явно одобренный maintenance-механизм. Автоматически такие команды не исполняются.
 
-Labels: `self-hosted`, `Windows`, `X64`, `codex-bridge-work`
+## Секреты
 
-Runner version при установке: `2.337.0`
+Никогда не помещать секреты в `command.ps1`, commit message или Actions logs.
+Guard блокирует типовые literal secrets, JWT, private keys, чтение Yandex Lockbox payload и обращения к типовым secret/token/password-файлам.
+Workflow дополнительно редактирует типовые секретные значения в stdout/stderr.
 
-Runner directory: `C:\ProgramData\ChatGPT-PK\powershell-work-runner`
+Секрет должен попадать на ПК/в облако через отдельный secret channel, а bridge может оперировать только ссылкой/именем секрета.
 
-Service: `actions.runner.alexpmtk-afk-mcp-yandex-cloud-infra.Codex-Bridge-Work-MANAGER-MP2`
+## Порядок исполнения
 
-Ожидаемое состояние: `Running`, `Automatic`.
+1. ChatGPT определяет целевой ПК и режим.
+2. Записывает ровно одну задачу в `command.ps1`.
+3. Делает один commit с соответствующим prefix.
+4. GitHub Actions выбирает runner по prefix.
+5. Runner загружает command и guard из triggering SHA.
+6. `guard.ps1` разрешает или блокирует команду.
+7. При PASS команда выполняется.
+8. stdout/stderr проходят redaction.
+9. ChatGPT читает terminal log до запуска следующей изменяющей команды.
 
-Execution prefix: `bridge-exec-work:`
+Правило: `one command -> one commit -> one run -> terminal result -> next command`.
 
-### Выбор компьютера
+## Надёжность
 
-Перед execution ChatGPT обязан определить целевой ПК из явного запроса или текущего контекста. Если целевой ПК действительно неоднозначен, нужно уточнить его до запуска.
+`cancel-in-progress: false`: уже начатая изменяющая команда не прерывается новым запросом.
+Jobs одного bridge выполняются последовательно.
+Runner остаётся Windows service и не зависит от GUI-сессии пользователя.
 
-Нельзя отправлять одну команду сразу на оба ПК без отдельного явного согласования.
+## Ограничения service account
 
-## 4. Префиксы commit
+Runner обычно работает как `NT AUTHORITY\NETWORK SERVICE`.
+Поэтому пользовательский HKCU, mapped drives и интерактивный GUI не считаются доступными автоматически. Для файлов использовать подтверждённые абсолютные пути.
 
-- `bridge-exec-home:` — выполнить одобренную команду на домашнем ПК.
-- `bridge-exec-work:` — выполнить одобренную команду на рабочем ПК.
-- `bridge-exec:` — legacy, выполнить на домашнем ПК.
-- `bridge-bootstrap:` — bootstrap домашнего контура, только когда это действительно требуется.
-- `bridge-maintenance:` / `bridge-hardening:` / `bridge-docs:` — изменения инфраструктуры без исполнения PowerShell-команды.
+## Fail closed
 
-## 5. Строгий approval gate
+- parse error -> deny;
+- неизвестная SAFE-команда -> deny;
+- dynamic execution -> deny;
+- возможный literal secret -> deny;
+- dangerous operation -> deny;
+- предыдущий WRITE run с неопределённым результатом -> сначала аудит log, затем следующая команда.
 
-Для каждой новой PowerShell-команды действует обязательная схема:
+## Миграция
 
-`показать точную команду → получить явное "да" → выполнить именно её`
-
-До `да` запрещено:
-
-- записывать новую исполняемую команду в `command.ps1`;
-- запускать её;
-- подменять показанный текст другой командой;
-- переносить старое согласие на новую команду;
-- добавлять скрытые побочные действия.
-
-Даже read-only диагностика по умолчанию требует отдельного `да`.
-
-Чтение GitHub, commit history, workflow и Actions logs не запускает команду на ПК и отдельного approval не требует.
-
-## 6. Алгоритм после approval
-
-1. Прочитать текущий `command.ps1` и получить blob SHA.
-2. Записать полный текст именно одобренной команды.
-3. Использовать prefix целевого ПК: `bridge-exec-home:` или `bridge-exec-work:`.
-4. Получить commit SHA.
-5. Найти workflow run с тем же `head_sha`.
-6. Получить job `execute`.
-7. Дождаться `completed`.
-8. Прочитать полный job log.
-9. Проверить runner, computer, фактический текст `command.ps1`, stdout/stderr и exit code.
-10. Только после terminal result переходить к следующей команде.
-
-Правило: `one approved command → one commit → one run → terminal result → next command`.
-
-## 7. Защита от race condition
-
-Workflow обязан загружать `command.ps1` из triggering commit через `?ref=$env:GITHUB_SHA`, а не из текущего HEAD ветки.
-
-Workflow использует общий concurrency group `powershell-bridge` с `cancel-in-progress: true`.
-
-Нельзя создавать следующую исполняемую команду до определения terminal state предыдущей.
-
-## 8. Что проверять в log
-
-Корректный run должен содержать:
-
-- ожидаемый Runner name целевого ПК;
-- ожидаемый Machine name;
-- `=== POWERSHELL_BRIDGE_BEGIN ===`;
-- правильный `Commit:`;
-- правильный `Runner:`;
-- правильный `Computer:`;
-- блок `--- command.ps1 ---` с одобренным текстом;
-- блок `--- output ---`;
-- отсутствие необработанных PowerShell exceptions/errors;
-- корректный `exit_code`;
-- `=== POWERSHELL_BRIDGE_END ===`.
-
-`conclusion=success` само по себе недостаточно: лог нужно читать семантически.
-
-Known issue: нефатальная PowerShell-ошибка иногда может быть напечатана, а общий exit code остаться 0. Поэтому stdout/stderr проверяются всегда.
-
-## 9. Active health check
-
-Минимальная проверка доступности конкретного ПК также проходит approval gate, например:
-
-```powershell
-Write-Host 'BRIDGE_HEALTH_OK'
-Write-Host "Runner=$env:RUNNER_NAME"
-Write-Host "Computer=$env:COMPUTERNAME"
-Get-Date
-```
-
-Bridge считается активно доступным, только если run принят нужным runner и завершён с ожидаемым log.
-
-## 10. Security identity
-
-Оба service-runner по умолчанию работают в сервисном контексте Windows (`NT AUTHORITY\NETWORK SERVICE`).
-
-Следствия:
-
-- `$HOME`, `$env:USERPROFILE`, `HKCU`, `%APPDATA%` относятся к service account, а не к интерактивному пользователю;
-- mapped drives и пользовательский PATH могут отсутствовать;
-- для пользовательских файлов нужны явные абсолютные пути;
-- перед вызовом CLI сначала проверять `Get-Command` или использовать подтверждённый абсолютный путь;
-- GUI из Session 0 не считается интерактивным окном пользователя;
-- не менять пользовательский HKCU, не определив корректный SID/hive.
-
-## 11. Секреты
-
-`command.ps1` хранится в Git history, stdout/stderr — в Actions logs.
-
-Запрещено помещать или печатать открытым текстом passwords, API keys, OAuth tokens, PAT, Yandex Cloud secrets, marketplace tokens, private keys и recovery codes.
-
-Проверять только факт наличия, например:
-
-```powershell
-Write-Host ("SECRET_PRESENT=" + [bool]$env:SECRET_TOKEN)
-```
-
-## 12. Сбои
-
-Действовать fail-closed.
-
-Если PowerShell дал ошибку — определить, какие строки могли уже выполниться, и не повторять изменяющую команду автоматически.
-
-Если workflow failed/cancelled — сначала определить, началось ли выполнение `command.ps1`.
-
-Если run долго `queued` — не отправлять новую исполняемую команду; проверить целевой label/runner и последний контакт.
-
-Если нужный self-hosted runner offline, сам этот runner не может восстановить собственную Windows service через GitHub. Сначала искать другой уже существующий канал; ручное вмешательство пользователя — последний технически неизбежный вариант.
-
-## 13. Административные операции
-
-Текущий bridge не является универсальным административным broker.
-
-При `Access is denied` сначала искать безопасный неадминистративный способ. Не переводить runner на LocalSystem и не расширять ACL без отдельного архитектурного решения и approval.
-
-## 14. Поведение с пользователем
-
-Если bridge способен выполнить задачу, пользователь не должен быть техническим посредником.
-
-Нормальный интерфейс:
-
-```text
-Для этого нужна команда:
-
-<точная PowerShell-команда>
-
-Она сделает X и не затронет Y.
-
-Запустить? Да / нет.
-```
-
-После `да` ChatGPT самостоятельно делает commit, отслеживает Actions, читает полный log и сообщает результат.
-
-## 15. Baseline
-
-Домашний E2E baseline ранее подтверждён для `DESKTOP-7F6KPIL` / `Codex-Bridge-Service-DESKTOP-7F6KPIL`.
-
-Рабочий runner зарегистрирован 01.09.2026: `MANAGER-MP2` / `Codex-Bridge-Work-MANAGER-MP2`; служба установлена и запущена. Полный E2E для рабочего ПК считается подтверждённым только после отдельного active health check через `bridge-exec-work:`.
-
-## 16. Короткая формула
-
-`Пользователь формулирует задачу → ChatGPT выбирает целевой ПК → показывает точную команду → пользователь говорит "да" → command.ps1 → target-specific bridge-exec commit → GitHub Actions → нужный Windows runner → PowerShell → полный log → ChatGPT сообщает результат.`
+Старый `tooling/powershell-bridge-v0.1` не изменяется и остаётся rollback-контуром до подтверждённого E2E v2.
+После успешного SAFE health test и WRITE smoke test v2 становится основным bridge.
