@@ -1,4 +1,4 @@
-name: PowerShell Bridge v2
+name: PowerShell Bridge v2 LEGACY
 
 on:
   push:
@@ -13,23 +13,39 @@ permissions:
   contents: read
 
 concurrency:
-  group: powershell-bridge-v2-${{ contains(github.event.head_commit.message, '-work:') && 'work' || 'home' }}
+  group: powershell-bridge-v2-legacy-${{ contains(github.event.head_commit.message, '-work:') && 'work' || 'home' }}
   cancel-in-progress: false
 
 jobs:
-  execute:
+  work-retired:
+    if: >-
+      startsWith(github.event.head_commit.message, 'bridge-safe-work:') ||
+      startsWith(github.event.head_commit.message, 'bridge-write-work:') ||
+      startsWith(github.event.head_commit.message, 'bridge-danger-work:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: WORK bridge migrated
+        shell: bash
+        run: |
+          echo 'WORK_BRIDGE_RETIRED=TRUE'
+          echo 'COMMAND_EXECUTED=FALSE'
+          echo 'USE_REPOSITORY=alexpmtk-afk/gpt-powershell-bridge'
+          echo 'USE_BRANCH=bridge-v2'
+          echo 'USE_RUNNER=GPT-PowerShell-Work-MANAGER-MP2'
+          echo 'USE_LABEL=gpt-powershell-work'
+          echo 'This public WORK bridge was retired on 2026-09-11. Read tools/powershell-bridge/README.md.'
+          exit 64
+
+  home-legacy:
     if: >-
       startsWith(github.event.head_commit.message, 'bridge-safe-home:') ||
-      startsWith(github.event.head_commit.message, 'bridge-safe-work:') ||
       startsWith(github.event.head_commit.message, 'bridge-write-home:') ||
-      startsWith(github.event.head_commit.message, 'bridge-write-work:') ||
-      startsWith(github.event.head_commit.message, 'bridge-danger-home:') ||
-      startsWith(github.event.head_commit.message, 'bridge-danger-work:')
+      startsWith(github.event.head_commit.message, 'bridge-danger-home:')
     runs-on:
       - self-hosted
       - Windows
       - X64
-      - "${{ (startsWith(github.event.head_commit.message, 'bridge-safe-work:') || startsWith(github.event.head_commit.message, 'bridge-write-work:') || startsWith(github.event.head_commit.message, 'bridge-danger-work:')) && 'codex-bridge-work' || 'codex-bridge-service' }}"
+      - codex-bridge-service
     timeout-minutes: 10
 
     steps:
@@ -46,7 +62,7 @@ jobs:
           BRIDGE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host '=== POWERSHELL_BRIDGE_V2_BEGIN ==='
+          Write-Host '=== POWERSHELL_BRIDGE_V2_HOME_LEGACY_BEGIN ==='
           Write-Host "Commit=$env:GITHUB_SHA"
           Write-Host "Runner=$env:RUNNER_NAME"
           Write-Host "Computer=$env:COMPUTERNAME"
@@ -56,50 +72,26 @@ jobs:
           elseif ($msg -match '^bridge-write-') { $mode = 'write' }
           elseif ($msg -match '^bridge-danger-') { $mode = 'dangerous' }
           else { throw 'Unsupported bridge execution prefix.' }
-          Write-Host "RequestedMode=$mode"
 
           $commandFile = Join-Path $env:GITHUB_WORKSPACE 'tools\powershell-bridge\command.ps1'
           $guardFile = Join-Path $env:GITHUB_WORKSPACE 'tools\powershell-bridge\guard.ps1'
           $stdoutFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-stdout.txt'
           $stderrFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-stderr.txt'
 
-          if (-not (Test-Path -LiteralPath $commandFile -PathType Leaf)) { throw 'command.ps1 missing from triggering commit checkout' }
-          if (-not (Test-Path -LiteralPath $guardFile -PathType Leaf)) { throw 'guard.ps1 missing from triggering commit checkout' }
-
-          Write-Host '--- policy ---'
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $guardFile -Mode $mode -ScriptPath $commandFile
           $guardExit = $LASTEXITCODE
           if ($null -eq $guardExit) { $guardExit = 0 }
-          if ($guardExit -ne 0) {
-            Write-Host "GUARD_EXIT_CODE=$guardExit"
-            exit $guardExit
-          }
+          if ($guardExit -ne 0) { exit $guardExit }
 
-          function Redact-Line([string]$Line) {
-            if ($null -eq $Line) { return '' }
-            $v = $Line
-            $v = [regex]::Replace($v, '(?i)(Authorization\s*:\s*Bearer\s+)\S+', '$1<REDACTED>')
-            $v = [regex]::Replace($v, '(?i)((?:password|passwd|api[_-]?key|client[_-]?secret|access[_-]?token|refresh[_-]?token)\s*[:=]\s*)\S+', '$1<REDACTED>')
-            $v = [regex]::Replace($v, '(?i)\beyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\b', '<REDACTED_JWT>')
-            return $v
-          }
-
-          Write-Host '--- output ---'
           $proc = Start-Process -FilePath 'powershell.exe' `
             -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $commandFile) `
             -NoNewWindow -Wait -PassThru `
             -RedirectStandardOutput $stdoutFile -RedirectStandardError $stderrFile
 
-          if (Test-Path $stdoutFile) {
-            Get-Content $stdoutFile | ForEach-Object { Write-Host (Redact-Line ([string]$_)) }
-          }
-          if (Test-Path $stderrFile) {
-            Get-Content $stderrFile | ForEach-Object { Write-Host ('STDERR: ' + (Redact-Line ([string]$_))) }
-          }
-
+          if (Test-Path $stdoutFile) { Get-Content $stdoutFile | ForEach-Object { Write-Host ([string]$_) } }
+          if (Test-Path $stderrFile) { Get-Content $stderrFile | ForEach-Object { Write-Host ('STDERR: ' + [string]$_) } }
           $exit = $proc.ExitCode
-          Write-Host "EXIT_CODE=$exit"
-          Write-Host '=== POWERSHELL_BRIDGE_V2_END ==='
-
           Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+          Write-Host "EXIT_CODE=$exit"
+          Write-Host '=== POWERSHELL_BRIDGE_V2_HOME_LEGACY_END ==='
           if ($exit -ne 0) { exit $exit }
