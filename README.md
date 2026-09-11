@@ -1,5 +1,8 @@
 # mcp-yandex-cloud-infra
 
+> **PC ACCESS NOTICE — 11.09.2026**  
+> Для доступа ChatGPT к HOME/WORK Windows‑ПК этот репозиторий больше не является каноническим транспортом. Перед любой локальной задачей читать `CURRENT_PC_ACCESS.md`. Канонический путь: PRIVATE `alexpmtk-afk/gpt-powershell-bridge`, branch `bridge-v2`. `Remote_Desktop_Commander` не использовать как default по инерции.
+
 Центральный приватный репозиторий для описания и автоматизации инфраструктуры MCP-сервисов в Yandex Cloud.
 
 ## Назначение
