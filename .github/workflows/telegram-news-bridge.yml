@@ -12,7 +12,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: telegram-news-bridge
+  group: telegram-news-reader-ssh
   cancel-in-progress: false
 
 # Bridge publishes one rolling 192-hour snapshot every 30 minutes.
@@ -61,10 +61,24 @@ jobs:
           { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
           yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-news-bridge,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
-          sleep 20
+
+          ssh_opts=(-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey")
+          ssh_ready=0
+          for attempt in $(seq 1 12); do
+            if ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 true >/dev/null 2>&1; then
+              ssh_ready=1
+              break
+            fi
+            echo "SSH key not active yet; retry $attempt/12"
+            sleep 10
+          done
+          if [ "$ssh_ready" -ne 1 ]; then
+            echo "SSH_READY_TIMEOUT"
+            exit 255
+          fi
 
           mkdir -p telegram-news-reader/export
-          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 \
+          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 \
             'sudo mkdir -p /state/media /state/exports && sudo chown -R 10001:10001 /state/media /state/exports && sudo docker exec telegram-reader python -m app.export_cli >/dev/null && sudo cat /state/exports/TELEGRAM_NEWS_LATEST.json' \
             > telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
 
