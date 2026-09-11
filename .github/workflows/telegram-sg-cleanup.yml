@@ -1,0 +1,56 @@
+name: Telegram SG Cleanup
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-sg-cleanup.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 5
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-sg-cleanup || true
+          yc config profile activate telegram-sg-cleanup
+          yc config set service-account-key "$key"
+
+      - name: Remove only proven duplicate temporary SSH rule
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder="b1gk4p83brasi8g811jv"
+          sg="enpocnvnpdu2goj9nkjn"
+          json="$(yc vpc security-group get "$sg" --folder-id "$folder" --format json)"
+          temp_id="$(printf '%s' "$json" | jq -r '.rules[] | select(.description=="temporary-user-admin") | .id' | head -n1)"
+          temp_cidr="$(printf '%s' "$json" | jq -r '.rules[] | select(.description=="temporary-user-admin") | .cidr_blocks.v4_cidr_blocks[0]' | head -n1)"
+          live_cidr="$(printf '%s' "$json" | jq -r '.rules[] | select(.description=="work-pc-live") | .cidr_blocks.v4_cidr_blocks[0]' | head -n1)"
+          if [ -n "$temp_id" ] && [ "$temp_cidr" = "$live_cidr" ] && [ -n "$temp_cidr" ]; then
+            yc vpc security-group update-rules "$sg" --folder-id "$folder" --delete-rule-id "$temp_id"
+            echo "REMOVED_DUPLICATE_TEMP_SSH_RULE cidr=$temp_cidr"
+          else
+            echo "NO_PROVEN_DUPLICATE_REMOVED temp_cidr=$temp_cidr live_cidr=$live_cidr"
+          fi
