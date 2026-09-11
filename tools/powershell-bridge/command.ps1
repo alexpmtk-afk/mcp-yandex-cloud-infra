@@ -1,6 +1,7 @@
 $ErrorActionPreference = 'Stop'
-Write-Host 'BRIDGE_V2_RUNNER_RECOVERY_BEGIN'
-Get-Service -Name 'actions.runner.alexpmtk-afk-mcp-yandex-cloud-infra.Codex-Bridge-Work-MANAGER-MP2' | Select-Object Name, Status, StartType
-sc.exe qfailure 'actions.runner.alexpmtk-afk-mcp-yandex-cloud-infra.Codex-Bridge-Work-MANAGER-MP2'
-sc.exe qfailureflag 'actions.runner.alexpmtk-afk-mcp-yandex-cloud-infra.Codex-Bridge-Work-MANAGER-MP2'
-Write-Host 'BRIDGE_V2_RUNNER_RECOVERY_END'
+Write-Host 'BRIDGE_V2_CHECKOUT_V7_CANARY'
+Write-Host "Runner=$env:RUNNER_NAME"
+Write-Host "Computer=$env:COMPUTERNAME"
+whoami.exe
+Write-Host 'access_token=REDACTION_TEST_ONLY_NOT_A_SECRET_123456'
+Get-Date
