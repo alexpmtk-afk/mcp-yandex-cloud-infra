@@ -62,6 +62,7 @@ jobs:
           echo "CONTAINER_ID=$container_id"
           echo "CURRENT_REVISION_ID=${current:-UNAVAILABLE}"
           echo "ACTIVE_REVISION_IDS=$active"
+          jq -r '.[] | "REVISION_STATUS id=\\(.id) status=\\(.status) created=\\(.created_at // "unknown") image=\\(.image.image_url // "unknown")"' "$RUNNER_TEMP/revisions.json"
           echo "GATEWAY_ID=$gateway_id"
           echo "GATEWAY_REFERENCES_EXPECTED_CONTAINER=$route"
           echo "RECONCILIATION_READ_ONLY=PASS"
