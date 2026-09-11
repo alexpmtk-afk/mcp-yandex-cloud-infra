@@ -1,0 +1,250 @@
+name: WB Order Feed vs Statistics Orders Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/wb-order-feed-parity-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 6); do
+            if timeout 75s wget -q --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 3
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve TEST WB cabinets without exposing tokens
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          test -n "$SECRET_ID" && test -n "$VERSION_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          jq -r '.entries[]|select(.key=="cabinets_json")|.text_value' "$RUNNER_TEMP/sec.json" > "$RUNNER_TEMP/cabinets.json"
+          test -s "$RUNNER_TEMP/cabinets.json"
+          chmod 600 "$RUNNER_TEMP/cabinets.json"
+          echo 'WB_CABINETS=RESOLVED'
+
+      - name: Compare one Order Feed page with canonical Statistics Orders
+        shell: bash
+        timeout-minutes: 4
+        run: |
+          set -euo pipefail
+          timeout 210s python -u - <<'PY'
+          import base64
+          import collections
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import date, timedelta
+          from pathlib import Path
+
+          data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'cabinets.json').read_text(encoding='utf-8'))
+          cabinets = ((data.get('wb') or {}).get('cabinets') or {})
+          assert isinstance(cabinets, dict) and cabinets, 'no WB cabinets found'
+
+          # Order Feed is filtered by CURRENT STATUS time, not order creation time.
+          # Use one closed 7-day status window. Statistics Orders is fetched for
+          # the latest 31 creation days to maximize srid overlap without claiming
+          # that the two time dimensions are equivalent.
+          status_end = date.today() - timedelta(days=1)
+          status_start = status_end - timedelta(days=6)
+          stats_start = date.today() - timedelta(days=31)
+          feed_limit = 4030  # value explicitly present in the current WB docs example
+
+          def token_type(token):
+              try:
+                  part = token.split('.')[1]
+                  part += '=' * (-len(part) % 4)
+                  claims = json.loads(base64.urlsafe_b64decode(part.encode()).decode())
+                  return {1:'base', 2:'test', 3:'personal', 4:'service'}.get(int(claims.get('acc', 0) or 0), 'unknown')
+              except Exception:
+                  return 'unknown'
+
+          def request_json(method, url, token, body=None):
+              headers = {'Authorization': token, 'Accept': 'application/json'}
+              payload = None
+              if body is not None:
+                  payload = json.dumps(body).encode('utf-8')
+                  headers['Content-Type'] = 'application/json'
+              req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=50) as resp:
+                      raw = resp.read().decode('utf-8')
+                      return resp.status, (json.loads(raw) if raw.strip() else None)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode('utf-8', errors='replace')[:400]
+                  return exc.code, {'error': raw}
+
+          summaries = []
+          for name in sorted(cabinets):
+              token = str((cabinets.get(name) or {}).get('token') or '')
+              if not token:
+                  summaries.append({'cabinet': name, 'status': 'NO_TOKEN'})
+                  continue
+              ttype = token_type(token)
+
+              stats_q = urllib.parse.urlencode({
+                  'dateFrom': stats_start.isoformat() + 'T00:00:00',
+                  'flag': 0,
+              })
+              stats_http, stats = request_json(
+                  'GET', 'https://statistics-api.wildberries.ru/api/v1/supplier/orders?' + stats_q, token
+              )
+              if stats_http != 200 or not isinstance(stats, list):
+                  summaries.append({
+                      'cabinet': name, 'token_type': ttype,
+                      'status': 'STATS_ERROR', 'stats_http': stats_http,
+                  })
+                  continue
+
+              # Keep freshest Statistics state per srid.
+              stats_by_srid = {}
+              for row in stats:
+                  if not isinstance(row, dict):
+                      continue
+                  srid = str(row.get('srid') or '')
+                  if not srid:
+                      continue
+                  prev = stats_by_srid.get(srid)
+                  if prev is None or str(prev.get('lastChangeDate') or '') <= str(row.get('lastChangeDate') or ''):
+                      stats_by_srid[srid] = row
+
+              feed_body = {
+                  'selectedPeriod': {
+                      'start': status_start.isoformat() + 'T00:00:00+03:00',
+                      'end': status_end.isoformat() + 'T23:59:59+03:00',
+                  },
+                  'nmIds': [],
+                  'subjectIds': [],
+                  'brandNames': [],
+                  'tagIds': [],
+                  'pagination': {'offset': 0, 'limit': feed_limit},
+              }
+              feed_http, feed = request_json(
+                  'POST', 'https://seller-analytics-api.wildberries.ru/api/analytics/v1/order-feed',
+                  token, feed_body,
+              )
+              if feed_http != 200 or not isinstance(feed, dict):
+                  summaries.append({
+                      'cabinet': name, 'token_type': ttype,
+                      'status': 'ORDER_FEED_ERROR', 'feed_http': feed_http,
+                      'stats_unique_srids_31d': len(stats_by_srid),
+                  })
+                  continue
+
+              body = feed.get('data') if isinstance(feed.get('data'), dict) else feed
+              orders = body.get('orders') if isinstance(body, dict) else None
+              if not isinstance(orders, list):
+                  summaries.append({
+                      'cabinet': name, 'token_type': ttype,
+                      'status': 'ORDER_FEED_SCHEMA_ERROR', 'feed_http': feed_http,
+                      'top_keys': sorted(body.keys()) if isinstance(body, dict) else [],
+                  })
+                  continue
+
+              feed_by_srid = {}
+              for row in orders:
+                  if isinstance(row, dict) and row.get('srid'):
+                      feed_by_srid[str(row['srid'])] = row
+              overlap = sorted(set(feed_by_srid) & set(stats_by_srid))
+              statuses = collections.Counter(str(row.get('status') or 'unknown') for row in feed_by_srid.values())
+              created_in_status_window = 0
+              created_before_status_window = 0
+              cancel_agree = 0
+              cancel_compare = 0
+              price_equal = 0
+              price_compare = 0
+              for srid, row in feed_by_srid.items():
+                  created = str(row.get('createdAt') or '')[:10]
+                  if status_start.isoformat() <= created <= status_end.isoformat():
+                      created_in_status_window += 1
+                  elif created and created < status_start.isoformat():
+                      created_before_status_window += 1
+                  old = stats_by_srid.get(srid)
+                  if old is None:
+                      continue
+                  status_cancel = str(row.get('status') or '') == 'cancel'
+                  old_cancel = bool(old.get('isCancel', False))
+                  cancel_compare += 1
+                  if status_cancel == old_cancel:
+                      cancel_agree += 1
+                  try:
+                      price_compare += 1
+                      if float(row.get('sellerPrice')) == float(old.get('finishedPrice')):
+                          price_equal += 1
+                  except (TypeError, ValueError):
+                      pass
+
+              summaries.append({
+                  'cabinet': name,
+                  'token_type': ttype,
+                  'status': 'OK',
+                  'status_period': [status_start.isoformat(), status_end.isoformat()],
+                  'stats_creation_window_from': stats_start.isoformat(),
+                  'stats_unique_srids_31d': len(stats_by_srid),
+                  'order_feed_rows': len(orders),
+                  'order_feed_unique_srids': len(feed_by_srid),
+                  'order_feed_statuses': dict(sorted(statuses.items())),
+                  'feed_created_inside_status_period': created_in_status_window,
+                  'feed_created_before_status_period': created_before_status_window,
+                  'srid_overlap_with_statistics_31d': len(overlap),
+                  'overlap_percent_of_feed': round(100 * len(overlap) / len(feed_by_srid), 2) if feed_by_srid else 0,
+                  'cancel_state_comparable': cancel_compare,
+                  'cancel_state_agreement': cancel_agree,
+                  'sellerPrice_vs_finishedPrice_comparable': price_compare,
+                  'sellerPrice_equals_finishedPrice': price_equal,
+                  'snapshot_present': bool((body or {}).get('snapshotTime')),
+                  'single_page_only': True,
+                  'pagination_may_remain': len(orders) >= feed_limit,
+                  'semantic_verdict': 'DIFFERENT_TIME_AXIS_AND_PRICE_FIELD',
+              })
+
+          print('WB_ORDER_FEED_DIAGNOSTIC=' + json.dumps(summaries, ensure_ascii=False, sort_keys=True))
+          ok = [x for x in summaries if x.get('status') == 'OK']
+          assert ok, 'no cabinet produced both Statistics Orders and Order Feed data'
+          print('WB_ORDER_FEED_DIAGNOSTIC=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/cabinets.json"
