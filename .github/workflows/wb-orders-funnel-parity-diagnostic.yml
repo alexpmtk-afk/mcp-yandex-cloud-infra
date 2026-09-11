@@ -1,0 +1,237 @@
+name: WB Orders vs Sales Funnel Parity Diagnostic
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - .github/workflows/wb-orders-funnel-parity-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  parity:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 6); do
+            if timeout 75s wget -q --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 3
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve TEST WB cabinets without exposing tokens
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          test -n "$SECRET_ID" && test -n "$VERSION_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          jq -r '.entries[]|select(.key=="cabinets_json")|.text_value' "$RUNNER_TEMP/sec.json" > "$RUNNER_TEMP/cabinets.json"
+          test -s "$RUNNER_TEMP/cabinets.json"
+          chmod 600 "$RUNNER_TEMP/cabinets.json"
+          echo 'WB_CABINETS=RESOLVED'
+
+      - name: Compare canonical Statistics Orders with Sales Funnel
+        shell: bash
+        timeout-minutes: 3
+        run: |
+          set -euo pipefail
+          timeout 150s python -u - <<'PY'
+          import base64
+          import json
+          import os
+          import urllib.error
+          import urllib.parse
+          import urllib.request
+          from datetime import date, timedelta
+          from decimal import Decimal, InvalidOperation
+          from pathlib import Path
+
+          path = Path(os.environ['RUNNER_TEMP']) / 'cabinets.json'
+          data = json.loads(path.read_text(encoding='utf-8'))
+          wb = data.get('wb') or {}
+          cabinets = wb.get('cabinets') or {}
+          assert isinstance(cabinets, dict) and cabinets, 'no WB cabinets found'
+
+          # Closed period: old enough for delayed cancellations/returns to settle,
+          # but recent enough to be covered by both provider sources.
+          end = date.today() - timedelta(days=3)
+          start = end - timedelta(days=6)
+
+          def token_type(token):
+              try:
+                  p = token.split('.')[1]
+                  p += '=' * (-len(p) % 4)
+                  claims = json.loads(base64.urlsafe_b64decode(p.encode()).decode())
+                  return {1:'base', 2:'test', 3:'personal', 4:'service'}.get(int(claims.get('acc', 0) or 0), 'unknown')
+              except Exception:
+                  return 'unknown'
+
+          def request_json(method, url, token, body=None):
+              headers = {'Authorization': token, 'Accept': 'application/json'}
+              payload = None
+              if body is not None:
+                  payload = json.dumps(body).encode('utf-8')
+                  headers['Content-Type'] = 'application/json'
+              req = urllib.request.Request(url, data=payload, headers=headers, method=method)
+              try:
+                  with urllib.request.urlopen(req, timeout=45) as resp:
+                      raw = resp.read().decode('utf-8')
+                      return resp.status, (json.loads(raw) if raw.strip() else None)
+              except urllib.error.HTTPError as exc:
+                  raw = exc.read().decode('utf-8', errors='replace')[:500]
+                  return exc.code, {'error': raw}
+
+          def dec(value):
+              try:
+                  return Decimal(str(value or 0))
+              except (InvalidOperation, ValueError, TypeError):
+                  return Decimal('0')
+
+          summaries = []
+          for name in sorted(cabinets):
+              token = str((cabinets.get(name) or {}).get('token') or '')
+              if not token:
+                  summaries.append({'cabinet': name, 'status': 'NO_TOKEN'})
+                  continue
+
+              ttype = token_type(token)
+              q = urllib.parse.urlencode({'dateFrom': start.isoformat() + 'T00:00:00', 'flag': 0})
+              stats_status, stats = request_json(
+                  'GET', 'https://statistics-api.wildberries.ru/api/v1/supplier/orders?' + q, token
+              )
+              if stats_status != 200 or not isinstance(stats, list):
+                  summaries.append({
+                      'cabinet': name, 'token_type': ttype, 'status': 'STATS_ERROR',
+                      'stats_http': stats_status,
+                  })
+                  continue
+
+              stats_count = 0
+              stats_amount = Decimal('0')
+              stats_rows_period = 0
+              for row in stats:
+                  if not isinstance(row, dict):
+                      continue
+                  d = str(row.get('date') or '')[:10]
+                  if not (start.isoformat() <= d <= end.isoformat()):
+                      continue
+                  stats_rows_period += 1
+                  if bool(row.get('isCancel', False)):
+                      continue
+                  stats_count += 1
+                  stats_amount += dec(row.get('finishedPrice'))
+
+              funnel_body = {
+                  'selectedPeriod': {'start': start.isoformat(), 'end': end.isoformat()},
+                  'nmIds': [],
+                  'brandNames': [],
+                  'subjectIds': [],
+                  'tagIds': [],
+                  'skipDeletedNm': False,
+                  'orderBy': {'field': 'orderCount', 'mode': 'desc'},
+                  'limit': 1000,
+                  'offset': 0,
+              }
+              funnel_status, funnel = request_json(
+                  'POST', 'https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products',
+                  token, funnel_body,
+              )
+              if funnel_status != 200 or not isinstance(funnel, dict):
+                  summaries.append({
+                      'cabinet': name, 'token_type': ttype, 'status': 'FUNNEL_ERROR',
+                      'stats_count': stats_count, 'stats_amount': float(stats_amount),
+                      'funnel_http': funnel_status,
+                  })
+                  continue
+
+              body = funnel.get('data', funnel)
+              products = body.get('products') if isinstance(body, dict) else None
+              if not isinstance(products, list):
+                  summaries.append({
+                      'cabinet': name, 'token_type': ttype, 'status': 'FUNNEL_SCHEMA_ERROR',
+                      'stats_count': stats_count, 'funnel_http': funnel_status,
+                      'top_keys': sorted(body.keys()) if isinstance(body, dict) else [],
+                  })
+                  continue
+
+              gross_count = 0
+              cancel_count = 0
+              gross_amount = Decimal('0')
+              cancel_amount = Decimal('0')
+              for product in products:
+                  selected = (((product or {}).get('statistic') or {}).get('selected') or {})
+                  if not isinstance(selected, dict):
+                      continue
+                  gross_count += int(selected.get('orderCount') or 0)
+                  cancel_count += int(selected.get('cancelCount') or 0)
+                  gross_amount += dec(selected.get('orderSum'))
+                  cancel_amount += dec(selected.get('cancelSum'))
+
+              net_count = gross_count - cancel_count
+              net_amount = gross_amount - cancel_amount
+              count_formula = 'gross' if gross_count == stats_count else ('net' if net_count == stats_count else 'neither')
+              amount_formula = 'gross' if abs(gross_amount - stats_amount) <= Decimal('0.01') else ('net' if abs(net_amount - stats_amount) <= Decimal('0.01') else 'neither')
+              verdict = 'MATCH' if count_formula == amount_formula and count_formula in {'gross','net'} else 'MISMATCH'
+
+              summaries.append({
+                  'cabinet': name,
+                  'token_type': ttype,
+                  'status': 'OK',
+                  'period': [start.isoformat(), end.isoformat()],
+                  'stats_rows_period': stats_rows_period,
+                  'stats_count_non_cancelled': stats_count,
+                  'stats_finished_price': float(stats_amount),
+                  'funnel_products': len(products),
+                  'funnel_order_count': gross_count,
+                  'funnel_cancel_count': cancel_count,
+                  'funnel_order_sum': float(gross_amount),
+                  'funnel_cancel_sum': float(cancel_amount),
+                  'funnel_net_count': net_count,
+                  'funnel_net_sum': float(net_amount),
+                  'count_match_formula': count_formula,
+                  'amount_match_formula': amount_formula,
+                  'verdict': verdict,
+                  'pagination_complete': len(products) < 1000,
+              })
+
+          print('WB_ORDERS_FUNNEL_PARITY=' + json.dumps(summaries, ensure_ascii=False, sort_keys=True))
+          ok = [x for x in summaries if x.get('status') == 'OK']
+          assert ok, 'no cabinet produced both Statistics and Sales Funnel data'
+          print('WB_ORDERS_FUNNEL_PARITY_DIAGNOSTIC=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/cabinets.json"
