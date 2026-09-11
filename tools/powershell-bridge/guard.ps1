@@ -101,7 +101,7 @@ function Check-ReadonlyExternal([string]$Base, [string]$Text) {
             Deny "yc operation is not recognized as read-only: $Text"
         }
     }
-    if ($Base -eq 'sc.exe' -and $Text -notmatch '(?i)\b(query|queryex|qc)\b') {
+    if ($Base -eq 'sc.exe' -and $Text -notmatch '(?i)\b(query|queryex|qc|qfailure|qfailureflag)\b') {
         Deny "sc.exe operation is not read-only: $Text"
     }
 }
