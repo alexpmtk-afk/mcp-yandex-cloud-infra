@@ -1,3 +1,3 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@2191e3be00c0dfc54df2d89300211464cfcaaa3e
-Purpose: reproducible TEST MCP runtime image build with safe shared queue wait diagnostics.
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@a9534b866073a69607896bdf298a4f82fa615b8d
+Purpose: reproducible TEST MCP runtime image build with deterministic named Ozon cabinet routing.
 Synced: 2026-09-11 after application CI passed on Linux and Windows.
