@@ -59,7 +59,7 @@ jobs:
             sleep 10
           done
           test "$ready" -eq 1
-          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 'sudo docker exec telegram-reader python -c '\''import os,json,urllib.request,urllib.parse; base="http://127.0.0.1:8000"; token=os.environ["READER_API_TOKEN"]; get=lambda p: json.loads(urllib.request.urlopen(urllib.request.Request(base+p,headers={"Authorization":"Bearer "+token}),timeout=10).read()); chats=get("/api/chats"); assert len(chats)==9, chats; cid=int(chats[0]["chat_id"]); recent=get(f"/api/chats/{cid}/recent?limit=1"); assert isinstance(recent,list); search=get("/api/search?query="+urllib.parse.quote("а")+"&limit=1"); assert isinstance(search,list); print("API_CHATS_PASS count="+str(len(chats))); print("API_RECENT_PASS rows="+str(len(recent))); print("API_SEARCH_PASS rows="+str(len(search)))'\'''
+          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 'sudo docker exec telegram-reader python -c '\''import os,json,urllib.request,urllib.parse; base="http://127.0.0.1:8080"; token=os.environ["READER_API_TOKEN"]; get=lambda p: json.loads(urllib.request.urlopen(urllib.request.Request(base+p,headers={"Authorization":"Bearer "+token}),timeout=10).read()); chats=get("/api/chats"); assert len(chats)==9, chats; cid=int(chats[0]["chat_id"]); recent=get(f"/api/chats/{cid}/recent?limit=1"); assert isinstance(recent,list); search=get("/api/search?query="+urllib.parse.quote("а")+"&limit=1"); assert isinstance(search,list); print("API_CHATS_PASS count="+str(len(chats))); print("API_RECENT_PASS rows="+str(len(recent))); print("API_SEARCH_PASS rows="+str(len(search)))'\'''
           echo TELEGRAM_API_AUDIT_PASS
       - name: Cleanup
         if: always()
