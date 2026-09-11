@@ -11,7 +11,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: telegram-news-ondemand
+  group: telegram-news-reader-ssh
   cancel-in-progress: false
 
 jobs:
@@ -84,12 +84,26 @@ jobs:
           { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
           yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
           yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-news-ondemand,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
-          sleep 20
+
+          ssh_opts=(-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey")
+          ssh_ready=0
+          for attempt in $(seq 1 12); do
+            if ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 true >/dev/null 2>&1; then
+              ssh_ready=1
+              break
+            fi
+            echo "SSH key not active yet; retry $attempt/12"
+            sleep 10
+          done
+          if [ "$ssh_ready" -ne 1 ]; then
+            echo "SSH_READY_TIMEOUT"
+            exit 255
+          fi
 
           mkdir -p telegram-news-reader/ondemand
           ids_csv="$(echo "$chat_ids" | jq -r 'join(",")')"
           remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone,timedelta; from app.runtime import build_runtime; _,w,_,s=build_runtime(); ids=[int(x) for x in sys.argv[1].split(\",\") if x]; lim=int(sys.argv[2]); ph=int(sys.argv[3]); raw_from=sys.argv[4]; raw_to=sys.argv[5]; parse=lambda x: datetime.fromisoformat(x.replace(\"Z\",\"+00:00\")) if x!=\"-\" else None; dt_to=parse(raw_to) or datetime.now(timezone.utc); dt_from=parse(raw_from) or (dt_to-timedelta(hours=ph)); out=[]; [w.assert_allowed(cid) for cid in ids]; [out.append({\"chat_id\":cid,\"messages\":s.get_messages_local(cid,date_from=dt_from,date_to=dt_to,limit=lim)}) for cid in ids]; print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V3\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"date_from\":dt_from.isoformat(),\"date_to\":dt_to.isoformat(),\"period_hours\":ph,\"chat_count\":len(out),\"chats\":out},ensure_ascii=False))' $ids_csv $limit $period_hours $date_from $date_to"
-          ssh -o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey" ubuntu@111.88.248.156 "$remote_cmd" > telegram-news-reader/ondemand/latest.json
+          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 "$remote_cmd" > telegram-news-reader/ondemand/latest.json
 
           jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V3" and (.chat_count | type == "number") and (.chats | type == "array") and ((.chats | length) == .chat_count) and (.date_from | type == "string") and (.date_to | type == "string")' telegram-news-reader/ondemand/latest.json >/dev/null
           echo "ONDEMAND_EXPORT_PASS"
