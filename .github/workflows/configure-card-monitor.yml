@@ -172,7 +172,7 @@ jobs:
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
             --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 60s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,WB_GLOBAL_RPS=5,OZON_GLOBAL_RPS=20,OZON_PERF_GLOBAL_RPS=10" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
