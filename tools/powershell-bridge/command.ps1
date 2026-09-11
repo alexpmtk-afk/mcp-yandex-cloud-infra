@@ -50,10 +50,7 @@ if ($clip -notmatch '(?i)--token\s+([^\s]+)') {
 }
 $plainToken = $Matches[1].Trim('"','''')
 if ($plainToken.Length -lt 10) { throw 'Extracted token is unexpectedly short.' }
-
-try {
-    Set-Clipboard -Value ''
-} catch { }
+try { Set-Clipboard -Value '' } catch { }
 
 Push-Location $root
 try {
@@ -66,25 +63,13 @@ finally {
     $clip = $null
 }
 
-$services = @(Get-Service | Where-Object {
+Get-Service | Where-Object {
     $_.DisplayName -like '*GPT-PowerShell-Work-MANAGER-MP2*' -or
     $_.Name -like 'actions.runner.alexpmtk-afk-gpt-powershell-bridge*' -or
     $_.Name -like 'actions.runner.alexpmtk-afk.gpt-powershell-bridge*'
-})
-if ($services.Count -ne 1) {
-    Write-Host 'Runner registration completed, but service selection is ambiguous.'
-    $services | Select-Object Name, Status, StartType | Format-Table -AutoSize
-    exit 0
-}
+} | Select-Object Name, Status, StartType | Format-Table -AutoSize
 
-$svc = $services[0]
-Set-Service -Name $svc.Name -StartupType Automatic
-& sc.exe failure $svc.Name reset= 86400 actions= restart/5000/restart/15000/restart/60000 | Out-Null
-& sc.exe failureflag $svc.Name 1 | Out-Null
-if ($svc.Status -ne 'Running') { Start-Service -Name $svc.Name }
-Get-Service -Name $svc.Name | Select-Object Name, Status, StartType | Format-Table -AutoSize
-
-Write-Host 'PRIVATE_BRIDGE_RUNNER_BOOTSTRAP=PASS'
+Write-Host 'PRIVATE_BRIDGE_RUNNER_BOOTSTRAP=CONFIGURED'
 Write-Host '=== PRIVATE_BRIDGE_RUNNER_BOOTSTRAP_END ==='
 '@
 
