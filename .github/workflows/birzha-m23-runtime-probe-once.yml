@@ -1,0 +1,45 @@
+name: BIRZHA M23 runtime probe once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/birzha-m23-runtime-probe-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
+    timeout-minutes: 12
+    steps:
+      - name: Runtime and Yandex probe
+        shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
+        env:
+          GIT_TERMINAL_PROMPT: '0'
+        run: |
+          $ErrorActionPreference = 'Continue'
+          Write-Host "RUNNER=$env:RUNNER_NAME"
+          whoami.exe
+          $py = Get-Command python -ErrorAction SilentlyContinue
+          if ($py) { Write-Host "PYTHON=$($py.Source)"; python --version } else { Write-Host 'PYTHON=NOT_FOUND' }
+          $repo = 'C:\Users\Win10_Game_OS\CodexProjects\birzha-mcp-forecast'
+          Write-Host "LOCAL_REPO_EXISTS=$(Test-Path -LiteralPath $repo)"
+          if (Test-Path -LiteralPath $repo) {
+            git -C $repo rev-parse HEAD
+            Write-Host "LOCAL_REPO_GIT_EXIT=$LASTEXITCODE"
+          }
+          git ls-remote https://github.com/alexpmtk-afk/birzha-mcp-forecast.git refs/heads/m23-ydb-model-validation
+          Write-Host "PRIVATE_GIT_EXIT=$LASTEXITCODE"
+          $yc = Get-Command yc -ErrorAction SilentlyContinue
+          if (-not $yc) { Write-Host 'YC=NOT_FOUND'; exit 0 }
+          Write-Host "YC=$($yc.Source)"
+          yc --version
+          $token = & yc iam create-token 2>$null
+          if ($LASTEXITCODE -eq 0 -and -not [string]::IsNullOrWhiteSpace($token)) {
+            Write-Host 'YANDEX_AUTH=PASS'
+            Write-Host "YANDEX_TOKEN_LENGTH=$($token.Length)"
+          } else {
+            Write-Host 'YANDEX_AUTH=FAIL'
+          }
