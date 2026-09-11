@@ -33,10 +33,16 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - name: Fetch, guard and execute PowerShell command
+      - name: Checkout triggering commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Guard and execute PowerShell command
         shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
         env:
-          GH_TOKEN: ${{ github.token }}
           BRIDGE_COMMIT_MESSAGE: ${{ github.event.head_commit.message }}
         run: |
           $ErrorActionPreference = 'Stop'
@@ -52,27 +58,13 @@ jobs:
           else { throw 'Unsupported bridge execution prefix.' }
           Write-Host "RequestedMode=$mode"
 
-          $headers = @{
-            Authorization = "Bearer $env:GH_TOKEN"
-            Accept = 'application/vnd.github+json'
-            'X-GitHub-Api-Version' = '2022-11-28'
-            'User-Agent' = 'powershell-bridge-v2'
-          }
-
-          function Fetch-CommitFile([string]$RepoPath, [string]$Destination) {
-            $uri = "https://api.github.com/repos/$env:GITHUB_REPOSITORY/contents/$RepoPath?ref=$env:GITHUB_SHA"
-            $resp = Invoke-RestMethod -Uri $uri -Headers $headers -Method Get
-            $raw = ($resp.content -replace '\s', '')
-            [IO.File]::WriteAllBytes($Destination, [Convert]::FromBase64String($raw))
-          }
-
-          $commandFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-command.ps1'
-          $guardFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-guard.ps1'
+          $commandFile = Join-Path $env:GITHUB_WORKSPACE 'tools\powershell-bridge\command.ps1'
+          $guardFile = Join-Path $env:GITHUB_WORKSPACE 'tools\powershell-bridge\guard.ps1'
           $stdoutFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-stdout.txt'
           $stderrFile = Join-Path $env:RUNNER_TEMP 'bridge-v2-stderr.txt'
 
-          Fetch-CommitFile 'tools/powershell-bridge/command.ps1' $commandFile
-          Fetch-CommitFile 'tools/powershell-bridge/guard.ps1' $guardFile
+          if (-not (Test-Path -LiteralPath $commandFile -PathType Leaf)) { throw 'command.ps1 missing from triggering commit checkout' }
+          if (-not (Test-Path -LiteralPath $guardFile -PathType Leaf)) { throw 'guard.ps1 missing from triggering commit checkout' }
 
           Write-Host '--- policy ---'
           & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $guardFile -Mode $mode -ScriptPath $commandFile
@@ -109,5 +101,5 @@ jobs:
           Write-Host "EXIT_CODE=$exit"
           Write-Host '=== POWERSHELL_BRIDGE_V2_END ==='
 
-          Remove-Item $commandFile, $guardFile, $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
+          Remove-Item $stdoutFile, $stderrFile -Force -ErrorAction SilentlyContinue
           if ($exit -ne 0) { exit $exit }
