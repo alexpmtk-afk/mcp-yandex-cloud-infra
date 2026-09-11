@@ -1,0 +1,72 @@
+name: Runtime route reconciliation (read-only)
+
+on:
+  push:
+    branches: [audit/runtime-route]
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 3 --connect-timeout 20             https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash
+          echo "$HOME/yandex-cloud/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate read-only audit session
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          key="$RUNNER_TEMP/sa.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create runtime-route-audit || true
+          yc config set service-account-key "$key"
+
+      - name: Reconcile gateway and container routing
+        shell: bash
+        run: |
+          set -euo pipefail
+          cloud_id=b1gi4pr9msenirafh2c7
+          folder_id="$(yc resource-manager folder list --cloud-id "$cloud_id" --format json | jq -r '.[] | select(.name=="marketplaces-mcp-test") | .id' | head -1)"
+          test -n "$folder_id"
+          yc config set folder-id "$folder_id"
+
+          container_id="$(yc serverless container list --folder-id "$folder_id" --format json | jq -r '.[] | select(.name=="marketplaces-mcp-test") | .id' | head -1)"
+          gateway_id="$(yc serverless api-gateway list --folder-id "$folder_id" --format json | jq -r '[.[] | select((.name // "") | contains("marketplaces"))][0].id // empty')"
+          test -n "$container_id"
+          test -n "$gateway_id"
+
+          yc serverless container get --id "$container_id" --format json --no-user-output > "$RUNNER_TEMP/container.json"
+          yc serverless container revision list --container-id "$container_id" --format json --no-user-output > "$RUNNER_TEMP/revisions.json"
+          yc serverless api-gateway get-spec --id "$gateway_id" --format yaml --no-user-output > "$RUNNER_TEMP/gateway.yaml"
+
+          current="$(jq -r '.current_revision_id // .currentRevisionId // empty' "$RUNNER_TEMP/container.json")"
+          active="$(jq -r '.[] | select(.status=="ACTIVE") | .id' "$RUNNER_TEMP/revisions.json" | paste -sd, -)"
+          test -n "$active"
+
+          if grep -Fq "$container_id" "$RUNNER_TEMP/gateway.yaml"; then route=yes; else route=no; fi
+
+          echo "CONTAINER_ID=$container_id"
+          echo "CURRENT_REVISION_ID=${current:-UNAVAILABLE}"
+          echo "ACTIVE_REVISION_IDS=$active"
+          echo "GATEWAY_ID=$gateway_id"
+          echo "GATEWAY_REFERENCES_EXPECTED_CONTAINER=$route"
+          echo "RECONCILIATION_READ_ONLY=PASS"
+
+      - name: Remove temporary sensitive files
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/sa.json" "$RUNNER_TEMP/container.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/gateway.yaml"
