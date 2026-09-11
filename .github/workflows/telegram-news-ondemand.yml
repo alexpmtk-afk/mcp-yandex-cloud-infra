@@ -120,7 +120,21 @@ jobs:
             echo ONDEMAND_UNCHANGED
           else
             git commit -m "telegram-news: refresh on-demand period"
-            git push origin HEAD:main
+            push_ok=0
+            for attempt in 1 2 3; do
+              git fetch origin main
+              git rebase origin/main
+              if git push origin HEAD:main; then
+                push_ok=1
+                break
+              fi
+              echo "On-demand push raced with another main update; retry $attempt/3"
+              sleep 2
+            done
+            if [ "$push_ok" -ne 1 ]; then
+              echo ONDEMAND_PUSH_FAILED
+              exit 1
+            fi
             echo ONDEMAND_PUSH_PASS
           fi
 
