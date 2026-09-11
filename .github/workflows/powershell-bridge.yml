@@ -1,4 +1,4 @@
-name: PowerShell Bridge
+name: PowerShell Bridge v0.1 LEGACY
 
 on:
   push:
@@ -12,22 +12,38 @@ permissions:
   contents: read
 
 concurrency:
-  group: powershell-bridge
-  cancel-in-progress: true
+  group: powershell-bridge-v0-legacy-${{ startsWith(github.event.head_commit.message, 'bridge-exec-work:') && 'work' || 'home' }}
+  cancel-in-progress: false
 
 jobs:
-  execute:
-    if: startsWith(github.event.head_commit.message, 'bridge-exec-home:') || startsWith(github.event.head_commit.message, 'bridge-exec-work:') || startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
-    runs-on: [self-hosted, Windows, X64, "${{ startsWith(github.event.head_commit.message, 'bridge-exec-work:') && 'codex-bridge-work' || 'codex-bridge-service' }}"]
+  work-retired:
+    if: startsWith(github.event.head_commit.message, 'bridge-exec-work:')
+    runs-on: ubuntu-latest
+    steps:
+      - name: WORK bridge migrated
+        shell: bash
+        run: |
+          echo 'WORK_BRIDGE_RETIRED=TRUE'
+          echo 'COMMAND_EXECUTED=FALSE'
+          echo 'USE_REPOSITORY=alexpmtk-afk/gpt-powershell-bridge'
+          echo 'USE_BRANCH=bridge-v2'
+          echo 'USE_RUNNER=GPT-PowerShell-Work-MANAGER-MP2'
+          echo 'USE_LABEL=gpt-powershell-work'
+          echo 'Legacy bridge-exec-work routing was retired on 2026-09-11. Read tools/powershell-bridge/README.md.'
+          exit 64
+
+  home-legacy:
+    if: startsWith(github.event.head_commit.message, 'bridge-exec-home:') || startsWith(github.event.head_commit.message, 'bridge-exec:') || startsWith(github.event.head_commit.message, 'bridge-bootstrap:')
+    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
     timeout-minutes: 10
     steps:
-      - name: Fetch and execute approved PowerShell command
+      - name: Fetch and execute approved HOME PowerShell command
         shell: 'powershell -NoProfile -ExecutionPolicy Bypass -File "{0}"'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $ErrorActionPreference = 'Stop'
-          Write-Host '=== POWERSHELL_BRIDGE_BEGIN ==='
+          Write-Host '=== POWERSHELL_BRIDGE_HOME_LEGACY_BEGIN ==='
           Write-Host "Commit: $env:GITHUB_SHA"
           Write-Host "Runner: $env:RUNNER_NAME"
           Write-Host "Computer: $env:COMPUTERNAME"
@@ -51,5 +67,5 @@ jobs:
           $exit = $LASTEXITCODE
           if ($null -eq $exit) { $exit = 0 }
           Write-Host "--- exit_code=$exit ---"
-          Write-Host '=== POWERSHELL_BRIDGE_END ==='
+          Write-Host '=== POWERSHELL_BRIDGE_HOME_LEGACY_END ==='
           if ($exit -ne 0) { exit $exit }
