@@ -1,7 +1,7 @@
 # GPT-PowerShell Bridge v2 — Operating Contract
 
 Дата: 11.09.2026
-Статус: WORK E2E VALIDATED / PRODUCTION HARDENING PENDING
+Статус: WORK E2E VALIDATED / SERVICE HARDENED / PRODUCTION ISOLATION PENDING
 Репозиторий: `alexpmtk-afk/mcp-yandex-cloud-infra`
 Ветка: `tooling/powershell-bridge-v2`
 
@@ -99,23 +99,35 @@ Output redaction + checkout v7: PASS.
 - fake access-token canary был выведен как `<REDACTED>`.
 - checkout exact SHA через `actions/checkout@v7` подтверждён.
 
+WRITE outside canonical root: BLOCK PASS.
+- commit `4acb3b18a68437e959392cfe31b4bf04fd1b48f3`
+- run `34588014896`
+- попытка записи в `C:\Windows\Temp` заблокирована до исполнения.
+
+Final WORK readiness: PASS.
+- commit `35a93bc36c69c204adfe3795cba0654c175f5ac2`
+- run `34588109067`
+- runner online, service Running/Automatic, WRITE sandbox читается.
+
+Runner recovery hardening: PASS.
+- локально применено из elevated PowerShell по явному действию пользователя.
+- verification commit `7f04684d95391b160dee8a4e01a0004c61938222`
+- run `34590098087`
+- reset period: `86400` sec
+- restart delays: `5000 / 15000 / 60000` ms
+- failure actions on non-crash failures: `TRUE`
+- service: `Running`, StartType: `Automatic`
+
 ## Runner service WORK
 
-Сейчас service:
+Подтверждённое состояние:
 - Status: `Running`
 - StartType: `Automatic`
+- reset period: `86400` sec
+- restart delays: `5000 / 15000 / 60000` ms
+- failureflag / non-crash failures: enabled
 
-Но recovery policy ещё требует hardening. Фактически на 11.09.2026:
-- reset period: INFINITE
-- restart delays: 0 / 60000 / 60000 ms
-- failure actions on non-crash failures: FALSE
-
-Целевое состояние bootstrap:
-- reset: 86400 sec
-- restart: 5000 / 15000 / 60000 ms
-- failureflag: 1
-
-Guard намеренно не разрешает service mutations, поэтому это исправляется один раз локально из elevated PowerShell, после чего проверяется через SAFE bridge.
+То есть runner переживает обычный reboot через Automatic startup и настроен на автоматический restart после аварийного завершения службы.
 
 ## Публичный репозиторий
 
@@ -141,7 +153,6 @@ Guard намеренно не разрешает service mutations, поэтом
 
 ## Remaining before production
 
-1. Harden WORK runner service recovery and проверить SAFE.
-2. Controlled reboot/recovery test WORK — только по явному решению пользователя.
-3. Выбрать PRIVATE execution repository или иной production isolation.
-4. Повторить E2E на HOME позже.
+1. Controlled reboot/recovery test WORK — только по явному решению пользователя.
+2. Выбрать PRIVATE execution repository или иной production isolation.
+3. Повторить E2E на HOME позже.
