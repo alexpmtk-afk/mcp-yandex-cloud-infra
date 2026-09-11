@@ -1,0 +1,71 @@
+name: Telegram Media Audit
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-media-audit.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-news-reader-ssh
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-media-audit || true
+          yc config profile activate telegram-media-audit
+          yc config set service-account-key "$key"
+      - name: Inspect media without preview
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder="b1gk4p83brasi8g811jv"
+          ip="$(curl -fsS https://api.ipify.org)"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-media-audit,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          ssh_opts=(-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey")
+          ready=0
+          for attempt in $(seq 1 12); do
+            if ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 true >/dev/null 2>&1; then ready=1; break; fi
+            sleep 10
+          done
+          test "$ready" -eq 1
+          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 'sudo docker exec telegram-reader python -c '\''import json; d=json.load(open("/state/exports/TELEGRAM_NEWS_LATEST.json")); rows=[m for m in d["messages"] if m.get("media_asset") and not m["media_asset"].get("preview_url")]; print("MISSING_PREVIEW_COUNT="+str(len(rows))); [print(json.dumps({"chat_id":m["chat_id"],"message_id":m["message_id"],"message_media_type":m.get("media_type"),"asset_media_type":m["media_asset"].get("media_type"),"object_key":m["media_asset"].get("object_key")},ensure_ascii=False)) for m in rows]'\'''
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate telegram-media-audit >/dev/null 2>&1 || true
+          folder="b1gk4p83brasi8g811jv"
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json | jq -r '.rules[] | select(.description=="github-telegram-media-audit") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --delete-rule-id "$id"; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
