@@ -30,6 +30,7 @@ Bridge v2 даёт ChatGPT управляемый доступ к PowerShell н�
 - `.github/workflows/powershell-bridge.yml` — транспорт и исполнение.
 - `tools/powershell-bridge/guard.ps1` — техническая политика безопасности.
 - `tools/powershell-bridge/command.ps1` — одна исполняемая команда/задача.
+- `tools/powershell-bridge/bootstrap-runner-watchdog.ps1` — одноразовый bootstrap существующего runner-service: Automatic startup + Service Control Manager recovery.
 
 Workflow всегда загружает `guard.ps1` и `command.ps1` из точного triggering commit (`GITHUB_SHA`).
 
@@ -90,6 +91,15 @@ Workflow дополнительно редактирует типовые сек
 `cancel-in-progress: false`: уже начатая изменяющая команда не прерывается новым запросом.
 Jobs одного bridge выполняются последовательно.
 Runner остаётся Windows service и не зависит от GUI-сессии пользователя.
+
+Для существующего runner предусмотрен одноразовый bootstrap `bootstrap-runner-watchdog.ps1`:
+- не переустанавливает runner;
+- не меняет его учётную запись;
+- включает `Automatic` startup;
+- задаёт три автоматических restart после аварийного завершения;
+- запускает остановленную службу.
+
+Если runner уже offline, GitHub не способен запустить его собственную службу удалённо. В таком состоянии bootstrap неизбежно выполняется один раз локально из elevated PowerShell. После этого нормальная работа bridge не требует Desktop Commander.
 
 ## Ограничения service account
 
