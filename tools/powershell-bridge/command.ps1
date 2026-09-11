@@ -1,18 +1,13 @@
-$ErrorActionPreference='Stop'
-$taskName='ChatGPT-PowerShell-DesktopCommander'
-$user='MANAGER-MP2\user'
-$action=New-ScheduledTaskAction -Execute 'C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe' -Argument '-NoProfile -WindowStyle Hidden -Command "& ''C:\Program Files\nodejs\npm.cmd'' exec --yes --package=@wonderwhy-er/desktop-commander@0.2.48 -- desktop-commander remote"'
-$trigger=New-ScheduledTaskTrigger -AtLogOn -User $user
-$settings=New-ScheduledTaskSettingsSet -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew -RestartCount 999 -RestartInterval (New-TimeSpan -Minutes 1) -StartWhenAvailable -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
-$principal=New-ScheduledTaskPrincipal -UserId $user -LogonType Interactive -RunLevel Limited
-$task=New-ScheduledTask -Action $action -Trigger $trigger -Settings $settings -Principal $principal
-Register-ScheduledTask -TaskName $taskName -InputObject $task -Force | Out-Null
-Start-ScheduledTask -TaskName $taskName
-Start-Sleep -Seconds 5
-$t=Get-ScheduledTask -TaskName $taskName
-$i=Get-ScheduledTaskInfo -TaskName $taskName
-Write-Host ('TASK_EXISTS=' + [bool]$t)
-Write-Host ('TASK_STATE=' + $t.State)
-Write-Host ('TASK_USER=' + $t.Principal.UserId)
-Write-Host ('LAST_RESULT=' + $i.LastTaskResult)
-Write-Host ('LAST_RUN=' + $i.LastRunTime)
+$ErrorActionPreference = 'Stop'
+Write-Host 'HOME_LEGACY_INVENTORY_BEGIN'
+Write-Host "Runner=$env:RUNNER_NAME"
+Write-Host "Computer=$env:COMPUTERNAME"
+Write-Host '--- RUNNER SERVICES ---'
+Get-CimInstance Win32_Service | Where-Object { $_.Name -like 'actions.runner.*' } | Select-Object Name, State, StartMode, StartName, PathName
+Write-Host '--- CHATGPT-PK ROOT ---'
+if (Test-Path -LiteralPath 'C:\ProgramData\ChatGPT-PK') {
+  Get-ChildItem -LiteralPath 'C:\ProgramData\ChatGPT-PK' -Force | Select-Object Name, FullName, Mode, Length, LastWriteTime
+}
+Write-Host '--- BRIDGE/CODEX SCHEDULED TASKS ---'
+Get-ScheduledTask | Where-Object { $_.TaskName -like '*bridge*' -or $_.TaskName -like '*codex*' -or $_.TaskName -like '*DesktopCommander*' -or $_.TaskPath -like '*bridge*' } | Select-Object TaskName, TaskPath, State
+Write-Host 'HOME_LEGACY_INVENTORY_END'
