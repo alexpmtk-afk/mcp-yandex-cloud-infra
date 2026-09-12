@@ -95,14 +95,28 @@ jobs:
               candles=rows('''SELECT secid, COUNT(*) AS cnt, MIN(begin) AS first_begin, MAX(begin) AS last_begin FROM `historical_candles` WHERE timeframe = "D1" GROUP BY secid ORDER BY secid;''')
               verified=rows('''SELECT symbol, timeframe, from_date, till_date FROM `historical_candles_verified_ranges` WHERE timeframe = "D1" ORDER BY symbol, from_date, till_date;''')
               session_verified=rows('''SELECT symbol, from_date, till_date FROM `historical_candles_session_verified_ranges` ORDER BY symbol, from_date, till_date;''')
+              sber_session_rows=rows('''SELECT trade_date FROM `historical_candles_sessions` WHERE symbol = "SBER#D1_SESSION_V1" AND trade_date >= "2020-03-07" AND trade_date <= "2024-12-31" ORDER BY trade_date;''')
+              sber_candle_rows=rows('''SELECT begin FROM `historical_candles` WHERE secid = "SBER" AND timeframe = "D1" AND begin >= "2020-03-07" AND begin < "2025-01-01" ORDER BY begin;''')
+              sber_sessions={str(val(r,'trade_date'))[:10] for r in sber_session_rows}
+              sber_candles={str(val(r,'begin'))[:10] for r in sber_candle_rows}
+              missing=sorted(sber_sessions-sber_candles)
+              unexpected=sorted(sber_candles-sber_sessions)
               payload={
                   'session_rows':[{'symbol':str(val(r,'symbol')),'count':int(val(r,'cnt') or 0),'first_date':str(val(r,'first_date') or ''),'last_date':str(val(r,'last_date') or '')} for r in sessions],
                   'd1_candle_rows':[{'secid':str(val(r,'secid')),'count':int(val(r,'cnt') or 0),'first_begin':str(val(r,'first_begin') or ''),'last_begin':str(val(r,'last_begin') or '')} for r in candles],
                   'd1_verified_ranges':[{'symbol':str(val(r,'symbol')),'from_date':str(val(r,'from_date')),'till_date':str(val(r,'till_date'))} for r in verified],
                   'session_verified_ranges':[{'symbol':str(val(r,'symbol')),'from_date':str(val(r,'from_date')),'till_date':str(val(r,'till_date'))} for r in session_verified],
+                  'sber_d1_gap':{
+                      'expected_sessions':len(sber_sessions),
+                      'stored_candle_dates':len(sber_candles),
+                      'missing_count':len(missing),
+                      'missing_dates':missing[:100],
+                      'extra_candle_count':len(unexpected),
+                      'extra_candle_dates':unexpected[:100],
+                  },
               }
               (root/'raw-progress.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
-              print(json.dumps(payload,sort_keys=True))
+              print('SBER_D1_GAP='+json.dumps(payload['sber_d1_gap'],sort_keys=True))
           finally:
               pool.stop(); driver.stop(timeout=5)
           PY
