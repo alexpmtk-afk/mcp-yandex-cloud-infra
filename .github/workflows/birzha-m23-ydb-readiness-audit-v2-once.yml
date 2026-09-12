@@ -1,0 +1,167 @@
+name: BIRZHA M23 YDB readiness audit v2 once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-m23-ydb-readiness-audit-v2-once.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-m23-ydb-readiness-audit-v2-once
+  cancel-in-progress: false
+
+env:
+  APP_SHA: c17efb0a786d0c5ee5857e5afce749a0ab8b3620
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - name: Checkout infrastructure source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: infra
+          persist-credentials: false
+
+      - name: Initialize durable checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '{"stage":"STARTED","app_sha":"%s","workflow_sha":"%s"}\n' "$APP_SHA" "$GITHUB_SHA" > "$RUNNER_TEMP/ydb-audit-checkpoint.json"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare ephemeral Yandex credential
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' 'cryptography'
+          for attempt in 1 2 3 4 5 6; do
+            if ATTEMPT="$attempt" python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          assert key.get('service_account_id') and key.get('private_key') and key.get('id')
+          now=int(time.time())
+          signed=jwt.encode(
+              {'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600},
+              key['private_key'], algorithm='PS256', headers={'kid':key['id']},
+          )
+          req=urllib.request.Request(
+              'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+              data=json.dumps({'jwt':signed}).encode(),
+              headers={'Content-Type':'application/json'}, method='POST',
+          )
+          with urllib.request.urlopen(req, timeout=30) as response:
+              token=json.loads(response.read())['iamToken']
+          assert token and len(token)>100
+          print(f'::add-mask::{token}')
+          target=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'
+          target.write_text(token); target.chmod(0o600)
+          print('YANDEX_IAM_TOKEN=PASS attempt='+os.environ['ATTEMPT'])
+          PY
+            then break; fi
+            test "$attempt" != "6" || exit 1
+            sleep $((attempt * 4))
+          done
+
+      - name: Read YDB coordinate from Terraform remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          cd infra
+          ok=0
+          for attempt in 1 2 3 4; do
+            if terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+              -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+              -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" \
+              && terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"; then
+              ok=1; break
+            fi
+            echo "TF_REMOTE_STATE_RETRY attempt=$attempt"
+            sleep $((attempt * 5))
+          done
+          test "$ok" = "1"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          outputs=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json').read_text())
+          endpoint=outputs['ydb_connection_string']['value']
+          assert endpoint
+          (Path(os.environ['RUNNER_TEMP'])/'ydb-connection-string').write_text(endpoint)
+          print('YDB_REMOTE_STATE=PASS')
+          PY
+          printf '{"stage":"REMOTE_STATE_READY","app_sha":"%s","workflow_sha":"%s"}\n' "$APP_SHA" "$GITHUB_SHA" > "$RUNNER_TEMP/ydb-audit-checkpoint.json"
+
+      - name: Checkout exact M23 application source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: alexpmtk-afk/birzha-mcp-forecast
+          ref: ${{ env.APP_SHA }}
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned source and install
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APP_SHA"
+          python -m pip install --disable-pip-version-check -e ./app
+          echo "APP_SOURCE_SHA=PASS $APP_SHA"
+
+      - name: Run typed read-only YDB readiness audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/app/src"
+          for attempt in 1 2 3; do
+            if python infra/scripts/birzha_m23_ydb_readonly_audit.py \
+              --connection-string-file "$RUNNER_TEMP/ydb-connection-string" \
+              --token-file "$RUNNER_TEMP/yandex-iam-token" \
+              --app-sha "$APP_SHA" \
+              --workflow-sha "$GITHUB_SHA" \
+              --artifact "$RUNNER_TEMP/birzha-m23-ydb-readonly-audit.json"; then
+              printf '{"stage":"AUDIT_COMPLETE","app_sha":"%s","workflow_sha":"%s"}\n' "$APP_SHA" "$GITHUB_SHA" > "$RUNNER_TEMP/ydb-audit-checkpoint.json"
+              exit 0
+            fi
+            echo "YDB_AUDIT_PROCESS_RETRY attempt=$attempt"
+            test "$attempt" != "3" || exit 1
+            sleep $((attempt * 10))
+          done
+
+      - name: Upload durable evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-m23-ydb-readonly-audit-v2
+          path: |
+            ${{ runner.temp }}/birzha-m23-ydb-readonly-audit.json
+            ${{ runner.temp }}/ydb-audit-checkpoint.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yandex-iam-token" "$RUNNER_TEMP/ydb-connection-string" "$RUNNER_TEMP/birzha-outputs.json"
+          echo 'EPHEMERAL_CREDENTIAL_CLEANUP=PASS'
