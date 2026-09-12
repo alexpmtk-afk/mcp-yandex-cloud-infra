@@ -87,15 +87,17 @@ jobs:
               for rs in (result if isinstance(result,list) else list(result)):
                   out.extend(list(getattr(rs,'rows',[]) or []))
               return out
+          def val(row,key):
+              try: return row[key]
+              except Exception: return getattr(row,key,None)
           try:
               sessions=rows('''SELECT symbol, COUNT(*) AS cnt, MIN(trade_date) AS first_date, MAX(trade_date) AS last_date FROM `historical_candles_sessions` GROUP BY symbol ORDER BY symbol;''')
+              candles=rows('''SELECT secid, COUNT(*) AS cnt, MIN(begin) AS first_begin, MAX(begin) AS last_begin FROM `historical_candles` WHERE timeframe = "D1" GROUP BY secid ORDER BY secid;''')
               verified=rows('''SELECT symbol, timeframe, from_date, till_date FROM `historical_candles_verified_ranges` WHERE timeframe = "D1" ORDER BY symbol, from_date, till_date;''')
               session_verified=rows('''SELECT symbol, from_date, till_date FROM `historical_candles_session_verified_ranges` ORDER BY symbol, from_date, till_date;''')
-              def val(row,key):
-                  try: return row[key]
-                  except Exception: return getattr(row,key,None)
               payload={
                   'session_rows':[{'symbol':str(val(r,'symbol')),'count':int(val(r,'cnt') or 0),'first_date':str(val(r,'first_date') or ''),'last_date':str(val(r,'last_date') or '')} for r in sessions],
+                  'd1_candle_rows':[{'secid':str(val(r,'secid')),'count':int(val(r,'cnt') or 0),'first_begin':str(val(r,'first_begin') or ''),'last_begin':str(val(r,'last_begin') or '')} for r in candles],
                   'd1_verified_ranges':[{'symbol':str(val(r,'symbol')),'from_date':str(val(r,'from_date')),'till_date':str(val(r,'till_date'))} for r in verified],
                   'session_verified_ranges':[{'symbol':str(val(r,'symbol')),'from_date':str(val(r,'from_date')),'till_date':str(val(r,'till_date'))} for r in session_verified],
               }
