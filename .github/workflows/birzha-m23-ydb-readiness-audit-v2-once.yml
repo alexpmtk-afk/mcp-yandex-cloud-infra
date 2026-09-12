@@ -14,7 +14,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  APP_SHA: c17efb0a786d0c5ee5857e5afce749a0ab8b3620
+  APP_SHA: 9933ebcf0b42655604d898413c6edbfc471fd4c6
 
 jobs:
   audit:
@@ -105,9 +105,16 @@ jobs:
           from pathlib import Path
           outputs=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json').read_text())
           endpoint=outputs['ydb_connection_string']['value']
-          assert endpoint
-          (Path(os.environ['RUNNER_TEMP'])/'ydb-connection-string').write_text(endpoint)
+          dbid=outputs['ydb_database_id']['value']
+          folder=outputs['test_folder_id']['value']
+          assert endpoint and dbid and folder
+          root=Path(os.environ['RUNNER_TEMP'])
+          (root/'ydb-connection-string').write_text(endpoint)
+          # Resource coordinates are identifiers, not credentials.
           print('YDB_REMOTE_STATE=PASS')
+          print('BIRZHA_FOLDER_ID='+str(folder))
+          print('YDB_DATABASE_ID='+str(dbid))
+          print('YDB_CONNECTION_STRING='+str(endpoint))
           PY
           printf '{"stage":"REMOTE_STATE_READY","app_sha":"%s","workflow_sha":"%s"}\n' "$APP_SHA" "$GITHUB_SHA" > "$RUNNER_TEMP/ydb-audit-checkpoint.json"
 
