@@ -1,0 +1,111 @@
+name: BIRZHA M23 YDB progress audit once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-m23-ydb-progress-audit-once.yml"
+
+permissions:
+  contents: read
+
+env:
+  APP_SHA: c17efb0a786d0c5ee5857e5afce749a0ab8b3620
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - name: Checkout infrastructure source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: infra
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Mint read-only Yandex IAM token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600},key['private_key'],algorithm='PS256',headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens',data=json.dumps({'jwt':signed}).encode(),headers={'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: token=json.loads(r.read())['iamToken']
+          print(f'::add-mask::{token}')
+          p=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'; p.write_text(token); p.chmod(0o600)
+          print('YANDEX_IAM_TOKEN=PASS')
+          PY
+
+      - name: Read YDB coordinate from remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          cd infra
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json').read_text())
+          (Path(os.environ['RUNNER_TEMP'])/'ydb-connection-string').write_text(d['ydb_connection_string']['value'])
+          PY
+
+      - name: Checkout exact M23 source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: alexpmtk-afk/birzha-mcp-forecast
+          ref: ${{ env.APP_SHA }}
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Install exact M23 and audit read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APP_SHA"
+          python -m pip install --disable-pip-version-check -e ./app
+          export PYTHONPATH="$GITHUB_WORKSPACE/app/src"
+          python infra/scripts/birzha_m23_ydb_readonly_audit.py \
+            --connection-string-file "$RUNNER_TEMP/ydb-connection-string" \
+            --token-file "$RUNNER_TEMP/yandex-iam-token" \
+            --app-sha "$APP_SHA" \
+            --workflow-sha "$GITHUB_SHA" \
+            --artifact "$RUNNER_TEMP/progress-audit.json"
+
+      - name: Upload progress evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-m23-ydb-progress-audit
+          path: ${{ runner.temp }}/progress-audit.json
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yandex-iam-token" "$RUNNER_TEMP/ydb-connection-string" "$RUNNER_TEMP/birzha-outputs.json"
