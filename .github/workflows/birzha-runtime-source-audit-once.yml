@@ -1,0 +1,80 @@
+name: BIRZHA runtime source audit once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-runtime-source-audit-once.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-runtime-source-audit-once
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Read deployed runtime source from remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in 1 2 3 4; do
+            if terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+              -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+              -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" \
+              && terraform -chdir=terraform/birzha_test show -json > "$RUNNER_TEMP/state.json"; then
+              ok=1; break
+            fi
+            echo "STATE_READ_RETRY attempt=$attempt"
+            sleep $((attempt*5))
+          done
+          test "$ok" = "1"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          state=json.loads((Path(os.environ['RUNNER_TEMP'])/'state.json').read_text())
+          resources=state.get('values',{}).get('root_module',{}).get('resources',[])
+          matches=[r for r in resources if r.get('type')=='yandex_serverless_container' and r.get('name')=='mcp']
+          assert len(matches)==1, f'expected one mcp container resource, got {len(matches)}'
+          values=matches[0].get('values') or {}
+          image=(values.get('image') or [{}])[0]
+          env=image.get('environment') or {}
+          source=env.get('BIRZHA_SOURCE_COMMIT') or ''
+          url=image.get('url') or ''
+          labels=values.get('labels') or {}
+          print('RUNTIME_CONTAINER_STATE=PASS')
+          print('DEPLOYED_SOURCE_COMMIT='+source)
+          print('DEPLOYED_SOURCE_LABEL='+str(labels.get('source_sha','')))
+          print('DEPLOYED_IMAGE='+url)
+          assert source, 'BIRZHA_SOURCE_COMMIT missing from state'
+          payload={'status':'PASS','source_commit':source,'source_label':labels.get('source_sha'),'image':url}
+          (Path(os.environ['RUNNER_TEMP'])/'runtime-source.json').write_text(json.dumps(payload,indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-runtime-source-audit
+          path: ${{ runner.temp }}/runtime-source.json
+          if-no-files-found: error
+          retention-days: 30
