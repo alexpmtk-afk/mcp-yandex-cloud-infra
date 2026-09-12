@@ -5,6 +5,7 @@ TF_DIR="${1:?terraform directory is required}"
 EXPECTED_PROVIDER="${2:?provider source is required, e.g. yandex-cloud/yandex}"
 EXPECTED_VERSION="${3:?provider version is required}"
 LOCK_FILE="${TF_DIR}/.terraform.lock.hcl"
+VERSION_JSON="${TF_DIR}/.terraform-version.json"
 
 if [[ ! -f "${TF_DIR}/main.tf" ]]; then
   echo "EPHEMERAL_TERRAFORM_LOCK_GUARD=ERROR reason=main_tf_missing dir=${TF_DIR}" >&2
@@ -25,25 +26,27 @@ if [[ ! -s "${LOCK_FILE}" ]]; then
   exit 3
 fi
 
-python - "${LOCK_FILE}" "${EXPECTED_PROVIDER}" "${EXPECTED_VERSION}" <<'PY'
+# Do not parse .terraform.lock.hcl text manually. Ask Terraform for the
+# machine-readable provider selection so HCL formatting cannot break the guard.
+terraform -chdir="${TF_DIR}" version -json > "${VERSION_JSON}"
+python - "${VERSION_JSON}" "${EXPECTED_PROVIDER}" "${EXPECTED_VERSION}" <<'PY'
+import json
 from pathlib import Path
 import sys
 
-lock_path = Path(sys.argv[1])
+version_path = Path(sys.argv[1])
 provider = sys.argv[2]
-version = sys.argv[3]
-text = lock_path.read_text(encoding="utf-8")
-header = f'provider "registry.terraform.io/{provider}" {{'
-if header not in text:
-    raise SystemExit(f"expected provider missing from lockfile: {provider}")
-block = text.split(header, 1)[1].split("}", 1)[0]
-needle = f'version = "{version}"'
-if needle not in block:
+expected = sys.argv[3]
+payload = json.loads(version_path.read_text(encoding="utf-8"))
+address = f"registry.terraform.io/{provider}"
+selected = (payload.get("provider_selections") or {}).get(address)
+if selected != expected:
     raise SystemExit(
-        f"provider version mismatch for {provider}: expected {version}"
+        f"provider selection mismatch for {provider}: expected {expected}, got {selected!r}"
     )
-print(f"EPHEMERAL_TERRAFORM_PROVIDER_LOCK=PASS provider={provider} version={version}")
+print(f"EPHEMERAL_TERRAFORM_PROVIDER_LOCK=PASS provider={provider} version={selected}")
 PY
+rm -f "${VERSION_JSON}"
 
 # Prove the generated lock is now sufficient for a strict reproducible init.
 terraform -chdir="${TF_DIR}" init -backend=false -input=false -lockfile=readonly
