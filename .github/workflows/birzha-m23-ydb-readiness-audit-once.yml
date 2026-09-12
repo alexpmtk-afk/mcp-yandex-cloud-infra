@@ -1,0 +1,367 @@
+name: BIRZHA M23 YDB readiness audit once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-m23-ydb-readiness-audit-once.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-m23-ydb-readiness-audit-once
+  cancel-in-progress: false
+
+env:
+  APP_REPO: alexpmtk-afk/birzha-mcp-forecast
+  APP_SHA: c17efb0a786d0c5ee5857e5afce749a0ab8b3620
+  VALIDATION_START: "2021-01-01"
+  SPLIT_DATE: "2022-12-31"
+  VALIDATION_END: "2024-12-31"
+  STEP_SESSIONS: "5"
+  MAX_POINTS: "80"
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - name: Checkout infrastructure source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: infra
+          persist-credentials: false
+
+      - name: Initialize checkpoint
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/ydb-audit-checkpoint.json" <<EOF
+          {"stage":"STARTED","app_sha":"${APP_SHA}","workflow_sha":"${GITHUB_SHA}"}
+          EOF
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
+          assert d.get('service_account_id') and d.get('private_key') and d.get('id')
+          print('YANDEX_KEY_SHAPE=PASS')
+          PY
+
+      - name: Mint masked ephemeral IAM token with retry
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' 'cryptography'
+          python - <<'PY'
+          import json, os, time, urllib.request, urllib.error
+          from pathlib import Path
+          import jwt
+          key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
+          last=None
+          for attempt in range(1,7):
+              try:
+                  now=int(time.time())
+                  signed=jwt.encode(
+                      {'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600},
+                      key['private_key'], algorithm='PS256', headers={'kid':key['id']},
+                  )
+                  req=urllib.request.Request(
+                      'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+                      data=json.dumps({'jwt':signed}).encode(),
+                      headers={'Content-Type':'application/json'}, method='POST',
+                  )
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      token=json.loads(r.read())['iamToken']
+                  assert token and len(token)>100
+                  print(f'::add-mask::{token}')
+                  p=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'
+                  p.write_text(token); p.chmod(0o600)
+                  print(f'YANDEX_IAM_TOKEN=PASS attempt={attempt}')
+                  break
+              except Exception as exc:
+                  last=exc
+                  print(f'YANDEX_IAM_TOKEN_RETRY attempt={attempt} error={type(exc).__name__}')
+                  if attempt == 6: raise
+                  time.sleep(min(30, 2**attempt))
+          PY
+
+      - name: Initialize remote Terraform state with retry
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          cd infra
+          for attempt in 1 2 3 4; do
+            if terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+              -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+              -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"; then
+              echo "TF_INIT=PASS attempt=$attempt"
+              exit 0
+            fi
+            echo "TF_INIT_RETRY attempt=$attempt"
+            sleep $((attempt * 5))
+          done
+          exit 1
+
+      - name: Read YDB connection coordinate from remote state
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd infra
+          for attempt in 1 2 3 4; do
+            if terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"; then
+              break
+            fi
+            echo "TF_OUTPUT_RETRY attempt=$attempt"
+            sleep $((attempt * 5))
+          done
+          python - <<'PY'
+          import hashlib, json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json'
+          o=json.loads(p.read_text())
+          endpoint=o['ydb_connection_string']['value']
+          dbid=o['ydb_database_id']['value']
+          assert endpoint and dbid
+          (Path(os.environ['RUNNER_TEMP'])/'ydb-connection-string').write_text(endpoint)
+          print('YDB_REMOTE_STATE=PASS')
+          print('YDB_DATABASE_ID_SHA256='+hashlib.sha256(str(dbid).encode()).hexdigest()[:16])
+          PY
+          cat > "$RUNNER_TEMP/ydb-audit-checkpoint.json" <<EOF
+          {"stage":"REMOTE_STATE_READY","app_sha":"${APP_SHA}","workflow_sha":"${GITHUB_SHA}"}
+          EOF
+
+      - name: Checkout exact M23 application source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: ${{ env.APP_REPO }}
+          ref: ${{ env.APP_SHA }}
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify exact application source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APP_SHA"
+          echo "APP_SOURCE_SHA=PASS $APP_SHA"
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
+
+      - name: Install exact M23 package
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check -e ./app
+
+      - name: Read-only YDB readiness and capacity audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/app/src"
+          python - <<'PY'
+          import json, os, time
+          from datetime import date, timedelta
+          from pathlib import Path
+          import ydb
+          from birzha.application.historical_data import _verification_symbol
+          from birzha.application.market_data import is_futures_root_symbol
+          from birzha.application.validation_readiness import CORE_VALIDATION_SYMBOLS, required_price_ranges
+
+          connection=(Path(os.environ['RUNNER_TEMP'])/'ydb-connection-string').read_text().strip()
+          token=(Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token').read_text().strip()
+          driver=ydb.Driver(connection_string=connection, credentials=ydb.AccessTokenCredentials(token))
+          driver.wait(timeout=20, fail_fast=True)
+          pool=ydb.QuerySessionPool(driver)
+
+          def execute(query, params=None):
+              last=None
+              for attempt in range(1,7):
+                  try:
+                      return pool.execute_with_retries(
+                          query, params or {}, retry_settings=ydb.RetrySettings(idempotent=True)
+                      )
+                  except Exception as exc:
+                      last=exc
+                      print(f'YDB_READ_RETRY attempt={attempt} error={type(exc).__name__}', flush=True)
+                      if attempt == 6: raise
+                      time.sleep(min(30, 2**attempt))
+              raise last
+
+          def rows(result):
+              out=[]
+              for part in result or []:
+                  out.extend(getattr(part,'rows',[]) or [])
+              return out
+
+          def val(row, key):
+              if isinstance(row, dict): return row.get(key)
+              try: return getattr(row,key)
+              except Exception: return row[key]
+
+          def utf8(v): return str(v).encode('utf-8')
+
+          def is_verified(symbol, timeframe, left, right):
+              q='''
+              DECLARE $symbol AS Utf8; DECLARE $timeframe AS Utf8;
+              DECLARE $from_date AS Utf8; DECLARE $till_date AS Utf8;
+              SELECT 1 AS found FROM `historical_candles_verified_ranges`
+              WHERE symbol=$symbol AND timeframe=$timeframe
+                AND from_date<=$from_date AND till_date>=$till_date LIMIT 1;
+              '''
+              r=execute(q,{'$symbol':utf8(symbol),'$timeframe':utf8(timeframe),'$from_date':utf8(left),'$till_date':utf8(right)})
+              return bool(rows(r))
+
+          def sessions_verified(symbol,left,right):
+              q='''
+              DECLARE $symbol AS Utf8; DECLARE $from_date AS Utf8; DECLARE $till_date AS Utf8;
+              SELECT 1 AS found FROM `historical_candles_session_verified_ranges`
+              WHERE symbol=$symbol AND from_date<=$from_date AND till_date>=$till_date LIMIT 1;
+              '''
+              r=execute(q,{'$symbol':utf8(symbol),'$from_date':utf8(left),'$till_date':utf8(right)})
+              return bool(rows(r))
+
+          def session_contracts(symbol,left,right):
+              q='''
+              DECLARE $symbol AS Utf8; DECLARE $from_date AS Utf8; DECLARE $till_date AS Utf8;
+              SELECT trade_date, secid FROM `historical_candles_sessions`
+              WHERE symbol=$symbol AND trade_date>=$from_date AND trade_date<=$till_date
+              ORDER BY trade_date, secid;
+              '''
+              r=execute(q,{'$symbol':utf8(symbol),'$from_date':utf8(left),'$till_date':utf8(right)})
+              return [(str(val(x,'trade_date')),str(val(x,'secid'))) for x in rows(r)]
+
+          ranges=required_price_ranges(os.environ['VALIDATION_START'],os.environ['VALIDATION_END'])
+          requirements=[]
+          for symbol in CORE_VALIDATION_SYMBOLS:
+              root=is_futures_root_symbol(symbol)
+              for tf,left,right in ranges:
+                  verification=_verification_symbol(symbol,tf,is_root=root)
+                  price_ok=is_verified(verification,tf,left,right)
+                  session_ok=True if tf!='D1' else sessions_verified(verification,left,right)
+                  requirements.append({
+                      'symbol':symbol,'timeframe':tf,'from_date':left,'till_date':right,
+                      'verification_symbol':verification,
+                      'price_verified':price_ok,'session_verified':session_ok,
+                      'verified':bool(price_ok and session_ok),
+                  })
+
+          def capacity(symbol,left,right,step=5,max_points=80,horizons=(5,10,20)):
+              verification=_verification_symbol(symbol,'D1',is_root=is_futures_root_symbol(symbol))
+              if not sessions_verified(verification,left,right):
+                  return {'status':'SESSION_RANGE_NOT_VERIFIED','sessions':0,'mature_raw_candidates':0,
+                          'non_overlapping_observations':{str(h):0 for h in horizons}}
+              pairs=session_contracts(verification,left,right)
+              grouped={}
+              for raw,secid in pairs:
+                  grouped.setdefault(raw[:10],set()).add(secid)
+              sessions=sorted(grouped)
+              invalid=[d for d in sessions if len(grouped[d])!=1]
+              if invalid:
+                  return {'status':'AMBIGUOUS_CONTRACT_MAP','invalid_dates':invalid[:20]}
+              longest=max(horizons); mature=0
+              for idx in range(0,max(0,len(sessions)-longest),step):
+                  window=sessions[idx:idx+longest+1]
+                  secids={next(iter(grouped[d])) for d in window}
+                  if len(secids)!=1: continue
+                  mature+=1
+                  if mature>=max_points: break
+              obs={}
+              for h in horizons:
+                  stride=max(1,(h+step-1)//step)
+                  obs[str(h)]=(mature+stride-1)//stride
+              return {'status':'COMPUTED','sessions':len(sessions),'mature_raw_candidates':mature,
+                      'non_overlapping_observations':obs}
+
+          holdout_start=(date.fromisoformat(os.environ['SPLIT_DATE'])+timedelta(days=1)).isoformat()
+          periods={
+              'development':(os.environ['VALIDATION_START'],os.environ['SPLIT_DATE']),
+              'holdout':(holdout_start,os.environ['VALIDATION_END']),
+          }
+          capacities={}
+          for period,(left,right) in periods.items():
+              capacities[period]={s:capacity(s,left,right,int(os.environ['STEP_SESSIONS']),int(os.environ['MAX_POINTS'])) for s in CORE_VALIDATION_SYMBOLS}
+
+          missing=[r for r in requirements if not r['verified']]
+          shortfall={}
+          for period,data in capacities.items():
+              p={}
+              for symbol,item in data.items():
+                  obs=item.get('non_overlapping_observations') or {}
+                  miss={h:n for h,n in obs.items() if int(n)<20}
+                  if item.get('status')!='COMPUTED' or miss:
+                      p[symbol]={'status':item.get('status'),'below_20':miss}
+              if p: shortfall[period]=p
+          payload={
+              'schema':'BIRZHA_M23_YDB_READONLY_AUDIT_V1',
+              'mode':'READ_ONLY',
+              'app_sha':os.environ['APP_SHA'],
+              'workflow_sha':os.environ['GITHUB_SHA'],
+              'validation_start':os.environ['VALIDATION_START'],
+              'split_date':os.environ['SPLIT_DATE'],
+              'validation_end':os.environ['VALIDATION_END'],
+              'required':len(requirements),
+              'verified':len(requirements)-len(missing),
+              'missing_count':len(missing),
+              'readiness_status':'READY' if not missing else 'NOT_READY',
+              'requirements':requirements,
+              'capacity':capacities,
+              'capacity_shortfall':shortfall,
+              'capacity_status':'READY' if not shortfall else 'INSUFFICIENT_DATA',
+          }
+          out=Path(os.environ['RUNNER_TEMP'])/'birzha-m23-ydb-readonly-audit.json'
+          out.write_text(json.dumps(payload,indent=2,sort_keys=True,ensure_ascii=False)+'\n')
+          compact={k:payload[k] for k in ('schema','app_sha','required','verified','missing_count','readiness_status','capacity_status')}
+          compact['missing']=[f"{x['symbol']}:{x['timeframe']}" for x in missing]
+          compact['capacity_shortfall']=shortfall
+          print(json.dumps(compact,sort_keys=True,ensure_ascii=False),flush=True)
+          pool.stop(); driver.stop(timeout=5)
+          PY
+          cat > "$RUNNER_TEMP/ydb-audit-checkpoint.json" <<EOF
+          {"stage":"AUDIT_COMPLETE","app_sha":"${APP_SHA}","workflow_sha":"${GITHUB_SHA}"}
+          EOF
+
+      - name: Upload durable audit evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-m23-ydb-readonly-audit
+          path: |
+            ${{ runner.temp }}/birzha-m23-ydb-readonly-audit.json
+            ${{ runner.temp }}/ydb-audit-checkpoint.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yandex-iam-token" "$RUNNER_TEMP/ydb-connection-string" "$RUNNER_TEMP/birzha-outputs.json"
+          echo 'EPHEMERAL_CREDENTIAL_CLEANUP=PASS'
