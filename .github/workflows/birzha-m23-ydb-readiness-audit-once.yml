@@ -58,6 +58,7 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          export YC_KEY_FILE="$KEY_FILE"
           echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
           python - <<'PY'
           import json, os
@@ -73,11 +74,10 @@ jobs:
           set -euo pipefail
           python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' 'cryptography'
           python - <<'PY'
-          import json, os, time, urllib.request, urllib.error
+          import json, os, time, urllib.request
           from pathlib import Path
           import jwt
           key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
-          last=None
           for attempt in range(1,7):
               try:
                   now=int(time.time())
@@ -99,7 +99,6 @@ jobs:
                   print(f'YANDEX_IAM_TOKEN=PASS attempt={attempt}')
                   break
               except Exception as exc:
-                  last=exc
                   print(f'YANDEX_IAM_TOKEN_RETRY attempt={attempt} error={type(exc).__name__}')
                   if attempt == 6: raise
                   time.sleep(min(30, 2**attempt))
@@ -130,13 +129,16 @@ jobs:
         run: |
           set -euo pipefail
           cd infra
+          ok=0
           for attempt in 1 2 3 4; do
             if terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"; then
+              ok=1
               break
             fi
             echo "TF_OUTPUT_RETRY attempt=$attempt"
             sleep $((attempt * 5))
           done
+          test "$ok" = "1"
           python - <<'PY'
           import hashlib, json, os
           from pathlib import Path
@@ -201,18 +203,13 @@ jobs:
           pool=ydb.QuerySessionPool(driver)
 
           def execute(query, params=None):
-              last=None
               for attempt in range(1,7):
                   try:
-                      return pool.execute_with_retries(
-                          query, params or {}, retry_settings=ydb.RetrySettings(idempotent=True)
-                      )
+                      return pool.execute_with_retries(query, params or {}, retry_settings=ydb.RetrySettings(idempotent=True))
                   except Exception as exc:
-                      last=exc
                       print(f'YDB_READ_RETRY attempt={attempt} error={type(exc).__name__}', flush=True)
                       if attempt == 6: raise
                       time.sleep(min(30, 2**attempt))
-              raise last
 
           def rows(result):
               out=[]
@@ -300,13 +297,11 @@ jobs:
                       'non_overlapping_observations':obs}
 
           holdout_start=(date.fromisoformat(os.environ['SPLIT_DATE'])+timedelta(days=1)).isoformat()
-          periods={
-              'development':(os.environ['VALIDATION_START'],os.environ['SPLIT_DATE']),
-              'holdout':(holdout_start,os.environ['VALIDATION_END']),
-          }
-          capacities={}
-          for period,(left,right) in periods.items():
-              capacities[period]={s:capacity(s,left,right,int(os.environ['STEP_SESSIONS']),int(os.environ['MAX_POINTS'])) for s in CORE_VALIDATION_SYMBOLS}
+          periods={'development':(os.environ['VALIDATION_START'],os.environ['SPLIT_DATE']),
+                   'holdout':(holdout_start,os.environ['VALIDATION_END'])}
+          capacities={period:{s:capacity(s,left,right,int(os.environ['STEP_SESSIONS']),int(os.environ['MAX_POINTS']))
+                              for s in CORE_VALIDATION_SYMBOLS}
+                      for period,(left,right) in periods.items()}
 
           missing=[r for r in requirements if not r['verified']]
           shortfall={}
@@ -319,20 +314,13 @@ jobs:
                       p[symbol]={'status':item.get('status'),'below_20':miss}
               if p: shortfall[period]=p
           payload={
-              'schema':'BIRZHA_M23_YDB_READONLY_AUDIT_V1',
-              'mode':'READ_ONLY',
-              'app_sha':os.environ['APP_SHA'],
-              'workflow_sha':os.environ['GITHUB_SHA'],
-              'validation_start':os.environ['VALIDATION_START'],
-              'split_date':os.environ['SPLIT_DATE'],
-              'validation_end':os.environ['VALIDATION_END'],
-              'required':len(requirements),
-              'verified':len(requirements)-len(missing),
-              'missing_count':len(missing),
-              'readiness_status':'READY' if not missing else 'NOT_READY',
-              'requirements':requirements,
-              'capacity':capacities,
-              'capacity_shortfall':shortfall,
+              'schema':'BIRZHA_M23_YDB_READONLY_AUDIT_V1','mode':'READ_ONLY',
+              'app_sha':os.environ['APP_SHA'],'workflow_sha':os.environ['GITHUB_SHA'],
+              'validation_start':os.environ['VALIDATION_START'],'split_date':os.environ['SPLIT_DATE'],
+              'validation_end':os.environ['VALIDATION_END'],'required':len(requirements),
+              'verified':len(requirements)-len(missing),'missing_count':len(missing),
+              'readiness_status':'READY' if not missing else 'NOT_READY','requirements':requirements,
+              'capacity':capacities,'capacity_shortfall':shortfall,
               'capacity_status':'READY' if not shortfall else 'INSUFFICIENT_DATA',
           }
           out=Path(os.environ['RUNNER_TEMP'])/'birzha-m23-ydb-readonly-audit.json'
