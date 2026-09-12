@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - ".github/workflows/birzha-m23-ephemeral-d1-resume-once.yml"
+      - "scripts/terraform_ephemeral_init_guard.sh"
 
 permissions:
   contents: read
