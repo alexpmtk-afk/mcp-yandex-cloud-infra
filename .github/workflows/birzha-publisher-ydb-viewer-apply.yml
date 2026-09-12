@@ -1,0 +1,121 @@
+name: Apply BIRZHA Publisher YDB Viewer
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-publisher-ydb-viewer-apply.yml"
+      - "terraform/birzha_test/publisher_ydb_viewer.tf"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-publisher-ydb-viewer-apply
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare ephemeral infra deployer credential
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          ACTUAL_ID="$(python - "$KEY_FILE" <<'PY'
+          import json, sys
+          from pathlib import Path
+          print(json.loads(Path(sys.argv[1]).read_text()).get('service_account_id',''))
+          PY
+          )"
+          [[ "$ACTUAL_ID" == "ajecdjjrkdo1t3itpl9k" ]] || { echo "Unexpected infra deployer identity" >&2; exit 1; }
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          echo 'INFRA_DEPLOYER_IDENTITY=PASS'
+
+      - name: Initialize BIRZHA remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build exact one-resource IAM plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color \
+            -target='yandex_resourcemanager_folder_iam_member.publisher_ydb_viewer' \
+            -out=publisher-ydb-viewer.tfplan
+          terraform -chdir=terraform/birzha_test show -json publisher-ydb-viewer.tfplan > "$RUNNER_TEMP/publisher-ydb-viewer-plan.json"
+          terraform -chdir=terraform/birzha_test show -no-color publisher-ydb-viewer.tfplan > "$RUNNER_TEMP/publisher-ydb-viewer-plan.txt"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          plan=json.loads((Path(os.environ['RUNNER_TEMP'])/'publisher-ydb-viewer-plan.json').read_text())
+          actual={x['address']:x['change']['actions'] for x in plan.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
+          expected={'yandex_resourcemanager_folder_iam_member.publisher_ydb_viewer':['create']}
+          if actual != expected:
+              raise SystemExit(f'Unexpected IAM delta: {actual!r}')
+          print('PUBLISHER_YDB_VIEWER_PLAN=PASS')
+          PY
+
+      - name: Apply exact saved IAM plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test apply -input=false -no-color publisher-ydb-viewer.tfplan
+          terraform -chdir=terraform/birzha_test state list | grep -Fx 'yandex_resourcemanager_folder_iam_member.publisher_ydb_viewer'
+          echo 'PUBLISHER_YDB_VIEWER_APPLY=PASS'
+
+      - name: Verify targeted zero drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          rc=0
+          terraform -chdir=terraform/birzha_test plan \
+            -input=false -no-color -detailed-exitcode \
+            -target='yandex_resourcemanager_folder_iam_member.publisher_ydb_viewer' \
+            > "$RUNNER_TEMP/publisher-ydb-viewer-post-plan.txt" || rc=$?
+          test "$rc" -eq 0
+          grep -Fq 'No changes.' "$RUNNER_TEMP/publisher-ydb-viewer-post-plan.txt"
+          echo 'PUBLISHER_YDB_VIEWER_ZERO_DRIFT=PASS'
+
+      - name: Upload non-secret evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-publisher-ydb-viewer-evidence
+          path: |
+            ${{ runner.temp }}/publisher-ydb-viewer-plan.txt
+            ${{ runner.temp }}/publisher-ydb-viewer-post-plan.txt
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup ephemeral credential
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
