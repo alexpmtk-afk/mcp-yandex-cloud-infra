@@ -1,0 +1,377 @@
+name: BIRZHA M23 ephemeral D1 executor once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-m23-ephemeral-d1-executor-once.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-m23-ephemeral-d1-executor-once
+  cancel-in-progress: false
+
+env:
+  APP_SHA: c17efb0a786d0c5ee5857e5afce749a0ab8b3620
+  VALIDATION_START: "2021-01-01"
+  VALIDATION_END: "2024-12-31"
+
+jobs:
+  execute:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 150
+    steps:
+      - name: Checkout infrastructure source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: infra
+          persist-credentials: false
+
+      - name: Checkout exact M23 application source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: alexpmtk-afk/birzha-mcp-forecast
+          ref: ${{ env.APP_SHA }}
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Verify pinned application source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APP_SHA"
+          printf '{"stage":"SOURCE_PINNED","app_sha":"%s","workflow_sha":"%s","run_id":"%s"}\n' "$APP_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/executor-checkpoint.json"
+          echo "APP_SOURCE_SHA=PASS $APP_SHA"
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare deployer credential and IAM token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
+          for attempt in 1 2 3 4 5 6; do
+            if ATTEMPT="$attempt" python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600}, key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens', data=json.dumps({'jwt':signed}).encode(), headers={'Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(req, timeout=30) as response:
+              token=json.loads(response.read())['iamToken']
+          assert token and len(token)>100
+          print(f'::add-mask::{token}')
+          target=Path(os.environ['RUNNER_TEMP'])/'deployer-iam-token'
+          target.write_text(token); target.chmod(0o600)
+          print('DEPLOYER_IAM_TOKEN=PASS attempt='+os.environ['ATTEMPT'])
+          PY
+            then break; fi
+            test "$attempt" != "6" || exit 1
+            sleep $((attempt * 4))
+          done
+
+      - name: Read TEST coordinates from remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          cd infra
+          ok=0
+          for attempt in 1 2 3 4; do
+            if terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+              -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+              -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" \
+              && terraform -chdir=terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"; then
+              ok=1; break
+            fi
+            echo "REMOTE_STATE_RETRY attempt=$attempt"
+            sleep $((attempt * 5))
+          done
+          test "$ok" = "1"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          o=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json').read_text())
+          values={
+              'TEST_FOLDER_ID':o['test_folder_id']['value'],
+              'REGISTRY_ID':o['container_registry_id']['value'],
+              'RUNTIME_SA_ID':o['runtime_service_account_id']['value'],
+              'YDB_CONNECTION_STRING':o['ydb_connection_string']['value'],
+          }
+          for key,value in values.items():
+              assert value
+              with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f: f.write(f'{key}={value}\n')
+          print('TEST_COORDINATES=PASS')
+          PY
+
+      - name: Build exact M23 executor image
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp infra/scripts/birzha_m23_executor.py app/executor.py
+          cat > app/Dockerfile.executor <<'DOCKER'
+          FROM python:3.12-slim
+          ENV PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1 PORT=8080
+          WORKDIR /app
+          COPY pyproject.toml README.md ./
+          COPY src ./src
+          COPY executor.py ./executor.py
+          RUN pip install --no-cache-dir .
+          EXPOSE 8080
+          CMD ["python", "/app/executor.py"]
+          DOCKER
+          TAG="m23-${APP_SHA:0:12}-run-${GITHUB_RUN_ID}"
+          IMAGE="cr.yandex/${REGISTRY_ID}/birzha-m23-history-executor:${TAG}"
+          echo "EXECUTOR_IMAGE=$IMAGE" >> "$GITHUB_ENV"
+          docker build --pull -f app/Dockerfile.executor \
+            --label "org.opencontainers.image.revision=${APP_SHA}" \
+            --label "birzha.executor.workflow_sha=${GITHUB_SHA}" \
+            -t "$IMAGE" app
+          echo "EXECUTOR_IMAGE_BUILD=PASS"
+
+      - name: Push immutable executor image
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/deployer-iam-token")"
+          DOCKER_CONFIG_DIR="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG_DIR" && chmod 700 "$DOCKER_CONFIG_DIR"
+          printf '%s' "$TOKEN" | docker --config "$DOCKER_CONFIG_DIR" login --username iam --password-stdin cr.yandex >/dev/null
+          for attempt in 1 2 3 4; do
+            if docker --config "$DOCKER_CONFIG_DIR" push "$EXECUTOR_IMAGE"; then
+              echo "EXECUTOR_IMAGE_PUSH=PASS attempt=$attempt"
+              exit 0
+            fi
+            echo "EXECUTOR_IMAGE_PUSH_RETRY attempt=$attempt"
+            sleep $((attempt * 8))
+          done
+          exit 1
+
+      - name: Create isolated local-state executor Terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          TF_DIR="$RUNNER_TEMP/executor-tf"
+          mkdir -p "$TF_DIR"
+          cat > "$TF_DIR/main.tf" <<'TF'
+          terraform {
+            required_providers {
+              yandex = {
+                source  = "yandex-cloud/yandex"
+                version = "0.224.0"
+              }
+            }
+          }
+          variable "key_file" { type = string }
+          variable "folder_id" { type = string }
+          variable "runtime_sa_id" { type = string }
+          variable "image_url" { type = string }
+          variable "ydb_connection_string" { type = string }
+          variable "app_sha" { type = string }
+          variable "validation_start" { type = string }
+          variable "validation_end" { type = string }
+          variable "run_id" { type = string }
+          provider "yandex" {
+            service_account_key_file = var.key_file
+            folder_id                = var.folder_id
+          }
+          resource "yandex_serverless_container" "executor" {
+            folder_id          = var.folder_id
+            name               = "birzha-m23-exec-${var.run_id}"
+            description        = "Ephemeral private M23 history executor; no production traffic"
+            memory             = 1024
+            cores              = 1
+            concurrency        = 1
+            execution_timeout  = "900s"
+            service_account_id = var.runtime_sa_id
+            runtime { type = "http" }
+            image {
+              url = var.image_url
+              environment = {
+                EXECUTOR_APP_SHA     = var.app_sha
+                VALIDATION_START     = var.validation_start
+                VALIDATION_END       = var.validation_end
+                YDB_CONNECTION_STRING = var.ydb_connection_string
+              }
+            }
+            labels = {
+              project   = "birzha"
+              ephemeral = "true"
+              purpose   = "m23-history"
+            }
+          }
+          output "container_id" { value = yandex_serverless_container.executor.id }
+          TF
+          echo "EXECUTOR_TF_DIR=$TF_DIR" >> "$GITHUB_ENV"
+          echo "EXECUTOR_TF_STATE=$RUNNER_TEMP/executor.tfstate" >> "$GITHUB_ENV"
+
+      - name: Deploy isolated private executor
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_key_file="$YC_KEY_FILE"
+          export TF_VAR_folder_id="$TEST_FOLDER_ID"
+          export TF_VAR_runtime_sa_id="$RUNTIME_SA_ID"
+          export TF_VAR_image_url="$EXECUTOR_IMAGE"
+          export TF_VAR_ydb_connection_string="$YDB_CONNECTION_STRING"
+          export TF_VAR_app_sha="$APP_SHA"
+          export TF_VAR_validation_start="$VALIDATION_START"
+          export TF_VAR_validation_end="$VALIDATION_END"
+          export TF_VAR_run_id="$GITHUB_RUN_ID"
+          terraform -chdir="$EXECUTOR_TF_DIR" init -backend=false -input=false -lockfile=readonly
+          terraform -chdir="$EXECUTOR_TF_DIR" apply -auto-approve -input=false -state="$EXECUTOR_TF_STATE"
+          CID="$(terraform -chdir="$EXECUTOR_TF_DIR" output -state="$EXECUTOR_TF_STATE" -raw container_id)"
+          test -n "$CID"
+          echo "EXECUTOR_CONTAINER_ID=$CID" >> "$GITHUB_ENV"
+          echo "EXECUTOR_URL=https://${CID}.containers.yandexcloud.net" >> "$GITHUB_ENV"
+          printf '{"stage":"EXECUTOR_DEPLOYED","app_sha":"%s","workflow_sha":"%s","run_id":"%s","container_id":"%s"}\n' "$APP_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" "$CID" > "$RUNNER_TEMP/executor-checkpoint.json"
+
+      - name: Verify private executor health
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/deployer-iam-token")"
+          ok=0
+          for attempt in $(seq 1 30); do
+            if curl --proto '=https' --tlsv1.2 --fail --silent --show-error \
+              --connect-timeout 15 --max-time 30 \
+              -H "Authorization: Bearer ${TOKEN}" \
+              "$EXECUTOR_URL/healthz" -o "$RUNNER_TEMP/health.json"; then
+              if python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'health.json').read_text())
+          assert d.get('status')=='ok'
+          assert d.get('app_sha')==os.environ['APP_SHA']
+          print('EXECUTOR_HEALTH_PAYLOAD=PASS')
+          PY
+              then ok=1; break; fi
+            fi
+            echo "EXECUTOR_HEALTH_RETRY attempt=$attempt"
+            sleep 10
+          done
+          test "$ok" = "1"
+
+      - name: Synchronize six D1 cells with resumable retries
+        shell: bash
+        run: |
+          set -u
+          TOKEN="$(cat "$RUNNER_TEMP/deployer-iam-token")"
+          SUMMARY="$RUNNER_TEMP/d1-summary.jsonl"
+          : > "$SUMMARY"
+          failures=0
+          for symbol in SBER Si BR GOLD IMOEX RTSI; do
+            success=0
+            for attempt in 1 2 3; do
+              OUT="$RUNNER_TEMP/d1-${symbol}-attempt-${attempt}.json"
+              CODE_FILE="$RUNNER_TEMP/d1-${symbol}-attempt-${attempt}.code"
+              code="$(curl --proto '=https' --tlsv1.2 --silent --show-error \
+                --connect-timeout 30 --max-time 920 \
+                -H "Authorization: Bearer ${TOKEN}" \
+                -H 'Content-Type: application/json' \
+                -o "$OUT" -w '%{http_code}' \
+                -X POST "$EXECUTOR_URL/run" \
+                --data "{\"symbol\":\"${symbol}\",\"timeframe\":\"D1\"}" || true)"
+              printf '%s\n' "$code" > "$CODE_FILE"
+              if [ "$code" = "200" ] && SYMBOL="$symbol" OUT="$OUT" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['OUT'])
+          d=json.loads(p.read_text())
+          assert d.get('status')=='PASS', d
+          assert d.get('app_sha')==os.environ['APP_SHA'], d
+          assert d.get('symbol')==os.environ['SYMBOL'], d
+          assert d.get('timeframe')=='D1', d
+          print(f"D1_CELL_PASS symbol={os.environ['SYMBOL']} mode={d.get('mode')}")
+          PY
+              then
+                python - "$OUT" "$SUMMARY" <<'PY'
+          import json, sys
+          from pathlib import Path
+          d=json.loads(Path(sys.argv[1]).read_text())
+          with open(sys.argv[2],'a',encoding='utf-8') as f:
+              f.write(json.dumps(d,sort_keys=True,ensure_ascii=False)+'\n')
+          PY
+                success=1
+                break
+              fi
+              echo "D1_CELL_RETRY symbol=$symbol attempt=$attempt http=$code"
+              sleep $((attempt * 20))
+            done
+            if [ "$success" != "1" ]; then
+              failures=$((failures+1))
+              printf '{"status":"ERROR","symbol":"%s","timeframe":"D1","app_sha":"%s"}\n' "$symbol" "$APP_SHA" >> "$SUMMARY"
+            fi
+            printf '{"stage":"D1_PROGRESS","last_symbol":"%s","failures":%s,"app_sha":"%s","workflow_sha":"%s","run_id":"%s"}\n' "$symbol" "$failures" "$APP_SHA" "$GITHUB_SHA" "$GITHUB_RUN_ID" > "$RUNNER_TEMP/executor-checkpoint.json"
+          done
+          python - "$SUMMARY" "$RUNNER_TEMP/d1-summary.json" <<'PY'
+          import json, sys
+          from pathlib import Path
+          rows=[json.loads(x) for x in Path(sys.argv[1]).read_text().splitlines() if x.strip()]
+          payload={'schema':'BIRZHA_M23_EPHEMERAL_D1_EXECUTION_V1','cells':rows,'pass_count':sum(x.get('status')=='PASS' for x in rows),'error_count':sum(x.get('status')!='PASS' for x in rows)}
+          Path(sys.argv[2]).write_text(json.dumps(payload,indent=2,sort_keys=True,ensure_ascii=False)+'\n')
+          print(json.dumps({'pass_count':payload['pass_count'],'error_count':payload['error_count']},sort_keys=True))
+          PY
+          test "$failures" = "0"
+
+      - name: Upload durable execution evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-m23-ephemeral-d1-execution
+          path: |
+            ${{ runner.temp }}/executor-checkpoint.json
+            ${{ runner.temp }}/health.json
+            ${{ runner.temp }}/d1-*.json
+            ${{ runner.temp }}/d1-*.code
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Destroy isolated executor
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${EXECUTOR_TF_DIR:-}" ] && [ -f "${EXECUTOR_TF_DIR}/main.tf" ] && [ -f "${EXECUTOR_TF_STATE:-}" ]; then
+            export TF_VAR_key_file="$YC_KEY_FILE"
+            export TF_VAR_folder_id="$TEST_FOLDER_ID"
+            export TF_VAR_runtime_sa_id="$RUNTIME_SA_ID"
+            export TF_VAR_image_url="$EXECUTOR_IMAGE"
+            export TF_VAR_ydb_connection_string="$YDB_CONNECTION_STRING"
+            export TF_VAR_app_sha="$APP_SHA"
+            export TF_VAR_validation_start="$VALIDATION_START"
+            export TF_VAR_validation_end="$VALIDATION_END"
+            export TF_VAR_run_id="$GITHUB_RUN_ID"
+            terraform -chdir="$EXECUTOR_TF_DIR" destroy -auto-approve -input=false -state="$EXECUTOR_TF_STATE"
+            rc=$?
+            if [ "$rc" = "0" ]; then echo 'EPHEMERAL_EXECUTOR_DESTROY=PASS'; else echo "EPHEMERAL_EXECUTOR_DESTROY=ERROR rc=$rc"; fi
+          else
+            echo 'EPHEMERAL_EXECUTOR_DESTROY=NOT_NEEDED'
+          fi
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/docker-config"
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/deployer-iam-token" "$RUNNER_TEMP/birzha-outputs.json"
+          echo 'EPHEMERAL_CREDENTIAL_CLEANUP=PASS'
