@@ -1,0 +1,116 @@
+name: BIRZHA deployer role audit once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-deployer-role-audit-once.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-deployer-role-audit-once
+  cancel-in-progress: false
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Mint masked deployer IAM token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600}, key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens', data=json.dumps({'jwt':signed}).encode(), headers={'Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(req, timeout=30) as r: token=json.loads(r.read())['iamToken']
+          print(f'::add-mask::{token}')
+          (Path(os.environ['RUNNER_TEMP'])/'iam-token').write_text(token)
+          (Path(os.environ['RUNNER_TEMP'])/'deployer-id').write_text(key['service_account_id'])
+          print('DEPLOYER_TOKEN=PASS')
+          PY
+
+      - name: Read folder and cloud coordinates
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir=terraform/birzha_test show -json > "$RUNNER_TEMP/state.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state.json').read_text())
+          r=s['values']['root_module']['resources']
+          f=[x for x in r if x.get('type')=='yandex_resourcemanager_folder' and x.get('name')=='birzha_test']
+          assert len(f)==1
+          v=f[0]['values']; assert v.get('id') and v.get('cloud_id')
+          (Path(os.environ['RUNNER_TEMP'])/'folder-id').write_text(v['id'])
+          (Path(os.environ['RUNNER_TEMP'])/'cloud-id').write_text(v['cloud_id'])
+          print('RESOURCE_COORDINATES=PASS')
+          PY
+
+      - name: List effective direct bindings for deployer
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          token=(root/'iam-token').read_text().strip(); subject=(root/'deployer-id').read_text().strip()
+          coordinates=[('folder',(root/'folder-id').read_text().strip(),'folders'),('cloud',(root/'cloud-id').read_text().strip(),'clouds')]
+          result={}
+          for label,rid,kind in coordinates:
+              url=f'https://resource-manager.api.cloud.yandex.net/resource-manager/v1/{kind}/{rid}:listAccessBindings?pageSize=1000'
+              req=urllib.request.Request(url,headers={'Authorization':f'Bearer {token}'})
+              with urllib.request.urlopen(req,timeout=30) as r: payload=json.loads(r.read())
+              roles=sorted({b['roleId'] for b in payload.get('accessBindings',[]) if (b.get('subject') or {}).get('id')==subject})
+              result[label]=roles
+              print(f'{label.upper()}_DEPLOYER_ROLES='+','.join(roles))
+          needed='serverless.containers.editor'
+          present=needed in set(result['folder'])|set(result['cloud'])
+          print('SERVERLESS_CONTAINERS_EDITOR_DIRECT=' + ('PASS' if present else 'NOT_FOUND'))
+          (root/'deployer-role-audit.json').write_text(json.dumps({'roles':result,'serverless_containers_editor_direct':present},indent=2,sort_keys=True)+'\n')
+          PY
+
+      - name: Upload evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-deployer-role-audit
+          path: ${{ runner.temp }}/deployer-role-audit.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/deployer-id" "$RUNNER_TEMP/folder-id" "$RUNNER_TEMP/cloud-id" "$RUNNER_TEMP/state.json"
