@@ -1,189 +1,24 @@
-name: Apply BIRZHA Historical Preparer OIDC
+name: LEGACY - BIRZHA Historical Preparer OIDC Bootstrap (completed)
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - ".github/workflows/birzha-historical-preparer-oidc-apply.yml"
-      - "terraform/birzha_test/historical_preparer_oidc.tf"
+  workflow_dispatch:
 
 permissions:
   contents: read
 
-concurrency:
-  group: birzha-historical-preparer-oidc-apply
-  cancel-in-progress: false
-
 jobs:
-  apply:
+  retired:
     runs-on: ubuntu-latest
-    environment: test
-    timeout-minutes: 25
     steps:
-      - name: Checkout exact main commit
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
-        with:
-          ref: ${{ github.sha }}
-          persist-credentials: false
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
-        with:
-          terraform_version: "1.9.8"
-          terraform_wrapper: false
-
-      - name: Prepare ephemeral infra deployer credential
-        shell: bash
-        env:
-          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
-        run: |
-          set -euo pipefail
-          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
-          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          ACTUAL_ID="$(python - "$KEY_FILE" <<'PY'
-          import json,sys
-          from pathlib import Path
-          print(json.loads(Path(sys.argv[1]).read_text()).get('service_account_id',''))
-          PY
-          )"
-          [[ "$ACTUAL_ID" == "ajecdjjrkdo1t3itpl9k" ]] || { echo "Unexpected infra deployer identity" >&2; exit 1; }
-          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
-          echo 'INFRA_DEPLOYER_IDENTITY=PASS'
-
-      - name: Initialize BIRZHA remote state
-        shell: bash
-        env:
-          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
-          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
-            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
-            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
-          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_iam_service_account.historical_preparer' "$RUNNER_TEMP/state-before.txt"
-          grep -Fxq 'yandex_resourcemanager_folder_iam_member.historical_preparer_ydb_editor' "$RUNNER_TEMP/state-before.txt"
-          echo 'PARTIAL_STATE_RECOVERY_BOUNDARY=PASS'
-
-      - name: Grant exact temporary credential-bootstrap permissions
+      - name: Record completed bootstrap state
         shell: bash
         run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test plan \
-            -input=false -no-color \
-            -var='historical_preparer_bootstrap_enabled=true' \
-            -target='yandex_resourcemanager_folder_iam_member.historical_preparer_wif_user_bootstrap[0]' \
-            -target='yandex_iam_service_account_iam_member.historical_preparer_credential_editor_bootstrap[0]' \
-            -out=bootstrap.tfplan
-          terraform -chdir=terraform/birzha_test show -json bootstrap.tfplan > "$RUNNER_TEMP/bootstrap-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color bootstrap.tfplan > "$RUNNER_TEMP/bootstrap-plan.txt"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'bootstrap-plan.json').read_text())
-          actual={x['address']:x['change']['actions'] for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected={
-            'yandex_resourcemanager_folder_iam_member.historical_preparer_wif_user_bootstrap[0]':['create'],
-            'yandex_iam_service_account_iam_member.historical_preparer_credential_editor_bootstrap[0]':['create'],
-          }
-          if actual != expected: raise SystemExit(f'Unexpected bootstrap delta: {actual!r}')
-          print('HISTORICAL_PREPARER_BOOTSTRAP_PLAN=PASS')
-          PY
-          terraform -chdir=terraform/birzha_test apply -input=false -no-color bootstrap.tfplan
-          echo 'HISTORICAL_PREPARER_BOOTSTRAP_APPLY=PASS'
-
-      - name: Create only the missing federated credential
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test plan \
-            -input=false -no-color \
-            -var='historical_preparer_bootstrap_enabled=true' \
-            -target='yandex_iam_workload_identity_federated_credential.github_historical_preparer' \
-            -out=credential.tfplan
-          terraform -chdir=terraform/birzha_test show -json credential.tfplan > "$RUNNER_TEMP/credential-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color credential.tfplan > "$RUNNER_TEMP/credential-plan.txt"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'credential-plan.json').read_text())
-          actual={x['address']:x['change']['actions'] for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected={'yandex_iam_workload_identity_federated_credential.github_historical_preparer':['create']}
-          if actual != expected: raise SystemExit(f'Unexpected credential delta: {actual!r}')
-          print('HISTORICAL_PREPARER_CREDENTIAL_PLAN=PASS')
-          PY
-          terraform -chdir=terraform/birzha_test apply -input=false -no-color credential.tfplan
-          SA_ID="$(terraform -chdir=terraform/birzha_test output -raw historical_preparer_service_account_id)"
-          [[ "$SA_ID" =~ ^aje[a-z0-9]+$ ]]
-          printf '%s\n' "$SA_ID" > "$RUNNER_TEMP/historical-preparer-sa-id.txt"
-          echo "HISTORICAL_PREPARER_SERVICE_ACCOUNT_ID=$SA_ID"
-          echo 'HISTORICAL_PREPARER_CREDENTIAL_APPLY=PASS'
-
-      - name: Remove bootstrap permissions immediately
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test plan \
-            -input=false -no-color \
-            -target='yandex_resourcemanager_folder_iam_member.historical_preparer_wif_user_bootstrap' \
-            -target='yandex_iam_service_account_iam_member.historical_preparer_credential_editor_bootstrap' \
-            -out=cleanup.tfplan
-          terraform -chdir=terraform/birzha_test show -json cleanup.tfplan > "$RUNNER_TEMP/cleanup-plan.json"
-          terraform -chdir=terraform/birzha_test show -no-color cleanup.tfplan > "$RUNNER_TEMP/cleanup-plan.txt"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'cleanup-plan.json').read_text())
-          actual={x['address']:x['change']['actions'] for x in p.get('resource_changes',[]) if x['change']['actions'] != ['no-op']}
-          expected={
-            'yandex_resourcemanager_folder_iam_member.historical_preparer_wif_user_bootstrap[0]':['delete'],
-            'yandex_iam_service_account_iam_member.historical_preparer_credential_editor_bootstrap[0]':['delete'],
-          }
-          if actual != expected: raise SystemExit(f'Unexpected cleanup delta: {actual!r}')
-          print('HISTORICAL_PREPARER_BOOTSTRAP_CLEANUP_PLAN=PASS')
-          PY
-          terraform -chdir=terraform/birzha_test apply -input=false -no-color cleanup.tfplan
-          echo 'HISTORICAL_PREPARER_BOOTSTRAP_CLEANUP=PASS'
-
-      - name: Verify final three-resource state and zero drift
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir=terraform/birzha_test state list | sort > "$RUNNER_TEMP/state-final.txt"
-          grep -Fxq 'yandex_iam_service_account.historical_preparer' "$RUNNER_TEMP/state-final.txt"
-          grep -Fxq 'yandex_resourcemanager_folder_iam_member.historical_preparer_ydb_editor' "$RUNNER_TEMP/state-final.txt"
-          grep -Fxq 'yandex_iam_workload_identity_federated_credential.github_historical_preparer' "$RUNNER_TEMP/state-final.txt"
-          ! grep -q 'historical_preparer_wif_user_bootstrap' "$RUNNER_TEMP/state-final.txt"
-          ! grep -q 'historical_preparer_credential_editor_bootstrap' "$RUNNER_TEMP/state-final.txt"
-          rc=0
-          terraform -chdir=terraform/birzha_test plan \
-            -input=false -no-color -detailed-exitcode \
-            -target='yandex_iam_service_account.historical_preparer' \
-            -target='yandex_resourcemanager_folder_iam_member.historical_preparer_ydb_editor' \
-            -target='yandex_iam_workload_identity_federated_credential.github_historical_preparer' \
-            > "$RUNNER_TEMP/final-post-plan.txt" || rc=$?
-          test "$rc" -eq 0
-          grep -Fq 'No changes.' "$RUNNER_TEMP/final-post-plan.txt"
-          echo 'HISTORICAL_PREPARER_FINAL_STATE=PASS'
-
-      - name: Upload non-secret evidence
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
-        with:
-          name: birzha-historical-preparer-oidc-evidence
-          path: |
-            ${{ runner.temp }}/state-before.txt
-            ${{ runner.temp }}/bootstrap-plan.txt
-            ${{ runner.temp }}/credential-plan.txt
-            ${{ runner.temp }}/cleanup-plan.txt
-            ${{ runner.temp }}/state-final.txt
-            ${{ runner.temp }}/final-post-plan.txt
-            ${{ runner.temp }}/historical-preparer-sa-id.txt
-          if-no-files-found: error
-          retention-days: 30
-
-      - name: Cleanup ephemeral credential
-        if: always()
-        shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
+          cat <<'EOF'
+          HISTORICAL_PREPARER_BOOTSTRAP=COMPLETED
+          HISTORICAL_PREPARER_SERVICE_ACCOUNT_ID=ajeadmjrbl2i9ku929cc
+          HISTORICAL_PREPARER_YDB_ROLE=ydb.editor
+          HISTORICAL_PREPARER_FEDERATED_CREDENTIAL_ID=ajeuj3set5a5d1rf3e27
+          TEMP_BOOTSTRAP_PERMISSIONS=REMOVED
+          CANONICAL_PROOF=FUNCTIONAL_OIDC_TOKEN_EXCHANGE_AND_YDB_PREPARATION
+          NOTE=This workflow is retained only as historical evidence and performs no IAM mutation.
+          EOF
