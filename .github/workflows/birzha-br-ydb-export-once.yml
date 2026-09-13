@@ -1,6 +1,6 @@
 name: BIRZHA BR YDB export once
 
-# rerun after Utf8 parameter fix
+# rerun with automatic BR root session-key discovery
 on:
   push:
     branches: [main]
@@ -75,7 +75,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check 'ydb>=3.21.0,<4'
-          python infra/scripts/birzha_br_ydb_export_once.py \
+          python infra/scripts/birzha_br_ydb_export_once_v2.py \
             --connection-string-file "$RUNNER_TEMP/ydb-connection-string" \
             --token-file "$RUNNER_TEMP/yandex-iam-token" \
             --from-date 2021-01-01 \
