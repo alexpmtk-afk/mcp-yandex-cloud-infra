@@ -1,0 +1,227 @@
+name: Marketplaces MCP Finance Acceptance
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Deploy Marketplaces MCP TEST
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  finance-readonly:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 6); do
+            if timeout 75s wget -q --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 3
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve TEST MCP endpoint and bearer
+        id: target
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$DOMAIN" && test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Live finance acceptance through MCP
+        shell: bash
+        timeout-minutes: 8
+        env:
+          MCP_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          timeout 450s python -u - <<'PY'
+          import datetime, itertools, json, os, time
+          import httpx
+
+          def unpack(response):
+              response.raise_for_status()
+              for line in response.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return response.json() if response.text.strip() else None
+
+          def retry_after(data):
+              return float(data.get('retry_after_seconds', 0) or data.get('retry_after_sec', 0) or 0)
+
+          def is_rate_limited(data):
+              return retry_after(data) > 0 and (
+                  data.get('error_type') == 'rate_limit' or
+                  data.get('error') in ('rate_limit', 'rate_limit_busy')
+              )
+
+          def finance_state(name, data):
+              if data.get('ok') is True and 200 <= int(data.get('status', 0) or 0) < 300:
+                  print(f'{name}=LIVE_PASS', flush=True)
+                  return 'pass'
+              if int(data.get('code', 0) or 0) == 403 and data.get('error_type') == 'forbidden':
+                  if 'missing a required role' in str(data.get('message', '')):
+                      print(f'{name}=BLOCKED_MISSING_API_ROLE', flush=True)
+                      return 'missing_role'
+              if is_rate_limited(data):
+                  print(f'{name}=RATE_LIMIT_PROTECTED retry_after={retry_after(data)}', flush=True)
+                  return 'rate_limit'
+              raise AssertionError((name, data))
+
+          timeout = httpx.Timeout(connect=10.0, read=60.0, write=30.0, pool=10.0)
+          headers = {
+              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+          ids = itertools.count(1)
+          with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+              response = client.post(os.environ['MCP_URL'], headers=headers, json={
+                  'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
+                      'protocolVersion': '2025-06-18', 'capabilities': {},
+                      'clientInfo': {'name': 'typed-finance-capability-matrix', 'version': '5'},
+                  },
+              })
+              init = unpack(response)
+              assert init and 'result' in init, init
+              session_headers = dict(headers)
+              sid = response.headers.get('mcp-session-id')
+              if sid:
+                  session_headers['Mcp-Session-Id'] = sid
+              session_headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion', '2025-06-18')
+              notify = client.post(os.environ['MCP_URL'], headers=session_headers, json={
+                  'jsonrpc': '2.0', 'method': 'notifications/initialized'
+              })
+              assert notify.status_code in (200, 202)
+
+              def rpc(method, params=None):
+                  rr = client.post(os.environ['MCP_URL'], headers=session_headers, json={
+                      'jsonrpc': '2.0', 'id': next(ids), 'method': method, 'params': params or {}
+                  })
+                  data = unpack(rr)
+                  assert data and 'result' in data, (method, data)
+                  return data['result']
+
+              def call(name, args):
+                  result = rpc('tools/call', {'name': name, 'arguments': args})
+                  assert not result.get('isError'), (name, result)
+                  text = next((x.get('text') for x in result.get('content', []) if x.get('type') == 'text'), None)
+                  assert text is not None, name
+                  return json.loads(text)
+
+              def call_with_rate_wait(name, args, max_wait=90):
+                  data = call(name, args)
+                  if is_rate_limited(data):
+                      wait = min(max(1.0, retry_after(data) + 1.0), float(max_wait))
+                      print(f'{name}=WAIT_FOR_QUOTA seconds={wait}', flush=True)
+                      time.sleep(wait)
+                      data = call(name, args)
+                  return data
+
+              names = {x['name'] for x in rpc('tools/list')['tools']}
+              required = {
+                  'wb_list_realization_reports', 'wb_get_realization_report_by_id',
+                  'ozon_get_accrual_types', 'ozon_get_accruals_by_day', 'ozon_get_realization',
+              }
+              assert required <= names, sorted(required - names)
+              assert 'wb_get_realization_report' not in names
+              print('TYPED_FINANCE_TOOLS=PASS', flush=True)
+
+              today = datetime.date.today()
+              day = (today - datetime.timedelta(days=1)).isoformat()
+              prev = today.replace(day=1) - datetime.timedelta(days=1)
+              results = {}
+              results['ozon_types'] = finance_state('OZON_ACCRUAL_TYPES', call('ozon_get_accrual_types', {}))
+              results['ozon_day'] = finance_state('OZON_ACCRUAL_BY_DAY', call('ozon_get_accruals_by_day', {'day': day, 'last_id': ''}))
+              results['ozon_realization'] = finance_state('OZON_REALIZATION', call('ozon_get_realization', {'month': prev.month, 'year': prev.year}))
+
+              list_data = call_with_rate_wait('wb_list_realization_reports', {
+                  'seller': 'wb_novokshenov',
+                  'date_from': (today - datetime.timedelta(days=60)).isoformat(),
+                  'date_to': today.isoformat(),
+                  'period': 'weekly', 'limit': 1000, 'offset': 0,
+              })
+              results['wb_list'] = finance_state('WB_WEEKLY_REPORT_LIST', list_data)
+              assert results['wb_list'] == 'pass', list_data
+              reports = list_data.get('data') or []
+              assert isinstance(reports, list) and reports, 'WB weekly report list is empty'
+
+              # The archive baseline is the MAIN weekly report only. WB also returns
+              # reportType=2 (buyout) in the same weekly list; never choose it as main.
+              main_reports = [r for r in reports if int(r.get('reportType') or 0) == 1]
+              assert main_reports, 'WB weekly list contains no reportType=1 main reports'
+              latest = max(main_reports, key=lambda x: (
+                  str(x.get('dateTo', '')), str(x.get('createDate', '')), int(x.get('reportId', 0))
+              ))
+              assert int(latest.get('reportType') or 0) == 1, latest
+              report_id = int(latest['reportId'])
+              print('WB_LATEST_MAIN_WEEKLY_REPORT=' + json.dumps({
+                  k: latest.get(k) for k in ('reportId', 'dateFrom', 'dateTo', 'createDate', 'reportType', 'sellerFinanceName')
+              }, ensure_ascii=False), flush=True)
+
+              detail_data = call_with_rate_wait('wb_get_realization_report_by_id', {
+                  'seller': 'wb_novokshenov', 'report_id': report_id, 'limit': 1, 'rrd_id': 0,
+              }, max_wait=90)
+              results['wb_detail'] = finance_state('WB_MAIN_WEEKLY_REPORT_DETAIL_BY_ID', detail_data)
+              assert results['wb_detail'] == 'pass', detail_data
+              rows = detail_data.get('data') or []
+              assert isinstance(rows, list) and rows, 'WB main weekly report detail returned no rows'
+              assert int(rows[0].get('reportId', report_id)) == report_id
+              assert int(rows[0].get('reportType') or 0) == 1, rows[0].get('reportType')
+              print('WB_MAIN_WEEKLY_REPORT_ROUTE=PASS', flush=True)
+
+              print('FINANCE_CAPABILITY_MATRIX=' + json.dumps(results, sort_keys=True), flush=True)
+              ozon_states = {results['ozon_types'], results['ozon_day'], results['ozon_realization']}
+              assert ozon_states <= {'pass', 'missing_role'}
+              if 'missing_role' in ozon_states:
+                  print('OZON_FINANCE_ACCESS=BLOCKED_BY_API_KEY_ROLE', flush=True)
+              else:
+                  print('OZON_FINANCE_ACCESS=PASS', flush=True)
+              print('MARKETPLACES_TYPED_FINANCE_ACCEPTANCE=PASS', flush=True)
+          PY
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer"
