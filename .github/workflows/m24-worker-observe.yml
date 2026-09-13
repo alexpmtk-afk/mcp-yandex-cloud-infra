@@ -67,7 +67,7 @@ jobs:
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
           set +e
-          YC_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
             --resource-ids="$WORKER_CONTAINER_ID" \
             --since=30m \
             --limit=1000 \
@@ -80,13 +80,17 @@ jobs:
             echo "M24_WORKER_LOG_READ=FAIL"
             python - <<'PY'
           from pathlib import Path
-          s=Path('/home/runner/work/_temp/logging-error.txt') if False else Path(__import__('os').environ['RUNNER_TEMP'])/'logging-error.txt'
+          s=Path(__import__('os').environ['RUNNER_TEMP'])/'logging-error.txt'
           text=s.read_text(errors='replace') if s.exists() else ''
           low=text.lower()
           if 'permission' in low or 'denied' in low or '403' in low:
               print('M24_WORKER_LOG_READ_REASON=PERMISSION_DENIED')
+          elif 'unauth' in low or 'credential' in low or 'token' in low:
+              print('M24_WORKER_LOG_READ_REASON=AUTHENTICATION')
           elif 'not found' in low or '404' in low:
               print('M24_WORKER_LOG_READ_REASON=NOT_FOUND')
+          elif 'invalid' in low or 'parse' in low or 'format' in low:
+              print('M24_WORKER_LOG_READ_REASON=INVALID_ARGUMENT')
           else:
               print('M24_WORKER_LOG_READ_REASON=OTHER')
           PY
@@ -109,17 +113,14 @@ jobs:
               entries=data
           assert isinstance(entries,list)
           messages=[]
-          levels=[]
           for e in entries:
               if not isinstance(e,dict):
                   continue
               msg=str(e.get('message',''))
               jp=e.get('json_payload') or e.get('jsonPayload') or {}
               if isinstance(jp,dict):
-                  # Include values only in-memory for marker detection; never print them raw.
                   msg += ' ' + ' '.join(str(v) for v in jp.values())
               messages.append(msg)
-              levels.append(str(e.get('level','')))
           text='\n'.join(messages)
           starts=len(re.findall(r'\bSTART\b',text,re.I))
           ends=len(re.findall(r'\bEND\b',text,re.I))
