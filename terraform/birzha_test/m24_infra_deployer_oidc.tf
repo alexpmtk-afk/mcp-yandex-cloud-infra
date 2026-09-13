@@ -20,6 +20,13 @@ resource "yandex_iam_service_account_iam_member" "m24_infra_oidc_credential_edit
   sleep_after        = 5
 }
 
+resource "yandex_iam_service_account_iam_member" "terraform_infra_deployer_federated_credential_viewer" {
+  service_account_id = var.terraform_deployer_service_account_id
+  role               = "iam.serviceAccounts.federatedCredentialViewer"
+  member             = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  sleep_after        = 5
+}
+
 resource "yandex_iam_workload_identity_federated_credential" "github_infra_deployer" {
   service_account_id  = var.terraform_deployer_service_account_id
   federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
@@ -28,6 +35,7 @@ resource "yandex_iam_workload_identity_federated_credential" "github_infra_deplo
   depends_on = [
     yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap,
     yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap,
+    yandex_iam_service_account_iam_member.terraform_infra_deployer_federated_credential_viewer,
   ]
 }
 
