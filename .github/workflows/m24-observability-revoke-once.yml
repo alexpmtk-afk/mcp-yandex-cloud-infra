@@ -1,0 +1,243 @@
+name: M24 Observability Revoke Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m24-observability-revoke-once.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: birzha-m24-observability-revoke-once
+  cancel-in-progress: false
+
+env:
+  TF_DIR: terraform/birzha_test
+  DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+  EXPECTED_WORKER_CONTAINER_ID: bbamdg0po6fkukhod2e9
+  EXPECTED_TIMER_TRIGGER_ID: a1s4ho32v7dha59aeu60
+
+jobs:
+  revoke:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - name: Checkout exact infrastructure main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform 1.9.8
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Exchange GitHub Environment OIDC for Yandex IAM token
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
+          R="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          python - "$J" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('environment')=='test'
+          assert c.get('ref')=='refs/heads/main'
+          print('M24_OBSERVABILITY_REVOKE_OIDC_CLAIMS=PASS')
+          PY
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          test -n "$T"
+          echo "::add-mask::$T"
+          printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
+          echo 'M24_OBSERVABILITY_REVOKE_OIDC_EXCHANGE=PASS'
+
+      - name: Install yc and initialize protected Terraform state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tar.gz"
+          tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir="$TF_DIR" validate
+
+      - name: Capture protected runtime and prove timer active before revoke
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
+          resources=s['values']['root_module']['resources']; by={r['address']:r for r in resources}
+          expected_roles={
+            'yandex_resourcemanager_folder_iam_member.m24_observability_monitoring_viewer[0]':'monitoring.viewer',
+            'yandex_resourcemanager_folder_iam_member.m24_observability_logging_reader[0]':'logging.reader',
+          }
+          for addr,role in expected_roles.items():
+              assert addr in by, addr
+              v=by[addr]['values']; assert v.get('role')==role; assert v.get('member')=='serviceAccount:'+os.environ['DEPLOYER_SERVICE_ACCOUNT_ID']
+          mcp=by['yandex_serverless_container.mcp[0]']['values']; mi=(mcp.get('image') or [])[0]; me=mi.get('environment') or {}
+          worker=by['yandex_serverless_container.orchestrator_worker[0]']['values']; wi=(worker.get('image') or [])[0]; we=wi.get('environment') or {}
+          trigger=by['yandex_function_trigger.orchestrator_timer[0]']['values']
+          assert worker.get('id')==os.environ['EXPECTED_WORKER_CONTAINER_ID']
+          assert trigger.get('id')==os.environ['EXPECTED_TIMER_TRIGGER_ID']
+          vals={
+            'PRESERVE_MCP_IMAGE_URL':mi.get('url',''),
+            'PRESERVE_MCP_SOURCE_SHA':me.get('BIRZHA_SOURCE_COMMIT',''),
+            'PRESERVE_ALLOWED_HOSTS':me.get('MCP_ALLOWED_HOSTS',''),
+            'PRESERVE_ALLOWED_ORIGINS':me.get('MCP_ALLOWED_ORIGINS',''),
+            'PRESERVE_WORKER_IMAGE_URL':wi.get('url',''),
+            'PRESERVE_WORKER_SOURCE_SHA':we.get('BIRZHA_SOURCE_COMMIT',''),
+          }
+          assert vals['PRESERVE_MCP_IMAGE_URL'].startswith('cr.yandex/')
+          assert vals['PRESERVE_WORKER_IMAGE_URL'].startswith('cr.yandex/')
+          assert len(vals['PRESERVE_MCP_SOURCE_SHA'])==40
+          assert len(vals['PRESERVE_WORKER_SOURCE_SHA'])==40
+          for k,v in vals.items():
+              assert '\n' not in v
+              with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'{k}={v}\n')
+          (Path(os.environ['RUNNER_TEMP'])/'protected-before.json').write_text(json.dumps(vals,sort_keys=True))
+          print('M24_OBSERVABILITY_REVOKE_PRESTATE=PASS')
+          PY
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless trigger get --id="$EXPECTED_TIMER_TRIGGER_ID" --format=json > "$RUNNER_TEMP/timer-before.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'timer-before.json').read_text())
+          assert d.get('id')==os.environ['EXPECTED_TIMER_TRIGGER_ID']
+          assert d.get('status')=='ACTIVE', d.get('status')
+          assert os.environ['EXPECTED_WORKER_CONTAINER_ID'] in json.dumps(d)
+          print('M24_TIMER_ACTIVE_BEFORE_OBSERVABILITY_REVOKE=PASS')
+          PY
+
+      - name: Plan exactly two observability deletes
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/revoke.tfplan" \
+            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
+            -var="source_commit_sha=${PRESERVE_MCP_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="m24_worker_image_url=${PRESERVE_WORKER_IMAGE_URL}" \
+            -var="m24_worker_source_sha=${PRESERVE_WORKER_SOURCE_SHA}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" \
+            -var="m24_observability_probe_enabled=false" > "$RUNNER_TEMP/revoke-plan.txt"
+          rc=$?
+          set -e
+          test "$rc" = 2 || { cat "$RUNNER_TEMP/revoke-plan.txt"; exit 1; }
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/revoke.tfplan" > "$RUNNER_TEMP/revoke-plan.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'revoke-plan.json').read_text())
+          changed={r['address']:r['change']['actions'] for r in d.get('resource_changes',[]) if r.get('change',{}).get('actions') not in (['no-op'],['read'])}
+          expected={
+            'yandex_resourcemanager_folder_iam_member.m24_observability_monitoring_viewer[0]':['delete'],
+            'yandex_resourcemanager_folder_iam_member.m24_observability_logging_reader[0]':['delete'],
+          }
+          assert changed==expected, changed
+          print('M24_OBSERVABILITY_STRICT_TWO_DELETE_PLAN=PASS')
+          PY
+
+      - name: Apply exact saved revoke plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/revoke.tfplan"
+          echo 'M24_OBSERVABILITY_REVOKE_APPLY=PASS'
+
+      - name: Verify roles absent and protected runtime unchanged
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-after.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          root=Path(os.environ['RUNNER_TEMP'])
+          s=json.loads((root/'state-after.json').read_text()); resources=s['values']['root_module']['resources']; by={r['address']:r for r in resources}
+          for addr in (
+            'yandex_resourcemanager_folder_iam_member.m24_observability_monitoring_viewer[0]',
+            'yandex_resourcemanager_folder_iam_member.m24_observability_logging_reader[0]',
+          ):
+              assert addr not in by, addr
+          before=json.loads((root/'protected-before.json').read_text())
+          mcp=by['yandex_serverless_container.mcp[0]']['values']; mi=(mcp.get('image') or [])[0]; me=mi.get('environment') or {}
+          worker=by['yandex_serverless_container.orchestrator_worker[0]']['values']; wi=(worker.get('image') or [])[0]; we=wi.get('environment') or {}
+          after={
+            'PRESERVE_MCP_IMAGE_URL':mi.get('url',''),
+            'PRESERVE_MCP_SOURCE_SHA':me.get('BIRZHA_SOURCE_COMMIT',''),
+            'PRESERVE_ALLOWED_HOSTS':me.get('MCP_ALLOWED_HOSTS',''),
+            'PRESERVE_ALLOWED_ORIGINS':me.get('MCP_ALLOWED_ORIGINS',''),
+            'PRESERVE_WORKER_IMAGE_URL':wi.get('url',''),
+            'PRESERVE_WORKER_SOURCE_SHA':we.get('BIRZHA_SOURCE_COMMIT',''),
+          }
+          assert after==before, {'before':before,'after':after}
+          assert worker.get('id')==os.environ['EXPECTED_WORKER_CONTAINER_ID']
+          assert by['yandex_function_trigger.orchestrator_timer[0]']['values'].get('id')==os.environ['EXPECTED_TIMER_TRIGGER_ID']
+          print('M24_OBSERVABILITY_ROLES_ABSENT=PASS')
+          print('M24_OBSERVABILITY_PROTECTED_RUNTIMES_UNCHANGED=PASS')
+          PY
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless trigger get --id="$EXPECTED_TIMER_TRIGGER_ID" --format=json > "$RUNNER_TEMP/timer-after.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'timer-after.json').read_text())
+          assert d.get('id')==os.environ['EXPECTED_TIMER_TRIGGER_ID']
+          assert d.get('status')=='ACTIVE', d.get('status')
+          assert os.environ['EXPECTED_WORKER_CONTAINER_ID'] in json.dumps(d)
+          print('M24_TIMER_ACTIVE_AFTER_OBSERVABILITY_REVOKE=PASS')
+          PY
+
+      - name: Prove final zero drift with observability disabled
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color \
+            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
+            -var="source_commit_sha=${PRESERVE_MCP_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="m24_worker_image_url=${PRESERVE_WORKER_IMAGE_URL}" \
+            -var="m24_worker_source_sha=${PRESERVE_WORKER_SOURCE_SHA}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" \
+            -var="m24_observability_probe_enabled=false" > "$RUNNER_TEMP/final-plan.txt"
+          rc=$?
+          set -e
+          test "$rc" = 0 || { cat "$RUNNER_TEMP/final-plan.txt"; exit "$rc"; }
+          echo 'M24_OBSERVABILITY_DISABLED_ZERO_DRIFT=PASS'
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/state-before.json" "$RUNNER_TEMP/state-after.json" "$RUNNER_TEMP/protected-before.json" "$RUNNER_TEMP/timer-before.json" "$RUNNER_TEMP/timer-after.json" "$RUNNER_TEMP/revoke.tfplan" "$RUNNER_TEMP/revoke-plan.txt" "$RUNNER_TEMP/revoke-plan.json" "$RUNNER_TEMP/final-plan.txt"
