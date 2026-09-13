@@ -86,14 +86,17 @@ jobs:
           assert target==os.environ['WORKER_CONTAINER_ID'], target
           assert sa, 'trigger service account missing'
           b=json.loads((base/'bindings.json').read_text())
-          rows=b.get('access_bindings') or b.get('accessBindings') or []
+          rows=b if isinstance(b,list) else (b.get('access_bindings') or b.get('accessBindings') or [])
           ok=False
           for x in rows:
+              if not isinstance(x,dict):
+                  continue
               role=str(x.get('role_id') or x.get('roleId') or '')
               subject=x.get('subject') or {}
-              sid=str(subject.get('id') or '')
+              sid=str(subject.get('id') or '') if isinstance(subject,dict) else ''
               if role in {'serverless-containers.containerInvoker','serverless.containers.invoker'} and sid==sa:
                   ok=True
+          print(f'M24_CONTAINER_BINDING_COUNT={len(rows)}')
           print('M24_TRIGGER_CONTAINER_INVOKER_BINDING=' + ('PASS' if ok else 'FAIL'))
           assert ok, 'timer service account lacks container invoker binding'
           print(f'M24_TRIGGER_SERVICE_ACCOUNT_ID={sa}')
