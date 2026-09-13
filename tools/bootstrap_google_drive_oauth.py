@@ -21,12 +21,12 @@ import secrets
 import shutil
 import subprocess
 import sys
-import threading
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 import webbrowser
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
@@ -203,11 +203,10 @@ def newest_dispatch_run(after_epoch: float) -> dict[str, object]:
         for run in runs:
             created = str(run.get("createdAt", ""))
             try:
-                created_epoch = time.mktime(time.strptime(created, "%Y-%m-%dT%H:%M:%SZ"))
+                created_epoch = datetime.fromisoformat(created.replace("Z", "+00:00")).astimezone(timezone.utc).timestamp()
             except ValueError:
                 continue
-            # UTC/local conversion can vary; a generous window avoids false misses.
-            if created_epoch >= after_epoch - 300:
+            if created_epoch >= after_epoch - 10:
                 return run
         time.sleep(2)
     die("GitHub Actions run не появился в течение 90 секунд.")
