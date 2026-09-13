@@ -11,6 +11,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ARCHIVE_DRIVE_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+
 concurrency:
   group: marketplaces-card-monitor-test
   cancel-in-progress: false
@@ -146,6 +149,7 @@ jobs:
           timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/current-payload.json"
           BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/current-payload.json")"
           test -n "$BEARER"
+          jq -e '[.entries[].key] | index("google_drive_oauth_json") != null' "$RUNNER_TEMP/current-payload.json" >/dev/null
           echo "::add-mask::$BEARER"
           printf '%s' "$BEARER" > "$RUNNER_TEMP/mcp-bearer"
           chmod 600 "$RUNNER_TEMP/mcp-bearer"
@@ -157,6 +161,7 @@ jobs:
           IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:test-${SOURCE_SHA}"
           echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
           echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo 'google_drive_oauth_lockbox=RESOLVED'
 
       - name: Deploy Card Monitor-enabled runtime revision
         id: deploy
@@ -177,10 +182,11 @@ jobs:
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
             --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 600s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_oauth_json" \
             --secret "environment-variable=CARD_MONITOR_INGEST_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=card_monitor_ingest_token" \
             --format json --no-user-output > "$RUNNER_TEMP/card-monitor-revision.json"
           REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/card-monitor-revision.json")"
@@ -257,7 +263,7 @@ jobs:
                       return json.loads(line[5:].strip())
               return r.json()
           with httpx.Client(timeout=60,follow_redirects=True) as c:
-              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'card-monitor-acceptance','version':'1'}}})
+              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'card-monitor-acceptance','version':'2'}}})
               init=unpack(r); assert 'result' in init,init
               sid=r.headers.get('mcp-session-id')
               if sid: h['Mcp-Session-Id']=sid
@@ -276,12 +282,18 @@ jobs:
               archive=call('marketplace_archive_status',{'year':2026})
               assert archive.get('ok') is True,archive
               storage=archive.get('storage') or {}
-              assert storage.get('backend')=='yandex_object_storage',storage
+              assert storage.get('backend')=='google_drive_primary',storage
               assert storage.get('reachable') is True,storage
-              assert storage.get('bucket')==os.environ['ARCHIVE_BUCKET'],storage
+              assert storage.get('root_folder_id')==os.environ['ARCHIVE_DRIVE_ROOT_ID'],storage
+              assert storage.get('root_name')=='MCP архив базы данных',storage
+              queue_storage=storage.get('queue_and_staging') or {}
+              assert queue_storage.get('backend')=='yandex_object_storage',queue_storage
+              assert queue_storage.get('reachable') is True,queue_storage
+              assert queue_storage.get('bucket')==os.environ['ARCHIVE_BUCKET'],queue_storage
               print('CARD_MONITOR_MCP_TOOLS=PASS')
               print('CARD_MONITOR_REDIS_ROUNDTRIP=PASS')
-              print('ARCHIVE_OBJECT_STORAGE_AFTER_CARD_MONITOR=PASS')
+              print('ARCHIVE_GOOGLE_DRIVE_AFTER_CARD_MONITOR=PASS')
+              print('ARCHIVE_YANDEX_QUEUE_BACKUP_AFTER_CARD_MONITOR=PASS')
           PY
           echo 'CARD_MONITOR_CLOUD_ACCEPTANCE=PASS'
 

@@ -8,14 +8,20 @@ from mcp.server.fastmcp import FastMCP
 from core.system_map import ARCHITECTURE_VERSION, SYSTEM_INSTRUCTIONS, SYSTEM_MAP, register_system_map_tool
 
 
-def test_canonical_map_fixes_yandex_runtime_boundaries():
+def test_canonical_map_fixes_storage_boundaries():
     assert SYSTEM_MAP["status"] == "CANONICAL"
     assert SYSTEM_MAP["runtime"]["cloud"] == "Yandex Cloud only"
-    assert SYSTEM_MAP["storage_policy"]["primary_runtime_storage"] == "Yandex Object Storage"
-    assert "runtime service-account IAM token" in SYSTEM_MAP["storage_policy"]["archive_auth"]
-    assert SYSTEM_MAP["storage_policy"]["google_cloud"] == "not part of the runtime architecture"
-    assert "optional export/mirror only" in SYSTEM_MAP["storage_policy"]["google_drive"]
+    storage = SYSTEM_MAP["storage_policy"]
+    assert storage["primary_archive_storage"] == "Google Drive"
+    assert storage["google_drive_root"] == "MCP архив базы данных"
+    assert "Yandex Lockbox" in storage["google_drive_auth"]
+    assert "job state" in storage["yandex_object_storage"]
+    assert "backup" in storage["yandex_object_storage"]
+    assert "runtime service-account IAM token" in storage["yandex_archive_auth"]
+    assert "only Google Drive API" in storage["google_cloud"]
+    assert SYSTEM_MAP["archive_policy"]["canonical_source_of_truth"] == "Google Drive annual dataset CSV files plus reports registry"
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
+    assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["row_deduplication"] == "(reportId, rrdId)"
 
 
 def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
@@ -31,14 +37,17 @@ def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
 
 
 def test_server_instructions_contain_hard_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-14.v1"
+    assert ARCHITECTURE_VERSION == "2026-09-14.v2"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
+    assert "Google Drive" in SYSTEM_INSTRUCTIONS
     assert "Yandex Object Storage" in SYSTEM_INSTRUCTIONS
     assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
+    assert "Yandex Lockbox" in SYSTEM_INSTRUCTIONS
     assert "Google Cloud is not part" in SYSTEM_INSTRUCTIONS
     assert "MULTI-DATASET" in SYSTEM_INSTRUCTIONS
     assert "NOT authoritative for customer orders" in SYSTEM_INSTRUCTIONS
     assert "marketplace_metric_route" in SYSTEM_INSTRUCTIONS
+    assert "source of truth" in SYSTEM_INSTRUCTIONS
     assert "fail closed" in SYSTEM_INSTRUCTIONS
 
 
