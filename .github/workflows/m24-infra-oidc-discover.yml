@@ -1,0 +1,79 @@
+name: M24 Infra OIDC Discover
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m24-infra-oidc-discover.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  discover:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    env:
+      DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
+      EXPECTED_FEDERATION_ID: ajeccljd5pi9ive0i18u
+    steps:
+      - name: Mint masked read token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography >/dev/null
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          assert key['service_account_id']==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID']
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+900}, key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens',data=json.dumps({'jwt':signed}).encode(),headers={'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: token=json.loads(r.read())['iamToken']
+          print(f'::add-mask::{token}')
+          (Path(os.environ['RUNNER_TEMP'])/'iam-token').write_text(token)
+          print('READ_TOKEN=PASS')
+          PY
+
+      - name: Discover credential by service account and GitHub subject
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://iam.api.cloud.yandex.net/iam/v1/workload/federatedCredentials?serviceAccountId=${DEPLOYER_SERVICE_ACCOUNT_ID}&pageSize=1000" \
+            -o "$RUNNER_TEMP/credentials.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'credentials.json').read_text())
+          assert not d.get('nextPageToken')
+          all_items=d.get('federatedCredentials',[])
+          candidates=[x for x in all_items if x.get('serviceAccountId')==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID'] and x.get('externalSubjectId')==os.environ['EXPECTED_OIDC_SUBJECT']]
+          print(f'SERVICE_ACCOUNT_CREDENTIAL_COUNT={len(all_items)}')
+          print(f'GITHUB_SUBJECT_MATCH_COUNT={len(candidates)}')
+          for i,x in enumerate(candidates,1):
+              cid=x.get('id','')
+              fid=x.get('federationId','')
+              assert cid.startswith('aje') and fid.startswith('aje')
+              print(f'CANDIDATE_{i}_ID={cid}')
+              print(f'CANDIDATE_{i}_FEDERATION_ID={fid}')
+              print(f'CANDIDATE_{i}_EXPECTED_FEDERATION={str(fid==os.environ["EXPECTED_FEDERATION_ID"]).lower()}')
+          assert len(candidates)==1, f'expected exactly one GitHub-subject credential, got {len(candidates)}'
+          print('EXISTING_INFRA_OIDC_CREDENTIAL_DISCOVERY=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/credentials.json"
