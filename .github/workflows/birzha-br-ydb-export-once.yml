@@ -1,5 +1,6 @@
 name: BIRZHA BR YDB export once
 
+# rerun after Utf8 parameter fix
 on:
   push:
     branches: [main]
