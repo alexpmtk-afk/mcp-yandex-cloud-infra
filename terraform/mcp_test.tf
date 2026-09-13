@@ -44,12 +44,32 @@ resource "yandex_resourcemanager_folder_iam_member" "runtime_lockbox_viewer" {
   member    = "serviceAccount:${yandex_iam_service_account.runtime.id}"
 }
 
+resource "yandex_resourcemanager_folder_iam_member" "runtime_archive_storage_editor" {
+  folder_id = yandex_resourcemanager_folder.mcp_test.id
+  role      = "storage.editor"
+  member    = "serviceAccount:${yandex_iam_service_account.runtime.id}"
+}
+
 resource "yandex_lockbox_secret" "marketplace_credentials" {
   folder_id           = yandex_resourcemanager_folder.mcp_test.id
   name                = "marketplaces-mcp-api-credentials"
   description         = "TEST MCP marketplace credentials. Values are added out of band, never in Terraform."
   deletion_protection = true
   labels              = local.labels
+}
+
+# Authoritative shared file archive. The bucket is private and versioned so an
+# accidental annual-file overwrite remains recoverable. Runtime uses IAM-token
+# authentication only; no static S3 access key is created or injected.
+resource "yandex_storage_bucket" "marketplace_archive" {
+  folder_id               = yandex_resourcemanager_folder.mcp_test.id
+  bucket                  = "marketplaces-mcp-archive-${yandex_resourcemanager_folder.mcp_test.id}"
+  force_destroy           = false
+  disabled_statickey_auth = true
+
+  versioning {
+    enabled = true
+  }
 }
 
 # Terraform owns the stable container identity/foundation. Runtime revisions are
