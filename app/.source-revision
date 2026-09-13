@@ -1,5 +1,4 @@
-Source baseline: alexpmtk-afk/marketplaces-mcp-ru@5cfb3d80e8083ab2944c342bb65067d11e8f6be6
-Canonical archive/storage implementation synced from: alexpmtk-afk/marketplaces-mcp-ru@f562f7563efd7794eb0ddac33b00fcaac12d9ea5
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@f562f7563efd7794eb0ddac33b00fcaac12d9ea5
 Purpose: production TEST rollout of the central WB Finance Archive Layer on Yandex Object Storage while preserving the existing working WB/Ozon runtime.
 Architecture contract: Yandex Object Storage is authoritative shared archive storage; runtime access uses the Serverless Container service-account IAM token; Google Drive/Google Cloud are not runtime dependencies.
 Synced: 2026-09-13 after marketplaces-mcp-ru PR #28 full CI/security/dependency/supply-chain PASS.
