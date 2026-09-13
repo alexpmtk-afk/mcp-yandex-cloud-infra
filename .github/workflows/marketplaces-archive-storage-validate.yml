@@ -56,4 +56,7 @@ jobs:
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/deploy-mcp-test.yml
           grep -q 'yandex_storage_bucket.marketplace_archive' .github/workflows/deploy-mcp-test.yml
+          grep -q 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf
+          grep -A5 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf | grep -q 'role.*=.*"storage.editor"'
+          grep -A20 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'deployer_archive_storage_editor'
           echo 'ARCHIVE_RUNTIME_VALIDATE=PASS'
