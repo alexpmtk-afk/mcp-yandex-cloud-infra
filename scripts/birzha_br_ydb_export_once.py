@@ -36,7 +36,7 @@ def _get(row, key: str):
 
 
 def _utf8(value: str):
-    return value.encode("utf-8") if isinstance(value, str) else value
+    return (value, ydb.PrimitiveType.Utf8)
 
 
 def _execute(pool, query: str, params: dict[str, object]):
