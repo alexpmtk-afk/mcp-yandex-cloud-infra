@@ -117,7 +117,7 @@ jobs:
             -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
             -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
             -var="m24_worker_image_url=${M24_WORKER_IMAGE}" \
-            -var="m24_worker_source_commit_sha=${M24_WORKER_SOURCE_SHA}" \
+            -var="m24_worker_source_sha=${M24_WORKER_SOURCE_SHA}" \
             -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/m24-worker-plan.txt"
           rc=$?
           set -e
@@ -169,11 +169,12 @@ jobs:
           env=image.get('environment') or {}
           assert image.get('url')==os.environ['M24_WORKER_IMAGE']
           assert env.get('BIRZHA_SOURCE_COMMIT')==os.environ['M24_WORKER_SOURCE_SHA']
-          assert env.get('BIRZHA_ORCHESTRATOR_WORKER')=='1'
-          assert env.get('BIRZHA_ORCHESTRATOR_WORKER_ID')=='m24-timer-worker'
+          assert env.get('BIRZHA_ORCHESTRATOR_WORKER')=='true'
+          assert env.get('BIRZHA_STATE_BACKEND')=='ydb'
           assert env.get('YDB_CONNECTION_STRING','').startswith('grpcs://')
-          assert (image.get('command') or [])==['python']
-          assert (image.get('args') or [])==['-m','birzha.worker']
+          assert (image.get('command') or [])==['python','-m','birzha.worker']
+          assert worker.get('concurrency')==1
+          assert worker.get('execution_timeout')=='120s'
 
           trigger=by_addr['yandex_function_trigger.orchestrator_timer[0]']['values']
           timer=(trigger.get('timer') or [])[0]
@@ -194,7 +195,7 @@ jobs:
             -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
             -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
             -var="m24_worker_image_url=${M24_WORKER_IMAGE}" \
-            -var="m24_worker_source_commit_sha=${M24_WORKER_SOURCE_SHA}" \
+            -var="m24_worker_source_sha=${M24_WORKER_SOURCE_SHA}" \
             -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/final-plan.txt"
           rc=$?
           set -e
