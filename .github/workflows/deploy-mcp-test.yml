@@ -171,9 +171,9 @@ jobs:
           set -euo pipefail
           timeout 180s yc serverless container revision deploy \
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
-            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 60s --concurrency 8 \
+            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 600s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
@@ -299,7 +299,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'5'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'6'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               print('initialize=PASS', flush=True)
@@ -326,9 +326,17 @@ jobs:
 
               tools = rpc('tools/list')['tools']
               names = {x['name'] for x in tools}
-              need = {'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status'}
+              need = {
+                  'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status',
+                  'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query'
+              }
               assert need <= names, sorted(need-names)
               print(f'tools_list=PASS count={len(names)}', flush=True)
+
+              archive = call('marketplace_archive_status', {'year':datetime.date.today().year})
+              assert archive.get('ok') is False, archive
+              assert archive.get('error') == 'archive_storage_not_configured', archive
+              print('ARCHIVE_FAIL_CLOSED=PASS', flush=True)
 
               wb = call('wb_get_sales', {'date_from':datetime.date.today().isoformat(),'flag':0})
               wb_state = live_ok_or_rate_limited('WB', wb)
