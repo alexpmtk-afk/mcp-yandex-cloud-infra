@@ -104,13 +104,13 @@ jobs:
           print('CURRENT_RUNTIME_PRESERVATION=PASS')
           PY
 
-      - name: Plan only OIDC bootstrap additions
+      - name: Plan only OIDC bootstrap additions without forbidden refresh
         shell: bash
         run: |
           set -euo pipefail
           export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
           set +e
-          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/bootstrap.tfplan" \
+          terraform -chdir="$TF_DIR" plan -refresh=false -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/bootstrap.tfplan" \
             -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
             -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
             -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
@@ -127,6 +127,7 @@ jobs:
           expected={
             'yandex_iam_service_account.orchestrator_timer',
             'yandex_iam_service_account_iam_member.terraform_orchestrator_timer_user',
+            'yandex_iam_service_account_iam_member.terraform_historical_preparer_federated_credential_viewer',
             'yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap[0]',
             'yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap[0]',
             'yandex_iam_workload_identity_federated_credential.github_infra_deployer',
@@ -147,6 +148,19 @@ jobs:
           set -euo pipefail
           export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
           terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/bootstrap.tfplan"
+
+      - name: Prove normal Terraform refresh after viewer bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
+          terraform -chdir="$TF_DIR" plan -refresh-only -input=false -no-color \
+            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
+            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="m24_infra_oidc_bootstrap_enabled=true" >/dev/null
+          echo 'NORMAL_REFRESH_AFTER_VIEWER=PASS'
 
       - name: Prove GitHub OIDC to Terraform deployer
         shell: bash
