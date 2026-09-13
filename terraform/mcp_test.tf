@@ -5,6 +5,15 @@ locals {
     environment = "test"
     managed_by  = "terraform"
   }
+
+  # The CI key file is ephemeral and already supplied to the provider. Resolve
+  # only its non-secret service-account ID so Terraform can manage the minimum
+  # Object Storage role required to create/refresh the archive bucket.
+  terraform_deployer_service_account_id = var.yc_service_account_key_file == null ? null : try(
+    jsondecode(file(var.yc_service_account_key_file)).service_account_id,
+    jsondecode(file(var.yc_service_account_key_file)).serviceAccountId,
+    null,
+  )
 }
 
 resource "yandex_resourcemanager_folder" "mcp_test" {
@@ -50,6 +59,15 @@ resource "yandex_resourcemanager_folder_iam_member" "runtime_archive_storage_edi
   member    = "serviceAccount:${yandex_iam_service_account.runtime.id}"
 }
 
+# Terraform itself also needs Object Storage lifecycle access. Keep this as a
+# narrow service-specific role instead of storage.admin/editor at cloud scope.
+resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor" {
+  count     = local.terraform_deployer_service_account_id == null ? 0 : 1
+  folder_id = yandex_resourcemanager_folder.mcp_test.id
+  role      = "storage.editor"
+  member    = "serviceAccount:${local.terraform_deployer_service_account_id}"
+}
+
 resource "yandex_lockbox_secret" "marketplace_credentials" {
   folder_id           = yandex_resourcemanager_folder.mcp_test.id
   name                = "marketplaces-mcp-api-credentials"
@@ -70,6 +88,10 @@ resource "yandex_storage_bucket" "marketplace_archive" {
   versioning {
     enabled = true
   }
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.deployer_archive_storage_editor,
+  ]
 }
 
 # Terraform owns the stable container identity/foundation. Runtime revisions are
