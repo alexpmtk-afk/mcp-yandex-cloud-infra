@@ -17,7 +17,8 @@ jobs:
     env:
       DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
       EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
-      EXPECTED_FEDERATION_ID: ajeccljd5pi9ive0i18u
+      EXPECTED_ISSUER: https://token.actions.githubusercontent.com
+      EXPECTED_AUDIENCE: https://github.com/alexpmtk-afk
     steps:
       - name: Mint masked read token
         shell: bash
@@ -44,7 +45,7 @@ jobs:
           print('READ_TOKEN=PASS')
           PY
 
-      - name: Discover credential by service account and GitHub subject
+      - name: Discover unique credential by service account and GitHub subject
         shell: bash
         run: |
           set -euo pipefail
@@ -60,20 +61,40 @@ jobs:
           assert not d.get('nextPageToken')
           all_items=d.get('federatedCredentials',[])
           candidates=[x for x in all_items if x.get('serviceAccountId')==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID'] and x.get('externalSubjectId')==os.environ['EXPECTED_OIDC_SUBJECT']]
-          print(f'SERVICE_ACCOUNT_CREDENTIAL_COUNT={len(all_items)}')
-          print(f'GITHUB_SUBJECT_MATCH_COUNT={len(candidates)}')
-          for i,x in enumerate(candidates,1):
-              cid=x.get('id','')
-              fid=x.get('federationId','')
-              assert cid.startswith('aje') and fid.startswith('aje')
-              print(f'CANDIDATE_{i}_ID={cid}')
-              print(f'CANDIDATE_{i}_FEDERATION_ID={fid}')
-              print(f'CANDIDATE_{i}_EXPECTED_FEDERATION={str(fid==os.environ["EXPECTED_FEDERATION_ID"]).lower()}')
           assert len(candidates)==1, f'expected exactly one GitHub-subject credential, got {len(candidates)}'
+          x=candidates[0]
+          cid=x.get('id',''); fid=x.get('federationId','')
+          assert cid.startswith('aje') and fid.startswith('aje')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'INFRA_OIDC_CREDENTIAL_ID={cid}\n')
+              f.write(f'INFRA_OIDC_FEDERATION_ID={fid}\n')
           print('EXISTING_INFRA_OIDC_CREDENTIAL_DISCOVERY=PASS')
+          print(f'INFRA_OIDC_CREDENTIAL_ID={cid}')
+          print(f'INFRA_OIDC_FEDERATION_ID={fid}')
+          PY
+
+      - name: Verify actual federation is enabled GitHub OIDC for this repository audience
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${TOKEN}" \
+            "https://iam.api.cloud.yandex.net/iam/v1/workload/oidc/federations/${INFRA_OIDC_FEDERATION_ID}" \
+            -o "$RUNNER_TEMP/federation.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          x=json.loads((Path(os.environ['RUNNER_TEMP'])/'federation.json').read_text())
+          assert x.get('id')==os.environ['INFRA_OIDC_FEDERATION_ID']
+          assert x.get('enabled') is True
+          assert x.get('issuer')==os.environ['EXPECTED_ISSUER'], x.get('issuer')
+          assert os.environ['EXPECTED_AUDIENCE'] in (x.get('audiences') or []), x.get('audiences')
+          print('ACTUAL_INFRA_OIDC_FEDERATION=PASS')
+          print(f'FEDERATION_NAME={x.get("name","")}')
           PY
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/credentials.json"
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/credentials.json" "$RUNNER_TEMP/federation.json"
