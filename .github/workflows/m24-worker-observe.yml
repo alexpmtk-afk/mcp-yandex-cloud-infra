@@ -1,0 +1,147 @@
+name: M24 Worker Observe
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m24-worker-observe.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  observe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    env:
+      DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+      OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+      FOLDER_ID: b1g00gqb66tbnfoumnkv
+      WORKER_CONTAINER_ID: bbamdg0po6fkukhod2e9
+    steps:
+      - name: Mint Yandex IAM token through GitHub OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
+          R="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          python - "$J" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('environment')=='test'
+          assert c.get('ref')=='refs/heads/main'
+          print('M24_OBSERVE_OIDC_CLAIMS=PASS')
+          PY
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          test -n "$T"
+          echo "::add-mask::$T"
+          printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
+          echo 'M24_OBSERVE_OIDC_EXCHANGE=PASS'
+
+      - name: Install official Yandex Cloud CLI without shell profile changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tar.gz"
+          tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          "$RUNNER_TEMP/yc/yc" version
+          echo 'YC_CLI_INSTALL=PASS'
+
+      - name: Read worker execution logs without printing raw payloads
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          set +e
+          "$RUNNER_TEMP/yc/yc" logging read \
+            --resource-ids="$WORKER_CONTAINER_ID" \
+            --since=30m \
+            --limit=1000 \
+            --format=json \
+            --folder-id="$FOLDER_ID" \
+            --token="$TOKEN" \
+            > "$RUNNER_TEMP/worker-logs.json" 2> "$RUNNER_TEMP/logging-error.txt"
+          rc=$?
+          set -e
+          if [[ "$rc" -ne 0 ]]; then
+            echo "M24_WORKER_LOG_READ=FAIL"
+            python - <<'PY'
+          from pathlib import Path
+          s=Path('/home/runner/work/_temp/logging-error.txt') if False else Path(__import__('os').environ['RUNNER_TEMP'])/'logging-error.txt'
+          text=s.read_text(errors='replace') if s.exists() else ''
+          low=text.lower()
+          if 'permission' in low or 'denied' in low or '403' in low:
+              print('M24_WORKER_LOG_READ_REASON=PERMISSION_DENIED')
+          elif 'not found' in low or '404' in low:
+              print('M24_WORKER_LOG_READ_REASON=NOT_FOUND')
+          else:
+              print('M24_WORKER_LOG_READ_REASON=OTHER')
+          PY
+            exit "$rc"
+          fi
+          echo 'M24_WORKER_LOG_READ=PASS'
+
+      - name: Prove timer-to-worker invocation and safe no-work cycle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, re
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'worker-logs.json'
+          data=json.loads(p.read_text())
+          if isinstance(data, dict):
+              entries=data.get('entries') or data.get('records') or data.get('result') or []
+          else:
+              entries=data
+          assert isinstance(entries,list)
+          messages=[]
+          levels=[]
+          for e in entries:
+              if not isinstance(e,dict):
+                  continue
+              msg=str(e.get('message',''))
+              jp=e.get('json_payload') or e.get('jsonPayload') or {}
+              if isinstance(jp,dict):
+                  # Include values only in-memory for marker detection; never print them raw.
+                  msg += ' ' + ' '.join(str(v) for v in jp.values())
+              messages.append(msg)
+              levels.append(str(e.get('level','')))
+          text='\n'.join(messages)
+          starts=len(re.findall(r'\bSTART\b',text,re.I))
+          ends=len(re.findall(r'\bEND\b',text,re.I))
+          exit0=len(re.findall(r'exited with 0|exit(?:ed)? code[:= ]+0',text,re.I))
+          no_work=text.count('NO_SAFE_RUNNABLE_WORK')
+          explicit_errors=len(re.findall(r'\b(ERROR|FATAL|Traceback|PermissionDenied|Unauthenticated)\b',text,re.I))
+          print(f'M24_WORKER_LOG_RECORDS={len(entries)}')
+          print(f'M24_WORKER_START_MARKERS={starts}')
+          print(f'M24_WORKER_END_MARKERS={ends}')
+          print(f'M24_WORKER_EXIT0_MARKERS={exit0}')
+          print(f'M24_WORKER_NO_SAFE_WORK_MARKERS={no_work}')
+          print(f'M24_WORKER_ERROR_MARKERS={explicit_errors}')
+          assert len(entries)>0, 'no worker log records found in 30m'
+          assert starts>0, 'no container START marker'
+          assert no_work>0, 'worker did not complete YDB scan to NO_SAFE_RUNNABLE_WORK'
+          assert explicit_errors==0, 'worker logs contain explicit error markers'
+          assert exit0>0 or ends>0, 'no successful completion marker'
+          print('M24_TIMER_TO_WORKER_NO_WORK_CYCLE=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/worker-logs.json" "$RUNNER_TEMP/logging-error.txt"
