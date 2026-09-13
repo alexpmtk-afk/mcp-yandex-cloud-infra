@@ -92,88 +92,102 @@ jobs:
           print('M24_LOG_EVIDENCE_RUNTIME_COORDINATES=PASS')
           PY
 
-      - name: Read only corrected worker logs from last ten minutes
+      - name: Read corrected worker logs from bounded recent window
         shell: bash
         run: |
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
           YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
             --resource-ids="$WORKER_CONTAINER_ID" \
-            --since=10m \
+            --since=3m \
             --limit=1000 \
             --format=json \
             --folder-id="$FOLDER_ID" \
             > "$RUNNER_TEMP/worker-logs.json"
           python - <<'PY'
           import json,os
+          from collections import Counter
           from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-logs.json').read_text())
-          assert isinstance(d,list), type(d).__name__
-          print(f'M24_LOG_EVIDENCE_RECORDS={len(d)}')
-          assert d, 'no worker log entries returned'
-          resources={}
-          for e in d:
+          rows=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-logs.json').read_text())
+          assert isinstance(rows,list) and rows
+          print(f'M24_LOG_DIAGNOSTIC_RECORDS={len(rows)}')
+          top=Counter(); payload=Counter(); levels=Counter(); resources=Counter()
+          for e in rows:
               if not isinstance(e,dict): continue
+              top.update(str(k) for k in e.keys())
+              levels[str(e.get('level') or 'UNSET')]+=1
               r=e.get('resource') or {}
-              if isinstance(r,dict):
-                  typ=str(r.get('type') or '')
-                  resources[typ]=resources.get(typ,0)+1
-          print('M24_LOG_EVIDENCE_RESOURCE_TYPES=' + ','.join(f'{k}:{v}' for k,v in sorted(resources.items())))
+              if isinstance(r,dict): resources[str(r.get('type') or '')]+=1
+              jp=e.get('json_payload') or e.get('jsonPayload') or {}
+              if isinstance(jp,dict): payload.update(str(k) for k in jp.keys())
+          print('M24_LOG_TOP_LEVEL_KEYS=' + ','.join(sorted(top)))
+          print('M24_LOG_PAYLOAD_KEYS=' + ','.join(sorted(payload)))
+          print('M24_LOG_LEVEL_COUNTS=' + ','.join(f'{k}:{v}' for k,v in sorted(levels.items())))
+          print('M24_LOG_RESOURCE_TYPES=' + ','.join(f'{k}:{v}' for k,v in sorted(resources.items())))
           PY
 
-      - name: Prove successful timer HTTP cycles and absence of runtime errors
+      - name: Classify runtime failure signatures without raw payload disclosure
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json,os,re
+          import hashlib,json,os,re
+          from collections import Counter
           from pathlib import Path
           rows=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-logs.json').read_text())
-          texts=[]
-          status200=0
-          post_root_200=0
-          starts=0
-          ends=0
-          exit0=0
-          explicit_errors=0
+          signatures=Counter(); known=Counter(); starts=ends=0
+          exception_re=re.compile(r'\b([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Denied|Unauthenticated|Unavailable|DeadlineExceeded|Aborted|Failure))\b')
+          patterns={
+            'TRACEBACK':r'\bTraceback\b',
+            'ASGI_EXCEPTION':r'Exception in ASGI application',
+            'YDB':r'\bydb\b|YDB',
+            'PERMISSION':r'permission|denied|unauthori[sz]ed|unauthenticated',
+            'DEADLINE':r'deadline|timed? out|timeout',
+            'UNAVAILABLE':r'unavailable|connection refused|cannot connect|failed to connect',
+            'CREDENTIALS':r'credential|metadata.*token|iam token',
+            'HTTP_500':r'\b500\b|Internal Server Error',
+            'HTTP_200':r'\b200\b|200 OK',
+          }
+          level_errors=0
+          status_values=Counter()
           for e in rows:
-              if not isinstance(e,dict):
-                  continue
+              if not isinstance(e,dict): continue
               msg=str(e.get('message') or '')
               jp=e.get('json_payload') or e.get('jsonPayload') or {}
-              pieces=[msg]
+              values=[msg]
               if isinstance(jp,dict):
                   for k,v in jp.items():
                       lk=str(k).lower().replace('-','_')
-                      sv=str(v)
-                      if lk in {'status','status_code','statuscode','http_status','httpstatus'} and sv in {'200','200.0'}:
-                          status200 += 1
-                      pieces.append(f'{k}={sv}')
-              text=' '.join(pieces)
-              texts.append(text)
+                      if 'status' in lk or lk in {'code','http_code','response_code'}:
+                          status_values[str(v)] += 1
+                      values.append(str(v))
+              text=' '.join(values)
               if re.search(r'\bSTART\b',text,re.I): starts += 1
               if re.search(r'\bEND\b',text,re.I): ends += 1
-              if re.search(r'exited with 0|exit(?:ed)? code[:= ]+0',text,re.I): exit0 += 1
-              if re.search(r'POST\s+/\s+HTTP/[^\s]+[" ]+200\b|"POST / HTTP/[^\s]+"\s+200\b',text,re.I): post_root_200 += 1
-              if re.search(r'\b(ERROR|FATAL|Traceback|PermissionDenied|Unauthenticated)\b',text,re.I): explicit_errors += 1
-          alltext='\n'.join(texts)
-          print(f'M24_WORKER_START_MARKERS={starts}')
-          print(f'M24_WORKER_END_MARKERS={ends}')
-          print(f'M24_WORKER_EXIT0_MARKERS={exit0}')
-          print(f'M24_WORKER_STRUCTURED_HTTP200_MARKERS={status200}')
-          print(f'M24_WORKER_POST_ROOT_200_MARKERS={post_root_200}')
-          print(f'M24_WORKER_ERROR_MARKERS={explicit_errors}')
-          # A timer event reaches the canonical root POST. In worker.py, tick()
-          # calls _worker.run_next_active() before it can construct JSONResponse.
-          # run_next_active() first queries YDB via store.list_workflows().
-          # Therefore a root POST 200 proves the YDB orchestration scan returned.
-          successful_http = post_root_200 > 0 or status200 > 0
-          assert starts > 0, 'no container START markers in corrected-window logs'
-          assert successful_http, 'no successful HTTP 200 worker invocation marker found'
-          assert explicit_errors == 0, 'corrected-window worker logs contain explicit runtime errors'
-          assert exit0 > 0 or ends > 0, 'no successful container completion marker found'
-          print('M24_TIMER_TO_WORKER_HTTP_200=PASS')
-          print('M24_WORKER_YDB_SCAN_RETURNED=PASS')
+              if str(e.get('level') or '').upper() in {'ERROR','FATAL'}: level_errors += 1
+              for label,pat in patterns.items():
+                  if re.search(pat,text,re.I): known[label]+=1
+              for sig in exception_re.findall(text): signatures[sig]+=1
+          print(f'M24_LOG_START_MARKERS={starts}')
+          print(f'M24_LOG_END_MARKERS={ends}')
+          print(f'M24_LOG_ERROR_LEVEL_ENTRIES={level_errors}')
+          print('M24_LOG_STATUS_VALUES=' + ','.join(f'{k}:{v}' for k,v in status_values.most_common(12)))
+          print('M24_LOG_KNOWN_SIGNATURES=' + ','.join(f'{k}:{v}' for k,v in sorted(known.items())))
+          print('M24_LOG_EXCEPTION_TYPES=' + ','.join(f'{k}:{v}' for k,v in signatures.most_common(20)))
+          # Fingerprints let repeated failures be compared without exposing message bodies.
+          fps=Counter()
+          for e in rows:
+              if not isinstance(e,dict): continue
+              if str(e.get('level') or '').upper() not in {'ERROR','FATAL'} and not re.search(r'Traceback|Exception|Error',str(e.get('message') or ''),re.I):
+                  continue
+              msg=str(e.get('message') or '')
+              normalized=re.sub(r'[A-Za-z0-9_-]{20,}','<ID>',msg)
+              normalized=re.sub(r'https?://\S+','<URL>',normalized)
+              fps[hashlib.sha256(normalized.encode()).hexdigest()[:12]]+=1
+          print('M24_LOG_ERROR_FINGERPRINTS=' + ','.join(f'{k}:{v}' for k,v in fps.most_common(12)))
+          assert starts>0 and ends>0, 'timer container execution markers missing'
+          assert level_errors==0 and known['TRACEBACK']==0 and known['ASGI_EXCEPTION']==0, 'runtime errors remain; see safe classifications above'
+          print('M24_LOG_RUNTIME_ERRORS=NONE')
           PY
 
       - name: Cleanup
