@@ -67,13 +67,12 @@ jobs:
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
           set +e
-          "$RUNNER_TEMP/yc/yc" logging read \
+          YC_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
             --resource-ids="$WORKER_CONTAINER_ID" \
             --since=30m \
             --limit=1000 \
             --format=json \
             --folder-id="$FOLDER_ID" \
-            --token="$TOKEN" \
             > "$RUNNER_TEMP/worker-logs.json" 2> "$RUNNER_TEMP/logging-error.txt"
           rc=$?
           set -e
