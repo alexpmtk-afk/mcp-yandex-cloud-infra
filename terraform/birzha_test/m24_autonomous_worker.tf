@@ -48,10 +48,10 @@ resource "yandex_serverless_container" "orchestrator_worker" {
     url     = var.m24_worker_image_url
     command = ["python", "-m", "birzha.worker"]
     environment = {
-      BIRZHA_STATE_BACKEND        = "ydb"
-      BIRZHA_ORCHESTRATOR_WORKER  = "true"
-      BIRZHA_SOURCE_COMMIT        = var.m24_worker_source_sha
-      YDB_CONNECTION_STRING       = yandex_ydb_database_serverless.state.ydb_full_endpoint
+      BIRZHA_STATE_BACKEND       = "ydb"
+      BIRZHA_ORCHESTRATOR_WORKER = "true"
+      BIRZHA_SOURCE_COMMIT       = var.m24_worker_source_sha
+      YDB_CONNECTION_STRING      = yandex_ydb_database_serverless.state.ydb_full_endpoint
     }
   }
 
