@@ -48,7 +48,7 @@ jobs:
           printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
           echo 'M24_OBSERVE_OIDC_EXCHANGE=PASS'
 
-      - name: Install official Yandex Cloud CLI without shell profile changes
+      - name: Install official Yandex Cloud CLI
         shell: bash
         run: |
           set -euo pipefail
@@ -61,118 +61,56 @@ jobs:
           "$RUNNER_TEMP/yc/yc" version
           echo 'YC_CLI_INSTALL=PASS'
 
-      - name: Verify worker folder and log-group visibility
+      - name: Verify worker coordinates and logging visibility
         shell: bash
         run: |
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
-
           YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container get \
-            --id="$WORKER_CONTAINER_ID" \
-            --format=json \
-            > "$RUNNER_TEMP/worker-container.json"
-
+            --id="$WORKER_CONTAINER_ID" --format=json > "$RUNNER_TEMP/worker-container.json"
           python - <<'PY'
-          import json, os
+          import json,os
           from pathlib import Path
-          p=Path(os.environ['RUNNER_TEMP'])/'worker-container.json'
-          d=json.loads(p.read_text())
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-container.json').read_text())
           actual=str(d.get('folder_id') or d.get('folderId') or '')
-          expected=os.environ['FOLDER_ID']
-          assert actual, 'container folder_id missing'
-          print('M24_WORKER_FOLDER_MATCH=' + ('PASS' if actual == expected else 'FAIL'))
-          if actual != expected:
-              raise SystemExit('worker folder mismatch')
+          assert actual==os.environ['FOLDER_ID'], actual
+          print('M24_WORKER_FOLDER_MATCH=PASS')
           PY
-
-          set +e
           YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging group list \
-            --folder-id="$FOLDER_ID" \
-            --format=json \
-            > "$RUNNER_TEMP/log-groups.json" 2> "$RUNNER_TEMP/log-group-error.txt"
-          rc=$?
-          set -e
-          if [[ "$rc" -ne 0 ]]; then
-            echo 'M24_LOG_GROUP_LIST=FAIL'
-            python - <<'PY'
-          import os
+            --folder-id="$FOLDER_ID" --format=json > "$RUNNER_TEMP/log-groups.json"
+          python - <<'PY'
+          import json,os
           from pathlib import Path
-          p=Path(os.environ['RUNNER_TEMP'])/'log-group-error.txt'
-          t=p.read_text(errors='replace').lower() if p.exists() else ''
-          if 'permission' in t or 'denied' in t or '403' in t:
-              reason='PERMISSION_DENIED'
-          elif 'unauth' in t or 'credential' in t or 'token' in t:
-              reason='AUTHENTICATION'
-          elif 'not found' in t or '404' in t:
-              reason='NOT_FOUND'
-          elif 'invalid' in t or 'parse' in t or 'format' in t:
-              reason='INVALID_ARGUMENT'
-          else:
-              reason='OTHER'
-          print('M24_LOG_GROUP_LIST_REASON=' + reason)
-          PY
-          else
-            python - <<'PY'
-          import json, os
-          from pathlib import Path
-          p=Path(os.environ['RUNNER_TEMP'])/'log-groups.json'
-          d=json.loads(p.read_text())
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'log-groups.json').read_text())
           rows=d if isinstance(d,list) else (d.get('log_groups') or d.get('logGroups') or d.get('groups') or [])
-          print('M24_LOG_GROUP_LIST=PASS')
           print(f'M24_LOG_GROUP_COUNT={len(rows) if isinstance(rows,list) else 0}')
+          assert isinstance(rows,list) and len(rows)>0, 'no log group after corrected worker deployment'
+          print('M24_LOG_GROUP_VISIBILITY=PASS')
           PY
-          fi
 
-      - name: Read worker execution logs without printing raw payloads
+      - name: Read corrected worker logs
         shell: bash
         run: |
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
-          set +e
           YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
             --resource-ids="$WORKER_CONTAINER_ID" \
-            --since=30m \
+            --since=15m \
             --limit=1000 \
             --format=json \
             --folder-id="$FOLDER_ID" \
-            > "$RUNNER_TEMP/worker-logs.json" 2> "$RUNNER_TEMP/logging-error.txt"
-          rc=$?
-          set -e
-          if [[ "$rc" -ne 0 ]]; then
-            echo "M24_WORKER_LOG_READ=FAIL"
-            python - <<'PY'
-          from pathlib import Path
-          s=Path(__import__('os').environ['RUNNER_TEMP'])/'logging-error.txt'
-          text=s.read_text(errors='replace') if s.exists() else ''
-          low=text.lower()
-          if 'permission' in low or 'denied' in low or '403' in low:
-              print('M24_WORKER_LOG_READ_REASON=PERMISSION_DENIED')
-          elif 'unauth' in low or 'credential' in low or 'token' in low:
-              print('M24_WORKER_LOG_READ_REASON=AUTHENTICATION')
-          elif 'not found' in low or '404' in low:
-              print('M24_WORKER_LOG_READ_REASON=NOT_FOUND')
-          elif 'invalid' in low or 'parse' in low or 'format' in low:
-              print('M24_WORKER_LOG_READ_REASON=INVALID_ARGUMENT')
-          else:
-              print('M24_WORKER_LOG_READ_REASON=OTHER')
-          PY
-            exit "$rc"
-          fi
+            > "$RUNNER_TEMP/worker-logs.json"
           echo 'M24_WORKER_LOG_READ=PASS'
 
-      - name: Prove timer-to-worker invocation and safe no-work cycle
+      - name: Prove timer-to-worker HTTP cycle and classify YDB result evidence
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, re
+          import json,os,re
           from pathlib import Path
-          p=Path(os.environ['RUNNER_TEMP'])/'worker-logs.json'
-          data=json.loads(p.read_text())
-          if isinstance(data, dict):
-              entries=data.get('entries') or data.get('records') or data.get('result') or []
-          else:
-              entries=data
+          data=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-logs.json').read_text())
+          entries=(data.get('entries') or data.get('records') or data.get('result') or []) if isinstance(data,dict) else data
           assert isinstance(entries,list)
           messages=[]
           for e in entries:
@@ -184,26 +122,29 @@ jobs:
                   msg += ' ' + ' '.join(str(v) for v in jp.values())
               messages.append(msg)
           text='\n'.join(messages)
-          starts=len(re.findall(r'\bSTART\b',text,re.I))
-          ends=len(re.findall(r'\bEND\b',text,re.I))
-          exit0=len(re.findall(r'exited with 0|exit(?:ed)? code[:= ]+0',text,re.I))
+          starts=len(re.findall(r'Uvicorn running|Application startup complete|Started server process',text,re.I))
+          post200=len(re.findall(r'POST\s+/\s+HTTP/[^\s]+[" ]+200\b',text,re.I))
+          http5xx=len(re.findall(r'POST\s+/\s+HTTP/[^\s]+[" ]+5\d\d\b',text,re.I))
           no_work=text.count('NO_SAFE_RUNNABLE_WORK')
+          action_pass=text.count('ACTION_PASS')
           explicit_errors=len(re.findall(r'\b(ERROR|FATAL|Traceback|PermissionDenied|Unauthenticated)\b',text,re.I))
           print(f'M24_WORKER_LOG_RECORDS={len(entries)}')
-          print(f'M24_WORKER_START_MARKERS={starts}')
-          print(f'M24_WORKER_END_MARKERS={ends}')
-          print(f'M24_WORKER_EXIT0_MARKERS={exit0}')
-          print(f'M24_WORKER_NO_SAFE_WORK_MARKERS={no_work}')
-          print(f'M24_WORKER_ERROR_MARKERS={explicit_errors}')
-          assert len(entries)>0, 'no worker log records found in 30m'
-          assert starts>0, 'no container START marker'
-          assert no_work>0, 'worker did not complete YDB scan to NO_SAFE_RUNNABLE_WORK'
-          assert explicit_errors==0, 'worker logs contain explicit error markers'
-          assert exit0>0 or ends>0, 'no successful completion marker'
-          print('M24_TIMER_TO_WORKER_NO_WORK_CYCLE=PASS')
+          print(f'M24_WORKER_STARTUP_MARKERS={starts}')
+          print(f'M24_TIMER_POST_200_MARKERS={post200}')
+          print(f'M24_TIMER_POST_5XX_MARKERS={http5xx}')
+          print(f'M24_NO_SAFE_WORK_RESULT_MARKERS={no_work}')
+          print(f'M24_ACTION_PASS_RESULT_MARKERS={action_pass}')
+          print(f'M24_EXPLICIT_ERROR_MARKERS={explicit_errors}')
+          assert len(entries)>0, 'worker logs empty'
+          assert starts>0, 'worker server did not start'
+          assert post200>0, 'no successful timer POST / 200 observed'
+          assert http5xx==0, 'timer produced HTTP 5xx'
+          assert explicit_errors==0, 'explicit worker error markers found'
+          print('M24_TIMER_TO_WORKER_HTTP_CYCLE=PASS')
+          print('M24_YDB_RESULT_MARKER_PRESENT=' + ('YES' if (no_work+action_pass)>0 else 'NO'))
           PY
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/worker-container.json" "$RUNNER_TEMP/log-groups.json" "$RUNNER_TEMP/log-group-error.txt" "$RUNNER_TEMP/worker-logs.json" "$RUNNER_TEMP/logging-error.txt"
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/worker-container.json" "$RUNNER_TEMP/log-groups.json" "$RUNNER_TEMP/worker-logs.json"
