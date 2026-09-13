@@ -1,3 +1,4 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@a80e803c80d5bb16a61f871a4cc8c1424cbecc62
-Purpose: reproducible TEST MCP runtime image build; includes current WB Finance list/by-reportId typed tools with explicit cabinet routing for Archive Layer.
-Synced: 2026-09-13 after PR #22 CI/security/dependency/supply-chain PASS.
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@5cfb3d80e8083ab2944c342bb65067d11e8f6be6
+Purpose: production TEST rollout of the central WB Finance Archive Layer. The vendored runtime keeps the current working Finance MCP and adds the Archive Layer files/registration from app main; YDB/ORDERS rollout remains intentionally separate.
+Drive root: MCP архив базы данных / 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+Synced: 2026-09-13 after marketplaces-mcp-ru PR #26 full CI/security/dependency/supply-chain PASS.
