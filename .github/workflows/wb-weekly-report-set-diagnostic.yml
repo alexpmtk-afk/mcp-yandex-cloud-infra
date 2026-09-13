@@ -1,0 +1,126 @@
+name: WB Weekly Report Set Diagnostic
+
+on:
+  push:
+    branches:
+      - diag/wb-weekly-report-set-2026-09-13
+    paths:
+      - .github/workflows/wb-weekly-report-set-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect-weekly-set:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget -q --timeout=30 --tries=3 -O "$ARCHIVE" "$URL"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve MCP endpoint and bearer
+        id: target
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$DOMAIN" && test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Inspect all WB weekly reports around 31 Aug - 6 Sep
+        shell: bash
+        env:
+          MCP_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          python -u - <<'PY'
+          import itertools, json, os
+          import httpx
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          headers={
+              'Authorization':'Bearer '+os.environ['MCP_BEARER'],
+              'Accept':'application/json, text/event-stream',
+              'Content-Type':'application/json',
+          }
+          ids=itertools.count(1)
+          with httpx.Client(timeout=60.0,follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'wb-weekly-report-set-diagnostic','version':'1'}
+                  }})
+              init=unpack(r); assert init and 'result' in init, init
+              h=dict(headers)
+              sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+
+              def rpc(method,params=None):
+                  rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  d=unpack(rr); assert d and 'result' in d,(method,d); return d['result']
+
+              result=rpc('tools/call',{'name':'wb_list_realization_reports','arguments':{
+                  'seller':'wb_novokshenov',
+                  'date_from':'2026-08-25',
+                  'date_to':'2026-09-10',
+                  'period':'weekly',
+                  'limit':1000,
+                  'offset':0,
+              }})
+              assert not result.get('isError'), result
+              text=next(x.get('text') for x in result.get('content',[]) if x.get('type')=='text')
+              data=json.loads(text)
+              assert data.get('ok') is True, data
+              rows=data.get('data') or []
+              picked=[]
+              for row in rows:
+                  rec={k:row.get(k) for k in ('reportId','sellerFinanceName','dateFrom','dateTo','createDate','reportType')}
+                  picked.append(rec)
+              picked.sort(key=lambda x:(str(x.get('dateFrom')),str(x.get('dateTo')),int(x.get('reportType') or 0),int(x.get('reportId') or 0)))
+              print('WB_WEEKLY_REPORTS='+json.dumps(picked,ensure_ascii=False),flush=True)
+              target=[x for x in picked if x.get('dateFrom') in ('2026-08-31','2026-09-01') and x.get('dateTo') in ('2026-08-31','2026-09-06')]
+              print('TARGET_WEEK_FRAGMENTS='+json.dumps(target,ensure_ascii=False),flush=True)
+              print('TARGET_TYPES='+json.dumps(sorted({int(x.get('reportType') or 0) for x in target})),flush=True)
+              assert target, 'No target-week fragments found'
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer"
