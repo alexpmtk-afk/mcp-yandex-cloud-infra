@@ -55,7 +55,7 @@ jobs:
           tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
           chmod +x "$RUNNER_TEMP/yc/yc"
 
-      - name: Read narrow worker log sample
+      - name: Read and sanitize recent YDB failure detail
         shell: bash
         run: |
           set -euo pipefail
@@ -67,46 +67,43 @@ jobs:
             --format=json \
             --folder-id="$FOLDER_ID" > "$RUNNER_TEMP/logs.json"
           python - <<'PY'
-          import json,os,re,hashlib
+          import json,os,re
           from collections import Counter
           from pathlib import Path
           rows=json.loads((Path(os.environ['RUNNER_TEMP'])/'logs.json').read_text())
           assert isinstance(rows,list) and rows
-          levels=Counter(); top=Counter(); payload=Counter(); exception=Counter(); signatures=Counter(); statuses=Counter(); event_kinds=Counter()
-          exre=re.compile(r'\b([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Denied|Unauthenticated|Unavailable|DeadlineExceeded|Aborted|Failure))\b')
+
+          def sanitize(text: str) -> str:
+              text=re.sub(r'(?i)authorization\s*[:=]\s*\S+', 'authorization=<REDACTED>', text)
+              text=re.sub(r'(?i)bearer\s+\S+', 'Bearer <REDACTED>', text)
+              text=re.sub(r'https?://\S+', '<URL>', text)
+              text=re.sub(r'grpcs?://\S+', '<YDB_ENDPOINT>', text)
+              text=re.sub(r'/ru-central1/[A-Za-z0-9_./-]+', '<YDB_PATH>', text)
+              text=re.sub(r'\b[A-Za-z0-9_-]{20,}\b', '<ID>', text)
+              text=re.sub(r'\s+', ' ', text).strip()
+              return text[:1000]
+
+          levels=Counter(); details=Counter(); classes=Counter()
           for e in rows:
-              if not isinstance(e,dict): continue
-              top.update(map(str,e.keys()))
-              levels[str(e.get('level') or 'UNSET').upper()] += 1
+              if not isinstance(e,dict):
+                  continue
+              level=str(e.get('level') or 'UNSET').upper()
+              levels[level]+=1
               msg=str(e.get('message') or '')
-              jp=e.get('json_payload') or e.get('jsonPayload') or {}
-              vals=[msg]
-              if isinstance(jp,dict):
-                  payload.update(map(str,jp.keys()))
-                  for k,v in jp.items():
-                      lk=str(k).lower().replace('-','_')
-                      sv=str(v)
-                      vals.append(sv)
-                      if 'status' in lk or lk in {'code','http_code','response_code'}: statuses[sv]+=1
-                      if lk in {'event','event_type','type','kind','stream_name','stream'}: event_kinds[sv]+=1
-              text=' '.join(vals)
-              for x in exre.findall(text): exception[x]+=1
-              for label,pat in {
-                'TRACEBACK':r'\bTraceback\b','ASGI_EXCEPTION':r'Exception in ASGI application','YDB':r'\bydb\b|YDB',
-                'PERMISSION':r'permission|denied|unauthori[sz]ed|unauthenticated','CREDENTIALS':r'credential|metadata.*token|iam token',
-                'UNAVAILABLE':r'unavailable|connection refused|cannot connect|failed to connect','DEADLINE':r'deadline|timed? out|timeout',
-                'HTTP_500':r'\b500\b|Internal Server Error','HTTP_200':r'\b200\b|200 OK',
-              }.items():
-                  if re.search(pat,text,re.I): signatures[label]+=1
-          print(f'M24_LOG_SAMPLE_RECORDS={len(rows)}')
-          print('M24_LOG_SAMPLE_LEVELS=' + ','.join(f'{k}:{v}' for k,v in sorted(levels.items())))
-          print('M24_LOG_SAMPLE_TOP_KEYS=' + ','.join(sorted(top)))
-          print('M24_LOG_SAMPLE_PAYLOAD_KEYS=' + ','.join(sorted(payload)))
-          print('M24_LOG_SAMPLE_STATUS_VALUES=' + ','.join(f'{k}:{v}' for k,v in statuses.most_common(12)))
-          print('M24_LOG_SAMPLE_EVENT_KINDS=' + ','.join(f'{k}:{v}' for k,v in event_kinds.most_common(12)))
-          print('M24_LOG_SAMPLE_SIGNATURES=' + ','.join(f'{k}:{v}' for k,v in sorted(signatures.items())))
-          print('M24_LOG_SAMPLE_EXCEPTION_TYPES=' + ','.join(f'{k}:{v}' for k,v in exception.most_common(20)))
-          print('M24_LOG_SAMPLE=PASS')
+              if level in {'ERROR','FATAL'} or re.search(r'GenericError|ExecError|UserCodeError|Traceback',msg):
+                  clean=sanitize(msg)
+                  if clean:
+                      details[clean]+=1
+              for cls in re.findall(r'\b(?:ydb\.issues\.)?[A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Failure)\b', msg):
+                  classes[cls]+=1
+          print(f'M24_YDB_DETAIL_RECORDS={len(rows)}')
+          print('M24_YDB_DETAIL_LEVELS=' + ','.join(f'{k}:{v}' for k,v in sorted(levels.items())))
+          print('M24_YDB_DETAIL_CLASSES=' + ','.join(f'{k}:{v}' for k,v in classes.most_common(20)))
+          for i,(message,count) in enumerate(details.most_common(12),1):
+              print(f'M24_YDB_SANITIZED_{i}_COUNT={count}')
+              print(f'M24_YDB_SANITIZED_{i}={message}')
+          assert details, 'no sanitized YDB error detail found'
+          print('M24_YDB_SANITIZED_DETAIL=PASS')
           PY
 
       - name: Cleanup
