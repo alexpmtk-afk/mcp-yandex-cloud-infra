@@ -44,10 +44,10 @@ resource "yandex_iam_workload_identity_federated_credential" "github_infra_deplo
 resource "yandex_iam_workload_identity_federated_credential" "github_infra_deployer_test_environment" {
   service_account_id = var.terraform_deployer_service_account_id
 
-  # Jobs using GitHub Environment `test` receive an environment-scoped OIDC
-  # subject, not the ref-scoped subject above. This separate credential keeps
-  # both modes valid without replacing or weakening the existing credential.
-  federation_id       = "aje6jisuccivlu89ddtg"
+  # The test-environment job uses the managed GitHub OIDC federation that is
+  # already proven for this Yandex folder. The older ref-scoped credential above
+  # remains untouched as an adopted compatibility credential.
+  federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
   external_subject_id = "repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test"
 
   depends_on = [
