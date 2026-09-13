@@ -66,7 +66,7 @@ jobs:
           echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
           echo 'LIVE_MCP_RESOLVED=PASS'
 
-      - name: Backfill Novokshenov 2026 carefully
+      - name: Backfill Novokshenov 2026 through durable queue
         shell: bash
         timeout-minutes: 170
         env:
@@ -84,10 +84,7 @@ jobs:
 
           YEAR = 2026
           SELLER = 'wb_novokshenov'
-          MAX_REPORTS = 2
-          MAX_ROUNDS = 80
-
-          timeout = httpx.Timeout(connect=15.0, read=650.0, write=60.0, pool=30.0)
+          MAX_STEPS = 500
 
           def unpack(response):
               response.raise_for_status()
@@ -96,42 +93,41 @@ jobs:
                       return json.loads(line[5:].strip())
               return response.json() if response.text.strip() else None
 
-          headers0 = {
-              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
-              'Accept': 'application/json, text/event-stream',
-              'Content-Type': 'application/json',
-          }
-          ids = itertools.count(1)
-
-          with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-              response = client.post(os.environ['MCP_URL'], headers=headers0, json={
-                  'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
-                      'protocolVersion': '2025-06-18', 'capabilities': {},
-                      'clientInfo': {'name': 'wb-novokshenov-archive-2026', 'version': '1'}
-                  }
-              })
-              init = unpack(response)
-              assert init and 'result' in init, init
-              headers = dict(headers0)
-              sid = response.headers.get('mcp-session-id')
-              if sid:
-                  headers['Mcp-Session-Id'] = sid
-              headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion', '2025-06-18')
-              ready = client.post(os.environ['MCP_URL'], headers=headers, json={
-                  'jsonrpc': '2.0', 'method': 'notifications/initialized'
-              })
-              assert ready.status_code in (200, 202), ready.status_code
-
-              def rpc(method, params=None):
+          def tool(name, arguments):
+              # Fresh MCP session per call: quota waits happen outside MCP and no
+              # long-lived connection is kept open while the job is waiting.
+              timeout = httpx.Timeout(connect=15.0, read=75.0, write=30.0, pool=15.0)
+              headers0 = {
+                  'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+                  'Accept': 'application/json, text/event-stream',
+                  'Content-Type': 'application/json',
+              }
+              ids = itertools.count(1)
+              with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                  response = client.post(os.environ['MCP_URL'], headers=headers0, json={
+                      'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
+                          'protocolVersion': '2025-06-18', 'capabilities': {},
+                          'clientInfo': {'name': 'wb-novokshenov-archive-2026', 'version': '2'}
+                      }
+                  })
+                  init = unpack(response)
+                  assert init and 'result' in init, init
+                  headers = dict(headers0)
+                  sid = response.headers.get('mcp-session-id')
+                  if sid:
+                      headers['Mcp-Session-Id'] = sid
+                  headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion', '2025-06-18')
+                  ready = client.post(os.environ['MCP_URL'], headers=headers, json={
+                      'jsonrpc': '2.0', 'method': 'notifications/initialized'
+                  })
+                  assert ready.status_code in (200, 202), ready.status_code
                   response = client.post(os.environ['MCP_URL'], headers=headers, json={
-                      'jsonrpc': '2.0', 'id': next(ids), 'method': method, 'params': params or {}
+                      'jsonrpc': '2.0', 'id': next(ids), 'method': 'tools/call',
+                      'params': {'name': name, 'arguments': arguments}
                   })
                   data = unpack(response)
-                  assert data and 'result' in data, (method, data)
-                  return data['result']
-
-              def call(name, arguments):
-                  result = rpc('tools/call', {'name': name, 'arguments': arguments})
+                  assert data and 'result' in data, (name, data)
+                  result = data['result']
                   if result.get('isError'):
                       raise RuntimeError(f'{name} failed: {result}')
                   text = next((item.get('text') for item in result.get('content', []) if item.get('type') == 'text'), None)
@@ -139,53 +135,72 @@ jobs:
                       raise RuntimeError(f'{name} returned no text')
                   return json.loads(text)
 
-              before = call('marketplace_archive_status', {'year': YEAR})
-              assert before.get('ok') is True, before
-              print('STATUS_BEFORE=' + json.dumps(before.get('cabinets', {}).get(SELLER, {}), ensure_ascii=False), flush=True)
+          before = tool('marketplace_archive_status', {'year': YEAR})
+          assert before.get('ok') is True, before
+          print('STATUS_BEFORE=' + json.dumps(before.get('cabinets', {}).get(SELLER, {}), ensure_ascii=False), flush=True)
 
-              complete = False
-              for round_no in range(1, MAX_ROUNDS + 1):
-                  result = call('marketplace_archive_update', {
-                      'year': YEAR,
-                      'seller': SELLER,
-                      'max_reports_per_cabinet': MAX_REPORTS,
-                  })
-                  assert result.get('ok') is True, result
-                  row = (result.get('cabinets') or [{}])[0]
-                  print('ROUND=' + str(round_no)
-                        + ' downloaded=' + str(len(row.get('downloaded_report_ids') or []))
-                        + ' remaining=' + str(len(row.get('remaining_report_ids') or []))
-                        + ' rows=' + str(int(row.get('total_rows') or 0))
-                        + ' bytes=' + str(int(row.get('bytes') or 0)), flush=True)
-                  if result.get('complete') is True and result.get('continue_required') is False:
-                      complete = True
-                      break
-                  time.sleep(2)
+          queued = tool('marketplace_archive_update', {'year': YEAR, 'seller': SELLER})
+          assert queued.get('ok') is True and queued.get('queued') is True, queued
+          jobs = queued.get('jobs') or []
+          assert len(jobs) == 1 and jobs[0].get('job_id'), queued
+          job_id = jobs[0]['job_id']
+          print('JOB_ID=' + job_id, flush=True)
 
-              if not complete:
-                  raise RuntimeError('Novokshenov 2026 archive did not reach complete=true')
-
-              rerun = call('marketplace_archive_update', {
-                  'year': YEAR,
-                  'seller': SELLER,
-                  'max_reports_per_cabinet': 1,
-              })
-              assert rerun.get('ok') is True and rerun.get('complete') is True, rerun
-              row = (rerun.get('cabinets') or [{}])[0]
-              assert not (row.get('downloaded_report_ids') or []), row
-              print('IDEMPOTENCY=PASS', flush=True)
-
-              query = call('marketplace_archive_query', {
-                  'year': YEAR,
-                  'sql': 'SELECT MIN(dateFrom) AS min_date_from, MAX(dateTo) AS max_date_to, COUNT(DISTINCT reportId) AS reports, COUNT(*) AS rows FROM wb_novokshenov'
-              })
-              assert query.get('ok') is True, query
-              print('BOUNDARY_AND_COUNTS=' + json.dumps(query.get('rows') or [], ensure_ascii=False), flush=True)
-
-              status = call('marketplace_archive_status', {'year': YEAR})
+          complete = False
+          for step_no in range(1, MAX_STEPS + 1):
+              status = tool('marketplace_archive_job_status', {'job_id': job_id})
               assert status.get('ok') is True, status
-              print('STATUS_FINAL=' + json.dumps(status.get('cabinets', {}).get(SELLER, {}), ensure_ascii=False), flush=True)
-              print('WB_NOVOKSHENOV_ARCHIVE_2026=PASS', flush=True)
+              if status.get('status') == 'COMPLETE':
+                  complete = True
+                  break
+              if status.get('status') == 'FAILED':
+                  raise RuntimeError('archive job failed: ' + json.dumps(status, ensure_ascii=False))
+
+              result = tool('marketplace_archive_worker_step', {'job_id': job_id})
+              assert result.get('ok') is True, result
+              print('STEP=' + str(step_no)
+                    + ' status=' + str(result.get('status'))
+                    + ' phase=' + str(result.get('phase'))
+                    + ' action=' + str(result.get('action'))
+                    + ' provider_calls=' + str(result.get('provider_calls', '')), flush=True)
+              if result.get('status') == 'COMPLETE':
+                  complete = True
+                  break
+              delay = float(result.get('retry_after_seconds') or 0)
+              if delay > 0:
+                  print('QUEUE_WAIT_SECONDS=' + str(delay), flush=True)
+                  time.sleep(delay + 1.0)
+              else:
+                  # The next provider slot may not be ready yet. A short external
+                  # delay avoids hammering MCP; if still early, the server will
+                  # return the exact shared retry_after without sending to WB.
+                  time.sleep(1.0)
+
+          if not complete:
+              raise RuntimeError('Novokshenov 2026 durable archive job did not reach COMPLETE')
+
+          final_job = tool('marketplace_archive_job_status', {'job_id': job_id})
+          assert final_job.get('status') == 'COMPLETE', final_job
+          print('JOB_FINAL=' + json.dumps(final_job, ensure_ascii=False), flush=True)
+
+          # Re-enqueueing the same completed job must not duplicate archive rows.
+          again = tool('marketplace_archive_update', {'year': YEAR, 'seller': SELLER})
+          assert again.get('ok') is True and (again.get('jobs') or [{}])[0].get('status') == 'COMPLETE', again
+          noop = tool('marketplace_archive_worker_step', {'job_id': job_id})
+          assert noop.get('ok') is True and noop.get('status') == 'COMPLETE', noop
+          print('IDEMPOTENCY=PASS', flush=True)
+
+          query = tool('marketplace_archive_query', {
+              'year': YEAR,
+              'sql': 'SELECT MIN(dateFrom) AS min_date_from, MAX(dateTo) AS max_date_to, COUNT(DISTINCT reportId) AS reports, COUNT(*) AS rows FROM wb_novokshenov'
+          })
+          assert query.get('ok') is True, query
+          print('BOUNDARY_AND_COUNTS=' + json.dumps(query.get('rows') or [], ensure_ascii=False), flush=True)
+
+          final = tool('marketplace_archive_status', {'year': YEAR})
+          assert final.get('ok') is True, final
+          print('STATUS_FINAL=' + json.dumps(final.get('cabinets', {}).get(SELLER, {}), ensure_ascii=False), flush=True)
+          print('WB_NOVOKSHENOV_ARCHIVE_2026=PASS', flush=True)
           PY
 
       - name: Cleanup ephemeral credentials
