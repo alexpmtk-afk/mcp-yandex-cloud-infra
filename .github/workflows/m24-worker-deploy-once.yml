@@ -1,4 +1,4 @@
-name: M24 Worker Deploy Once
+name: M24 Worker Verify Once
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: birzha-m24-worker-deploy-once
+  group: birzha-m24-worker-verify-once
   cancel-in-progress: false
 
 env:
@@ -23,12 +23,16 @@ env:
   M24_WORKER_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:eea5d561d78bf755b85cfb47a3ff2e88c04563fb63e9b580a80bbc26f3a7ce12
   EXPECTED_WORKER_CONTAINER_ID: bbamdg0po6fkukhod2e9
   EXPECTED_TIMER_TRIGGER_ID: a1s4ho32v7dha59aeu60
+  EXPECTED_PUBLIC_MCP_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:5db7e3b1bbd69ee0c797d1d9a5a9289633914ef9f360f3d0f45187cb219113fc
+  EXPECTED_PUBLIC_MCP_SOURCE_SHA: b6ce037915ee993f2758f2ff6b29341f15554308
+  EXPECTED_PUBLIC_ALLOWED_HOSTS: d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net,d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net:*
+  EXPECTED_PUBLIC_ALLOWED_ORIGINS: https://chatgpt.com
 
 jobs:
-  deploy:
+  verify:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - name: Checkout exact infrastructure main
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
@@ -54,11 +58,11 @@ jobs:
           import base64,json,os,sys
           p=sys.argv[1].split('.')[1]; p += '=' * (-len(p)%4)
           c=json.loads(base64.urlsafe_b64decode(p))
-          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT'], c.get('sub')
-          assert c.get('aud')==os.environ['OIDC_AUDIENCE'], c.get('aud')
-          assert c.get('ref')=='refs/heads/main', c.get('ref')
-          assert c.get('environment')=='test', c.get('environment')
-          print('M24_DEPLOY_OIDC_CLAIMS=PASS')
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('ref')=='refs/heads/main'
+          assert c.get('environment')=='test'
+          print('M24_VERIFY_OIDC_CLAIMS=PASS')
           PY
           RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${OIDC_JWT}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
           TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$RESPONSE")"
@@ -66,7 +70,7 @@ jobs:
           echo "::add-mask::$TOKEN"
           umask 077
           printf '%s' "$TOKEN" > "$RUNNER_TEMP/oidc-iam-token"
-          echo 'M24_DEPLOY_OIDC_EXCHANGE=PASS'
+          echo 'M24_VERIFY_OIDC_EXCHANGE=PASS'
 
       - name: Initialize protected remote state
         shell: bash
@@ -79,94 +83,25 @@ jobs:
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
 
-      - name: Preserve current public MCP runtime coordinates
+      - name: Verify applied worker, timer, binding and public MCP state
         shell: bash
         run: |
           set -euo pipefail
-          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
-          resources=(s.get('values',{}).get('root_module',{}).get('resources') or [])
-          by_addr={r.get('address'):r for r in resources}
-          matches=[r for r in resources if r.get('address')=='yandex_serverless_container.mcp[0]']
-          assert len(matches)==1
-          image=(matches[0]['values'].get('image') or [])[0]
-          env=image.get('environment') or {}
-          vals={
-            'PRESERVE_MCP_IMAGE_URL':image.get('url',''),
-            'PRESERVE_SOURCE_SHA':env.get('BIRZHA_SOURCE_COMMIT',''),
-            'PRESERVE_ALLOWED_HOSTS':env.get('MCP_ALLOWED_HOSTS',''),
-            'PRESERVE_ALLOWED_ORIGINS':env.get('MCP_ALLOWED_ORIGINS',''),
-          }
-          assert vals['PRESERVE_MCP_IMAGE_URL'].startswith('cr.yandex/')
-          assert len(vals['PRESERVE_SOURCE_SHA'])==40
-          worker=by_addr['yandex_serverless_container.orchestrator_worker[0]']['values']
-          trigger=by_addr['yandex_function_trigger.orchestrator_timer[0]']['values']
-          assert worker.get('id')==os.environ['EXPECTED_WORKER_CONTAINER_ID'], worker.get('id')
-          assert trigger.get('id')==os.environ['EXPECTED_TIMER_TRIGGER_ID'], trigger.get('id')
-          for k,v in vals.items():
-              assert '\n' not in v
-              with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'{k}={v}\n')
-          print('PUBLIC_MCP_RUNTIME_PRESERVATION=PASS')
-          print('M24_EXISTING_IDS=PASS')
-          PY
-
-      - name: Plan exactly one private worker revision update
-        shell: bash
-        run: |
-          set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/oidc-iam-token")"
-          set +e
-          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/m24-worker.tfplan" \
-            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
-            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
-            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
-            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
-            -var="m24_worker_image_url=${M24_WORKER_IMAGE}" \
-            -var="m24_worker_source_sha=${M24_WORKER_SOURCE_SHA}" \
-            -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/m24-worker-plan.txt"
-          rc=$?
-          set -e
-          test "$rc" = 2 || { cat "$RUNNER_TEMP/m24-worker-plan.txt"; exit 1; }
-          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/m24-worker.tfplan" > "$RUNNER_TEMP/m24-worker-plan.json"
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state.json"
           python - <<'PY'
           import json,os
           from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'m24-worker-plan.json').read_text())
-          changed={r['address']:r['change']['actions'] for r in d.get('resource_changes',[]) if r.get('change',{}).get('actions')!=['no-op']}
-          expected={'yandex_serverless_container.orchestrator_worker[0]':['update']}
-          assert changed==expected, changed
-          print('M24_WORKER_STRICT_UPDATE_PLAN=PASS')
-          PY
-
-      - name: Apply exact saved worker-only plan using OIDC
-        shell: bash
-        run: |
-          set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/oidc-iam-token")"
-          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/m24-worker.tfplan"
-          echo 'M24_WORKER_UPDATE_APPLY=PASS'
-
-      - name: Verify updated worker state and unchanged public MCP
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-after.json"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-after.json').read_text())
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state.json').read_text())
           resources=(s.get('values',{}).get('root_module',{}).get('resources') or [])
           by_addr={r.get('address'):r for r in resources}
+
           mcp=by_addr['yandex_serverless_container.mcp[0]']['values']
           mcp_image=(mcp.get('image') or [])[0]
           mcp_env=mcp_image.get('environment') or {}
-          assert mcp_image.get('url')==os.environ['PRESERVE_MCP_IMAGE_URL']
-          assert mcp_env.get('BIRZHA_SOURCE_COMMIT')==os.environ['PRESERVE_SOURCE_SHA']
-          assert mcp_env.get('MCP_ALLOWED_HOSTS','')==os.environ['PRESERVE_ALLOWED_HOSTS']
-          assert mcp_env.get('MCP_ALLOWED_ORIGINS','')==os.environ['PRESERVE_ALLOWED_ORIGINS']
+          assert mcp_image.get('url')==os.environ['EXPECTED_PUBLIC_MCP_IMAGE']
+          assert mcp_env.get('BIRZHA_SOURCE_COMMIT')==os.environ['EXPECTED_PUBLIC_MCP_SOURCE_SHA']
+          assert mcp_env.get('MCP_ALLOWED_HOSTS','')==os.environ['EXPECTED_PUBLIC_ALLOWED_HOSTS']
+          assert mcp_env.get('MCP_ALLOWED_ORIGINS','')==os.environ['EXPECTED_PUBLIC_ALLOWED_ORIGINS']
 
           worker=by_addr['yandex_serverless_container.orchestrator_worker[0]']['values']
           assert worker.get('id')==os.environ['EXPECTED_WORKER_CONTAINER_ID']
@@ -179,7 +114,20 @@ jobs:
           assert env.get('YDB_CONNECTION_STRING','').startswith('grpcs://')
           assert (image.get('command') or [])==['python','-m','birzha.worker']
           assert worker.get('concurrency')==1
-          assert worker.get('execution_timeout')=='120s'
+
+          raw_timeout=worker.get('execution_timeout')
+          if isinstance(raw_timeout,(int,float)):
+              timeout_ok=float(raw_timeout)==120.0
+          else:
+              normalized=str(raw_timeout or '').strip().lower()
+              if normalized.endswith('s'):
+                  normalized=normalized[:-1]
+              try:
+                  timeout_ok=float(normalized)==120.0
+              except ValueError:
+                  timeout_ok=False
+          print(f'M24_WORKER_EXECUTION_TIMEOUT_REPR={raw_timeout!r}')
+          assert timeout_ok, raw_timeout
 
           binding=by_addr['yandex_serverless_container_iam_member.orchestrator_timer_invoker[0]']['values']
           assert binding.get('container_id')==os.environ['EXPECTED_WORKER_CONTAINER_ID']
@@ -187,31 +135,31 @@ jobs:
           assert trigger.get('id')==os.environ['EXPECTED_TIMER_TRIGGER_ID']
           timer=(trigger.get('timer') or [])[0]
           assert timer.get('cron_expression')=='* * ? * * *', timer
-          print('M24_WORKER_UPDATED_STATE=PASS')
-          print('M24_TIMER_AND_INVOKER_UNCHANGED=PASS')
+          print('M24_WORKER_APPLIED_STATE=PASS')
+          print('M24_TIMER_AND_INVOKER_STATE=PASS')
           print('PUBLIC_MCP_UNCHANGED=PASS')
           PY
 
-      - name: Prove final zero drift with corrected worker enabled
+      - name: Prove zero drift without applying anything
         shell: bash
         run: |
           set -euo pipefail
           export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/oidc-iam-token")"
           set +e
           terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color \
-            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
-            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
-            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
-            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="mcp_image_url=${EXPECTED_PUBLIC_MCP_IMAGE}" \
+            -var="source_commit_sha=${EXPECTED_PUBLIC_MCP_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${EXPECTED_PUBLIC_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${EXPECTED_PUBLIC_ALLOWED_ORIGINS}" \
             -var="m24_worker_image_url=${M24_WORKER_IMAGE}" \
             -var="m24_worker_source_sha=${M24_WORKER_SOURCE_SHA}" \
-            -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/final-plan.txt"
+            -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/verify-plan.txt"
           rc=$?
           set -e
-          test "$rc" = 0 || { cat "$RUNNER_TEMP/final-plan.txt"; exit "$rc"; }
+          test "$rc" = 0 || { cat "$RUNNER_TEMP/verify-plan.txt"; exit "$rc"; }
           echo 'M24_WORKER_ZERO_DRIFT=PASS'
 
-      - name: Capture preserved worker and trigger identifiers
+      - name: Confirm stable resource identifiers
         shell: bash
         run: |
           set -euo pipefail
@@ -226,4 +174,4 @@ jobs:
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/oidc-iam-token" "$RUNNER_TEMP/state-before.json" "$RUNNER_TEMP/state-after.json" "$RUNNER_TEMP/m24-worker-plan.txt" "$RUNNER_TEMP/m24-worker-plan.json" "$RUNNER_TEMP/m24-worker.tfplan" "$RUNNER_TEMP/final-plan.txt"
+        run: rm -f "$RUNNER_TEMP/oidc-iam-token" "$RUNNER_TEMP/state.json" "$RUNNER_TEMP/verify-plan.txt"
