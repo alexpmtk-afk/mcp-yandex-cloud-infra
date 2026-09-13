@@ -1,4 +1,4 @@
-name: Export Novokshenov CSV Once
+name: Export Archive Registry Once
 
 on:
   workflow_dispatch:
@@ -11,7 +11,6 @@ on:
 permissions:
   contents: read
 
-# One-time transfer: Yandex Object Storage -> protected GitHub artifact -> Google Drive.
 jobs:
   export:
     runs-on: ubuntu-latest
@@ -29,20 +28,19 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate and export canonical CSV from Object Storage
+      - name: Export current reports registry from Object Storage
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
-          OBJECT_KEY: 'База данных/WB/wb_novokshenov/2026/finance/weekly/main/wb_novokshenov__weekly_main__2026.csv'
+          OBJECT_KEY: 'app/registry/reports_registry.csv'
         run: |
           set -euo pipefail
           test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          yc config profile create archive-export || true
+          yc config profile create archive-registry-export || true
           yc config set service-account-key "$KEY_FILE"
-
           CLOUD_ID=b1gi4pr9msenirafh2c7
           FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
@@ -51,25 +49,21 @@ jobs:
           IAM_TOKEN="$(yc iam create-token)"
           test -n "$IAM_TOKEN"
           echo "::add-mask::$IAM_TOKEN"
-
           ENCODED_KEY="$(python -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["OBJECT_KEY"], safe="/-_.~"))')"
-          OUT="$RUNNER_TEMP/wb_novokshenov__weekly_main__2026.csv"
+          OUT="$RUNNER_TEMP/reports_registry.csv"
           curl --fail --silent --show-error --location \
             --header "Authorization: Bearer ${IAM_TOKEN}" \
             "https://storage.yandexcloud.net/${BUCKET}/${ENCODED_KEY}" \
             --output "$OUT"
-
           test -s "$OUT"
-          SIZE="$(wc -c < "$OUT" | tr -d ' ')"
-          test "$SIZE" -gt 1000000
-          echo "CSV_BYTES=$SIZE"
-          sha256sum "$OUT" | sed 's/^/CSV_SHA256=/'
+          echo "REGISTRY_BYTES=$(wc -c < "$OUT" | tr -d ' ')"
+          sha256sum "$OUT" | sed 's/^/REGISTRY_SHA256=/'
 
       - name: Upload temporary transfer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: wb-novokshenov-weekly-main-2026
-          path: ${{ runner.temp }}/wb_novokshenov__weekly_main__2026.csv
+          name: marketplaces-reports-registry-current
+          path: ${{ runner.temp }}/reports_registry.csv
           if-no-files-found: error
           retention-days: 1
           compression-level: 0
@@ -77,4 +71,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/wb_novokshenov__weekly_main__2026.csv"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/reports_registry.csv"
