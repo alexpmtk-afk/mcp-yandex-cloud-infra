@@ -1,25 +1,22 @@
-name: WB Novokshenov Archive 2026
+name: Marketplaces Archive Queue Worker
 
 on:
   workflow_dispatch:
-  push:
-    branches:
-      - main
-    paths:
-      - .github/workflows/wb-novokshenov-archive-2026.yml
+  schedule:
+    - cron: '*/5 * * * *'
 
 permissions:
   contents: read
 
 concurrency:
-  group: wb-novokshenov-archive-2026
+  group: marketplaces-archive-queue-worker
   cancel-in-progress: false
 
 jobs:
-  backfill:
+  worker:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 180
+    timeout-minutes: 50
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -43,7 +40,7 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          yc config profile create archive-novokshenov || true
+          yc config profile create archive-queue-worker || true
           yc config set service-account-key "$KEY_FILE"
 
           CLOUD_ID=b1gi4pr9msenirafh2c7
@@ -64,11 +61,10 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           chmod 600 "$RUNNER_TEMP/bearer"
           echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
-          echo 'LIVE_MCP_RESOLVED=PASS'
 
-      - name: Backfill Novokshenov 2026 through durable queue
+      - name: Drain due archive queue safely
         shell: bash
-        timeout-minutes: 170
+        timeout-minutes: 45
         env:
           MCP_URL: ${{ steps.live.outputs.url }}
         run: |
@@ -82,9 +78,8 @@ jobs:
           import time
           import httpx
 
-          YEAR = 2026
-          SELLER = 'wb_novokshenov'
-          MAX_STEPS = 500
+          DEADLINE = time.monotonic() + 42 * 60
+          MAX_STEPS = 1000
 
           def unpack(response):
               response.raise_for_status()
@@ -94,8 +89,6 @@ jobs:
               return response.json() if response.text.strip() else None
 
           def tool(name, arguments):
-              # Fresh MCP session per call: quota waits happen outside MCP and no
-              # long-lived connection is kept open while the job is waiting.
               timeout = httpx.Timeout(connect=15.0, read=75.0, write=30.0, pool=15.0)
               headers0 = {
                   'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
@@ -107,7 +100,7 @@ jobs:
                   response = client.post(os.environ['MCP_URL'], headers=headers0, json={
                       'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
                           'protocolVersion': '2025-06-18', 'capabilities': {},
-                          'clientInfo': {'name': 'wb-novokshenov-archive-2026', 'version': '2'}
+                          'clientInfo': {'name': 'marketplaces-archive-queue-worker', 'version': '1'}
                       }
                   })
                   init = unpack(response)
@@ -135,72 +128,43 @@ jobs:
                       raise RuntimeError(f'{name} returned no text')
                   return json.loads(text)
 
-          before = tool('marketplace_archive_status', {'year': YEAR})
-          assert before.get('ok') is True, before
-          print('STATUS_BEFORE=' + json.dumps(before.get('cabinets', {}).get(SELLER, {}), ensure_ascii=False), flush=True)
-
-          queued = tool('marketplace_archive_update', {'year': YEAR, 'seller': SELLER})
-          assert queued.get('ok') is True and queued.get('queued') is True, queued
-          jobs = queued.get('jobs') or []
-          assert len(jobs) == 1 and jobs[0].get('job_id'), queued
-          job_id = jobs[0]['job_id']
-          print('JOB_ID=' + job_id, flush=True)
-
-          complete = False
           for step_no in range(1, MAX_STEPS + 1):
-              status = tool('marketplace_archive_job_status', {'job_id': job_id})
-              assert status.get('ok') is True, status
-              if status.get('status') == 'COMPLETE':
-                  complete = True
+              if time.monotonic() >= DEADLINE:
+                  print('ARCHIVE_QUEUE_WORKER=DEADLINE_REACHED', flush=True)
                   break
-              if status.get('status') == 'FAILED':
-                  raise RuntimeError('archive job failed: ' + json.dumps(status, ensure_ascii=False))
-
-              result = tool('marketplace_archive_worker_step', {'job_id': job_id})
+              result = tool('marketplace_archive_worker_step', {})
               assert result.get('ok') is True, result
-              print('STEP=' + str(step_no)
-                    + ' status=' + str(result.get('status'))
-                    + ' phase=' + str(result.get('phase'))
-                    + ' action=' + str(result.get('action'))
-                    + ' provider_calls=' + str(result.get('provider_calls', '')), flush=True)
-              if result.get('status') == 'COMPLETE':
-                  complete = True
-                  break
+              action = str(result.get('action') or '')
               delay = float(result.get('retry_after_seconds') or 0)
+              print('STEP=' + str(step_no)
+                    + ' job=' + str(result.get('job_id', ''))
+                    + ' status=' + str(result.get('status', ''))
+                    + ' action=' + action
+                    + ' retry=' + str(delay), flush=True)
+
+              if action == 'idle':
+                  if delay <= 0:
+                      print('ARCHIVE_QUEUE_WORKER=EMPTY', flush=True)
+                      break
+                  # A far-future due item should not keep a runner alive. The
+                  # scheduled worker will return later and resume it.
+                  if delay > 240 or time.monotonic() + delay + 5 >= DEADLINE:
+                      print('ARCHIVE_QUEUE_WORKER=WAITING_FUTURE_SLOT', flush=True)
+                      break
+                  time.sleep(delay + 1.0)
+                  continue
+
+              if result.get('status') == 'FAILED':
+                  raise RuntimeError('archive queue job failed: ' + json.dumps(result, ensure_ascii=False))
               if delay > 0:
-                  print('QUEUE_WAIT_SECONDS=' + str(delay), flush=True)
+                  if delay > 240 or time.monotonic() + delay + 5 >= DEADLINE:
+                      print('ARCHIVE_QUEUE_WORKER=WAITING_FUTURE_SLOT', flush=True)
+                      break
                   time.sleep(delay + 1.0)
               else:
-                  # The next provider slot may not be ready yet. A short external
-                  # delay avoids hammering MCP; if still early, the server will
-                  # return the exact shared retry_after without sending to WB.
                   time.sleep(1.0)
-
-          if not complete:
-              raise RuntimeError('Novokshenov 2026 durable archive job did not reach COMPLETE')
-
-          final_job = tool('marketplace_archive_job_status', {'job_id': job_id})
-          assert final_job.get('status') == 'COMPLETE', final_job
-          print('JOB_FINAL=' + json.dumps(final_job, ensure_ascii=False), flush=True)
-
-          # Re-enqueueing the same completed job must not duplicate archive rows.
-          again = tool('marketplace_archive_update', {'year': YEAR, 'seller': SELLER})
-          assert again.get('ok') is True and (again.get('jobs') or [{}])[0].get('status') == 'COMPLETE', again
-          noop = tool('marketplace_archive_worker_step', {'job_id': job_id})
-          assert noop.get('ok') is True and noop.get('status') == 'COMPLETE', noop
-          print('IDEMPOTENCY=PASS', flush=True)
-
-          query = tool('marketplace_archive_query', {
-              'year': YEAR,
-              'sql': 'SELECT MIN(dateFrom) AS min_date_from, MAX(dateTo) AS max_date_to, COUNT(DISTINCT reportId) AS reports, COUNT(*) AS rows FROM wb_novokshenov'
-          })
-          assert query.get('ok') is True, query
-          print('BOUNDARY_AND_COUNTS=' + json.dumps(query.get('rows') or [], ensure_ascii=False), flush=True)
-
-          final = tool('marketplace_archive_status', {'year': YEAR})
-          assert final.get('ok') is True, final
-          print('STATUS_FINAL=' + json.dumps(final.get('cabinets', {}).get(SELLER, {}), ensure_ascii=False), flush=True)
-          print('WB_NOVOKSHENOV_ARCHIVE_2026=PASS', flush=True)
+          else:
+              raise RuntimeError('archive queue worker exceeded MAX_STEPS')
           PY
 
       - name: Cleanup ephemeral credentials
