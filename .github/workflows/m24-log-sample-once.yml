@@ -1,0 +1,115 @@
+name: M24 Log Sample Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m24-log-sample-once.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+  FOLDER_ID: b1g00gqb66tbnfoumnkv
+  WORKER_CONTAINER_ID: bbamdg0po6fkukhod2e9
+
+jobs:
+  sample:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Mint Yandex IAM token
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
+          R="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          python - "$J" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('environment')=='test'
+          assert c.get('ref')=='refs/heads/main'
+          print('M24_LOG_SAMPLE_OIDC=PASS')
+          PY
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          test -n "$T"; echo "::add-mask::$T"; printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
+
+      - name: Install yc
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tar.gz"
+          tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+
+      - name: Read narrow worker log sample
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
+            --resource-ids="$WORKER_CONTAINER_ID" \
+            --since=1m \
+            --limit=200 \
+            --format=json \
+            --folder-id="$FOLDER_ID" > "$RUNNER_TEMP/logs.json"
+          python - <<'PY'
+          import json,os,re,hashlib
+          from collections import Counter
+          from pathlib import Path
+          rows=json.loads((Path(os.environ['RUNNER_TEMP'])/'logs.json').read_text())
+          assert isinstance(rows,list) and rows
+          levels=Counter(); top=Counter(); payload=Counter(); exception=Counter(); signatures=Counter(); statuses=Counter(); event_kinds=Counter()
+          exre=re.compile(r'\b([A-Za-z_][A-Za-z0-9_.]*(?:Error|Exception|Denied|Unauthenticated|Unavailable|DeadlineExceeded|Aborted|Failure))\b')
+          for e in rows:
+              if not isinstance(e,dict): continue
+              top.update(map(str,e.keys()))
+              levels[str(e.get('level') or 'UNSET').upper()] += 1
+              msg=str(e.get('message') or '')
+              jp=e.get('json_payload') or e.get('jsonPayload') or {}
+              vals=[msg]
+              if isinstance(jp,dict):
+                  payload.update(map(str,jp.keys()))
+                  for k,v in jp.items():
+                      lk=str(k).lower().replace('-','_')
+                      sv=str(v)
+                      vals.append(sv)
+                      if 'status' in lk or lk in {'code','http_code','response_code'}: statuses[sv]+=1
+                      if lk in {'event','event_type','type','kind','stream_name','stream'}: event_kinds[sv]+=1
+              text=' '.join(vals)
+              for x in exre.findall(text): exception[x]+=1
+              for label,pat in {
+                'TRACEBACK':r'\bTraceback\b','ASGI_EXCEPTION':r'Exception in ASGI application','YDB':r'\bydb\b|YDB',
+                'PERMISSION':r'permission|denied|unauthori[sz]ed|unauthenticated','CREDENTIALS':r'credential|metadata.*token|iam token',
+                'UNAVAILABLE':r'unavailable|connection refused|cannot connect|failed to connect','DEADLINE':r'deadline|timed? out|timeout',
+                'HTTP_500':r'\b500\b|Internal Server Error','HTTP_200':r'\b200\b|200 OK',
+              }.items():
+                  if re.search(pat,text,re.I): signatures[label]+=1
+          print(f'M24_LOG_SAMPLE_RECORDS={len(rows)}')
+          print('M24_LOG_SAMPLE_LEVELS=' + ','.join(f'{k}:{v}' for k,v in sorted(levels.items())))
+          print('M24_LOG_SAMPLE_TOP_KEYS=' + ','.join(sorted(top)))
+          print('M24_LOG_SAMPLE_PAYLOAD_KEYS=' + ','.join(sorted(payload)))
+          print('M24_LOG_SAMPLE_STATUS_VALUES=' + ','.join(f'{k}:{v}' for k,v in statuses.most_common(12)))
+          print('M24_LOG_SAMPLE_EVENT_KINDS=' + ','.join(f'{k}:{v}' for k,v in event_kinds.most_common(12)))
+          print('M24_LOG_SAMPLE_SIGNATURES=' + ','.join(f'{k}:{v}' for k,v in sorted(signatures.items())))
+          print('M24_LOG_SAMPLE_EXCEPTION_TYPES=' + ','.join(f'{k}:{v}' for k,v in exception.most_common(20)))
+          print('M24_LOG_SAMPLE=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/logs.json"
