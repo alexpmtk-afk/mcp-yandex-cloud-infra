@@ -224,7 +224,7 @@ jobs:
           OIDC_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${ENCODED_AUDIENCE}")"
           OIDC_JWT="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$OIDC_RESPONSE")"
           echo "::add-mask::$OIDC_JWT"
-          RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth-grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${OIDC_JWT}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${OIDC_JWT}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
           TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$RESPONSE")"
           test -n "$TOKEN"
           echo "::add-mask::$TOKEN"
