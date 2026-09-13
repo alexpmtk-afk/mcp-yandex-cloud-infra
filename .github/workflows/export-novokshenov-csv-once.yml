@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
 
+# One-time transfer: Yandex Object Storage -> protected GitHub artifact -> Google Drive.
 jobs:
   export:
     runs-on: ubuntu-latest
@@ -32,6 +33,7 @@ jobs:
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+          OBJECT_KEY: 'База данных/WB/wb_novokshenov/2026/finance/weekly/main/wb_novokshenov__weekly_main__2026.csv'
         run: |
           set -euo pipefail
           test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
@@ -50,7 +52,6 @@ jobs:
           test -n "$IAM_TOKEN"
           echo "::add-mask::$IAM_TOKEN"
 
-          OBJECT_KEY='База данных/WB/wb_novokshenov/2026/finance/weekly/main/wb_novokshenov__weekly_main__2026.csv'
           ENCODED_KEY="$(python -c 'import os, urllib.parse; print(urllib.parse.quote(os.environ["OBJECT_KEY"], safe="/-_.~"))')"
           OUT="$RUNNER_TEMP/wb_novokshenov__weekly_main__2026.csv"
           curl --fail --silent --show-error --location \
@@ -63,8 +64,6 @@ jobs:
           test "$SIZE" -gt 1000000
           echo "CSV_BYTES=$SIZE"
           sha256sum "$OUT" | sed 's/^/CSV_SHA256=/'
-        env:
-          OBJECT_KEY: 'База данных/WB/wb_novokshenov/2026/finance/weekly/main/wb_novokshenov__weekly_main__2026.csv'
 
       - name: Upload temporary transfer artifact
         uses: actions/upload-artifact@v4
