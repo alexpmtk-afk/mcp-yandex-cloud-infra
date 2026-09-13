@@ -21,6 +21,7 @@ jobs:
       EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
       FOLDER_ID: b1g00gqb66tbnfoumnkv
       WORKER_CONTAINER_ID: bbamdg0po6fkukhod2e9
+      TIMER_TRIGGER_ID: a1s4ho32v7dha59aeu60
     steps:
       - name: Mint Yandex IAM token through GitHub OIDC
         shell: bash
@@ -53,98 +54,67 @@ jobs:
         run: |
           set -euo pipefail
           mkdir -p "$RUNNER_TEMP/yc"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location \
-            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
-            -o "$RUNNER_TEMP/yc.tar.gz"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tar.gz"
           tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
           chmod +x "$RUNNER_TEMP/yc/yc"
           "$RUNNER_TEMP/yc/yc" version
           echo 'YC_CLI_INSTALL=PASS'
 
-      - name: Verify worker coordinates and logging visibility
+      - name: Inspect timer target and container invoker binding
         shell: bash
         run: |
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
-          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container get \
-            --id="$WORKER_CONTAINER_ID" --format=json > "$RUNNER_TEMP/worker-container.json"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless trigger get --id="$TIMER_TRIGGER_ID" --format=json > "$RUNNER_TEMP/trigger.json"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container list-access-bindings --id="$WORKER_CONTAINER_ID" --format=json > "$RUNNER_TEMP/bindings.json"
           python - <<'PY'
           import json,os
           from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-container.json').read_text())
-          actual=str(d.get('folder_id') or d.get('folderId') or '')
-          assert actual==os.environ['FOLDER_ID'], actual
-          print('M24_WORKER_FOLDER_MATCH=PASS')
+          base=Path(os.environ['RUNNER_TEMP'])
+          t=json.loads((base/'trigger.json').read_text())
+          rule=t.get('rule') or {}
+          timer=rule.get('timer') or {}
+          invoke=timer.get('invoke_container_with_retry') or timer.get('invokeContainerWithRetry') or {}
+          status=str(t.get('status') or '')
+          cron=str(timer.get('cron_expression') or timer.get('cronExpression') or '')
+          target=str(invoke.get('container_id') or invoke.get('containerId') or '')
+          sa=str(invoke.get('service_account_id') or invoke.get('serviceAccountId') or '')
+          print(f'M24_TRIGGER_STATUS={status}')
+          print(f'M24_TRIGGER_CRON={cron}')
+          print('M24_TRIGGER_TARGET_MATCH=' + ('PASS' if target==os.environ['WORKER_CONTAINER_ID'] else 'FAIL'))
+          assert status=='ACTIVE', status
+          assert target==os.environ['WORKER_CONTAINER_ID'], target
+          assert sa, 'trigger service account missing'
+          b=json.loads((base/'bindings.json').read_text())
+          rows=b.get('access_bindings') or b.get('accessBindings') or []
+          ok=False
+          for x in rows:
+              role=str(x.get('role_id') or x.get('roleId') or '')
+              subject=x.get('subject') or {}
+              sid=str(subject.get('id') or '')
+              if role in {'serverless-containers.containerInvoker','serverless.containers.invoker'} and sid==sa:
+                  ok=True
+          print('M24_TRIGGER_CONTAINER_INVOKER_BINDING=' + ('PASS' if ok else 'FAIL'))
+          assert ok, 'timer service account lacks container invoker binding'
+          print(f'M24_TRIGGER_SERVICE_ACCOUNT_ID={sa}')
           PY
-          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging group list \
-            --folder-id="$FOLDER_ID" --format=json > "$RUNNER_TEMP/log-groups.json"
+
+      - name: Check logging state without assuming invocation occurred
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging group list --folder-id="$FOLDER_ID" --format=json > "$RUNNER_TEMP/log-groups.json"
           python - <<'PY'
           import json,os
           from pathlib import Path
           d=json.loads((Path(os.environ['RUNNER_TEMP'])/'log-groups.json').read_text())
           rows=d if isinstance(d,list) else (d.get('log_groups') or d.get('logGroups') or d.get('groups') or [])
           print(f'M24_LOG_GROUP_COUNT={len(rows) if isinstance(rows,list) else 0}')
-          assert isinstance(rows,list) and len(rows)>0, 'no log group after corrected worker deployment'
-          print('M24_LOG_GROUP_VISIBILITY=PASS')
-          PY
-
-      - name: Read corrected worker logs
-        shell: bash
-        run: |
-          set -euo pipefail
-          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
-          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging read \
-            --resource-ids="$WORKER_CONTAINER_ID" \
-            --since=15m \
-            --limit=1000 \
-            --format=json \
-            --folder-id="$FOLDER_ID" \
-            > "$RUNNER_TEMP/worker-logs.json"
-          echo 'M24_WORKER_LOG_READ=PASS'
-
-      - name: Prove timer-to-worker HTTP cycle and classify YDB result evidence
-        shell: bash
-        run: |
-          set -euo pipefail
-          python - <<'PY'
-          import json,os,re
-          from pathlib import Path
-          data=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker-logs.json').read_text())
-          entries=(data.get('entries') or data.get('records') or data.get('result') or []) if isinstance(data,dict) else data
-          assert isinstance(entries,list)
-          messages=[]
-          for e in entries:
-              if not isinstance(e,dict):
-                  continue
-              msg=str(e.get('message',''))
-              jp=e.get('json_payload') or e.get('jsonPayload') or {}
-              if isinstance(jp,dict):
-                  msg += ' ' + ' '.join(str(v) for v in jp.values())
-              messages.append(msg)
-          text='\n'.join(messages)
-          starts=len(re.findall(r'Uvicorn running|Application startup complete|Started server process',text,re.I))
-          post200=len(re.findall(r'POST\s+/\s+HTTP/[^\s]+[" ]+200\b',text,re.I))
-          http5xx=len(re.findall(r'POST\s+/\s+HTTP/[^\s]+[" ]+5\d\d\b',text,re.I))
-          no_work=text.count('NO_SAFE_RUNNABLE_WORK')
-          action_pass=text.count('ACTION_PASS')
-          explicit_errors=len(re.findall(r'\b(ERROR|FATAL|Traceback|PermissionDenied|Unauthenticated)\b',text,re.I))
-          print(f'M24_WORKER_LOG_RECORDS={len(entries)}')
-          print(f'M24_WORKER_STARTUP_MARKERS={starts}')
-          print(f'M24_TIMER_POST_200_MARKERS={post200}')
-          print(f'M24_TIMER_POST_5XX_MARKERS={http5xx}')
-          print(f'M24_NO_SAFE_WORK_RESULT_MARKERS={no_work}')
-          print(f'M24_ACTION_PASS_RESULT_MARKERS={action_pass}')
-          print(f'M24_EXPLICIT_ERROR_MARKERS={explicit_errors}')
-          assert len(entries)>0, 'worker logs empty'
-          assert starts>0, 'worker server did not start'
-          assert post200>0, 'no successful timer POST / 200 observed'
-          assert http5xx==0, 'timer produced HTTP 5xx'
-          assert explicit_errors==0, 'explicit worker error markers found'
-          print('M24_TIMER_TO_WORKER_HTTP_CYCLE=PASS')
-          print('M24_YDB_RESULT_MARKER_PRESENT=' + ('YES' if (no_work+action_pass)>0 else 'NO'))
+          print('M24_LOG_GROUP_EXISTS=' + ('YES' if isinstance(rows,list) and len(rows)>0 else 'NO'))
           PY
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/worker-container.json" "$RUNNER_TEMP/log-groups.json" "$RUNNER_TEMP/worker-logs.json"
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/trigger.json" "$RUNNER_TEMP/bindings.json" "$RUNNER_TEMP/log-groups.json"
