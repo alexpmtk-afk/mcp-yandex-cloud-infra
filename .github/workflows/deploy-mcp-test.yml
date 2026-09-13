@@ -86,7 +86,7 @@ jobs:
         with:
           terraform_version: "1.9.8"
 
-      - name: Reconcile TEST foundation only
+      - name: Reconcile TEST foundation and archive storage
         shell: bash
         env:
           YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
@@ -98,6 +98,7 @@ jobs:
           terraform -chdir=terraform init -reconfigure -input=false \
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform validate
           terraform -chdir=terraform apply -auto-approve -input=false \
             -target=yandex_resourcemanager_folder.mcp_test \
             -target=yandex_container_registry.mcp \
@@ -105,7 +106,9 @@ jobs:
             -target=yandex_iam_service_account.gateway \
             -target=yandex_resourcemanager_folder_iam_member.runtime_registry_pull \
             -target=yandex_resourcemanager_folder_iam_member.runtime_lockbox_viewer \
-            -target=yandex_lockbox_secret.marketplace_credentials
+            -target=yandex_resourcemanager_folder_iam_member.runtime_archive_storage_editor \
+            -target=yandex_lockbox_secret.marketplace_credentials \
+            -target=yandex_storage_bucket.marketplace_archive
 
       - name: Resolve existing TEST runtime resources
         id: resources
@@ -125,7 +128,8 @@ jobs:
           CLUSTER_ID="$(timeout 45s yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
           REDIS_HOST="$(timeout 45s yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
           DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
-          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN; do
+          ARCHIVE_BUCKET="$(terraform -chdir=terraform output -raw marketplace_archive_bucket_name)"
+          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN ARCHIVE_BUCKET; do
             test -n "${!v}"
           done
           echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
@@ -137,6 +141,7 @@ jobs:
           echo "network=$NETWORK_ID" >> "$GITHUB_OUTPUT"
           echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "archive_bucket=$ARCHIVE_BUCKET" >> "$GITHUB_OUTPUT"
           echo 'test_resources=RESOLVED'
 
       - name: Build and push exact MCP image
@@ -166,6 +171,7 @@ jobs:
           NETWORK_ID: ${{ steps.resources.outputs.network }}
           REDIS_HOST: ${{ steps.resources.outputs.redis_host }}
           DOMAIN: ${{ steps.resources.outputs.domain }}
+          ARCHIVE_BUCKET: ${{ steps.resources.outputs.archive_bucket }}
           IMAGE: ${{ steps.image.outputs.image }}
         run: |
           set -euo pipefail
@@ -173,7 +179,7 @@ jobs:
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
             --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 600s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
@@ -239,11 +245,12 @@ jobs:
           echo 'authenticated_initialize_200=PASS'
           echo 'MCP_READINESS=PASS'
 
-      - name: Remote MCP and live WB/Ozon acceptance
+      - name: Remote MCP, archive storage, and live WB/Ozon acceptance
         shell: bash
         timeout-minutes: 8
         env:
           GATEWAY_URL: ${{ steps.deploy.outputs.gateway_url }}
+          ARCHIVE_BUCKET: ${{ steps.resources.outputs.archive_bucket }}
         run: |
           set -euo pipefail
           python -m pip install --quiet 'httpx>=0.27,<1'
@@ -266,7 +273,6 @@ jobs:
               if data.get('ok') is True and 200 <= int(data.get('status', 0)) < 300:
                   print(f'{name}_LIVE=PASS', flush=True)
                   return 'pass'
-
               retry_after = float(data.get('retry_after_seconds', 0) or 0)
               common = (
                   data.get('error_type') == 'rate_limit'
@@ -299,9 +305,11 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'6'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'7'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
+              instructions = init['result'].get('instructions','')
+              assert 'Yandex Object Storage' in instructions, instructions
               print('initialize=PASS', flush=True)
               h = dict(headers0)
               sid = r.headers.get('mcp-session-id')
@@ -328,19 +336,27 @@ jobs:
               names = {x['name'] for x in tools}
               need = {
                   'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status',
-                  'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query'
+                  'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query',
+                  'marketplace_system_map'
               }
               assert need <= names, sorted(need-names)
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
+              system_map = call('marketplace_system_map', {})
+              assert system_map.get('architecture_version') == '2026-09-13.v2', system_map
+              assert system_map['storage_policy']['primary_runtime_storage'] == 'Yandex Object Storage', system_map
+              print('SYSTEM_MAP_V2=PASS', flush=True)
+
               archive = call('marketplace_archive_status', {'year':datetime.date.today().year})
-              assert archive.get('ok') is False, archive
-              assert archive.get('error') == 'archive_storage_not_configured', archive
-              print('ARCHIVE_FAIL_CLOSED=PASS', flush=True)
+              assert archive.get('ok') is True, archive
+              storage = archive.get('storage') or {}
+              assert storage.get('backend') == 'yandex_object_storage', archive
+              assert storage.get('reachable') is True, archive
+              assert storage.get('bucket') == os.environ['ARCHIVE_BUCKET'], archive
+              print('ARCHIVE_OBJECT_STORAGE=PASS', flush=True)
 
               wb = call('wb_get_sales', {'date_from':datetime.date.today().isoformat(),'flag':0})
               wb_state = live_ok_or_rate_limited('WB', wb)
-
               oz = call('ozon_get_products', {'visibility':'ALL','limit':1,'last_id':''})
               oz_state = live_ok_or_rate_limited('OZON', oz)
 
@@ -353,7 +369,7 @@ jobs:
               if oz_state != 'pass':
                   print(f'OZON_RATE_LIMIT_HANDLING=PASS mode={oz_state}', flush=True)
               print('LIMITER_BACKEND=redis', flush=True)
-              print('REMOTE_WB_OZON_ACCEPTANCE=PASS', flush=True)
+              print('REMOTE_WB_OZON_ARCHIVE_ACCEPTANCE=PASS', flush=True)
           PY
 
       - name: Best-effort Yandex runtime-log evidence
