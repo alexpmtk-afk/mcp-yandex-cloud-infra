@@ -1,0 +1,40 @@
+name: M24 Worker Infra Validate
+
+on:
+  push:
+    branches: [m24-autonomous-worker-infra]
+    paths:
+      - "terraform/birzha_test/**"
+      - ".github/workflows/m24-worker-infra-validate.yml"
+  pull_request:
+    paths:
+      - "terraform/birzha_test/**"
+      - ".github/workflows/m24-worker-infra-validate.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  terraform-validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive terraform/birzha_test
+
+      - name: Initialize providers without remote backend
+        run: terraform -chdir=terraform/birzha_test init -backend=false -input=false -lockfile=readonly
+
+      - name: Validate configuration
+        run: terraform -chdir=terraform/birzha_test validate
