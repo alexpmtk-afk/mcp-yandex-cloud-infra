@@ -77,13 +77,15 @@ resource "yandex_lockbox_secret" "marketplace_credentials" {
 }
 
 # Authoritative shared file archive. The bucket is private and versioned so an
-# accidental annual-file overwrite remains recoverable. Runtime uses IAM-token
-# authentication only; no static S3 access key is created or injected.
+# accidental annual-file overwrite remains recoverable. Runtime and Terraform
+# use IAM tokens only and this stack creates no Object Storage static access key.
+# Do not set disabled_statickey_auth here: Yandex requires storage.admin to
+# change that security setting, while normal private bucket lifecycle needs only
+# storage.editor. Least privilege is preferred because no static key exists.
 resource "yandex_storage_bucket" "marketplace_archive" {
-  folder_id               = yandex_resourcemanager_folder.mcp_test.id
-  bucket                  = "marketplaces-mcp-archive-${yandex_resourcemanager_folder.mcp_test.id}"
-  force_destroy           = false
-  disabled_statickey_auth = true
+  folder_id     = yandex_resourcemanager_folder.mcp_test.id
+  bucket        = "marketplaces-mcp-archive-${yandex_resourcemanager_folder.mcp_test.id}"
+  force_destroy = false
 
   versioning {
     enabled = true
