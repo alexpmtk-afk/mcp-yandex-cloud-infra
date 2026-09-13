@@ -61,6 +61,68 @@ jobs:
           "$RUNNER_TEMP/yc/yc" version
           echo 'YC_CLI_INSTALL=PASS'
 
+      - name: Verify worker folder and log-group visibility
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container get \
+            --id="$WORKER_CONTAINER_ID" \
+            --format=json \
+            > "$RUNNER_TEMP/worker-container.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'worker-container.json'
+          d=json.loads(p.read_text())
+          actual=str(d.get('folder_id') or d.get('folderId') or '')
+          expected=os.environ['FOLDER_ID']
+          assert actual, 'container folder_id missing'
+          print('M24_WORKER_FOLDER_MATCH=' + ('PASS' if actual == expected else 'FAIL'))
+          if actual != expected:
+              raise SystemExit('worker folder mismatch')
+          PY
+
+          set +e
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" logging group list \
+            --folder-id="$FOLDER_ID" \
+            --format=json \
+            > "$RUNNER_TEMP/log-groups.json" 2> "$RUNNER_TEMP/log-group-error.txt"
+          rc=$?
+          set -e
+          if [[ "$rc" -ne 0 ]]; then
+            echo 'M24_LOG_GROUP_LIST=FAIL'
+            python - <<'PY'
+          import os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'log-group-error.txt'
+          t=p.read_text(errors='replace').lower() if p.exists() else ''
+          if 'permission' in t or 'denied' in t or '403' in t:
+              reason='PERMISSION_DENIED'
+          elif 'unauth' in t or 'credential' in t or 'token' in t:
+              reason='AUTHENTICATION'
+          elif 'not found' in t or '404' in t:
+              reason='NOT_FOUND'
+          elif 'invalid' in t or 'parse' in t or 'format' in t:
+              reason='INVALID_ARGUMENT'
+          else:
+              reason='OTHER'
+          print('M24_LOG_GROUP_LIST_REASON=' + reason)
+          PY
+          else
+            python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'log-groups.json'
+          d=json.loads(p.read_text())
+          rows=d if isinstance(d,list) else (d.get('log_groups') or d.get('logGroups') or d.get('groups') or [])
+          print('M24_LOG_GROUP_LIST=PASS')
+          print(f'M24_LOG_GROUP_COUNT={len(rows) if isinstance(rows,list) else 0}')
+          PY
+          fi
+
       - name: Read worker execution logs without printing raw payloads
         shell: bash
         run: |
@@ -144,4 +206,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/worker-logs.json" "$RUNNER_TEMP/logging-error.txt"
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/worker-container.json" "$RUNNER_TEMP/log-groups.json" "$RUNNER_TEMP/log-group-error.txt" "$RUNNER_TEMP/worker-logs.json" "$RUNNER_TEMP/logging-error.txt"
