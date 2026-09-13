@@ -2,6 +2,11 @@ name: Marketplaces Archive Versioning
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/marketplaces-archive-versioning.yml
   workflow_run:
     workflows:
       - Deploy Marketplaces MCP TEST
