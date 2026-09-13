@@ -41,7 +41,7 @@ jobs:
           assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']; assert c.get('aud')==os.environ['OIDC_AUDIENCE']; assert c.get('environment')=='test'; assert c.get('ref')=='refs/heads/main'
           print('M24_TIMER_RESUME_OIDC=PASS')
           PY
-          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth-token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
           T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"; test -n "$T"; echo "::add-mask::$T"; printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
 
       - name: Install yc
