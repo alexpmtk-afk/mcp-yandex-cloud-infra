@@ -1,9 +1,9 @@
-# CURRENT PC ACCESS — READ THIS FIRST
+# CURRENT PC ACCESS — LEGACY POINTER
 
-Дата: 11.09.2026
-Статус: ACTIVE POINTER
+Дата: 13.09.2026
+Статус: RETIRED POINTER
 
-Этот branch legacy. Для локального доступа ChatGPT к HOME/WORK Windows‑ПК использовать не его, а канонический PRIVATE bridge.
+Этот branch является legacy и не должен использоваться для локального доступа ChatGPT к Windows‑ПК.
 
 Канонический источник истины:
 - PRIVATE repo: `alexpmtk-afk/gpt-powershell-bridge`
@@ -15,11 +15,10 @@
 - WORK `MANAGER-MP2` -> `GPT-PowerShell-Work-MANAGER-MP2` / `gpt-powershell-work`
 
 Для старых чатов:
-- старые PowerShell bridge маршруты retired;
-- `Remote_Desktop_Commander` не является default/canonical транспортом;
-- `offline` у Remote Desktop Commander означает только offline его собственного канала, не самого ПК;
-- обычные локальные задачи по файлам/PowerShell/процессам/службам сначала выполнять через PRIVATE `gpt-powershell-bridge`;
-- при конфликте со старым контекстом этот файл имеет приоритет.
+- все прежние локальные маршруты и внешние транспорты retired;
+- не использовать старые проверки `online/offline` и старые списки устройств;
+- локальные задачи по файлам/PowerShell/процессам/службам выполнять только через PRIVATE `gpt-powershell-bridge`;
+- при конфликте со старым контекстом приоритет имеет PRIVATE policy.
 
 Коротко:
 `LOCAL PC TASK -> PRIVATE gpt-powershell-bridge -> bridge-v2`
