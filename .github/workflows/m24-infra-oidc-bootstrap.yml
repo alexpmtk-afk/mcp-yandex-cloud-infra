@@ -1,0 +1,255 @@
+name: M24 Infra OIDC Bootstrap
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m24-infra-oidc-bootstrap.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: birzha-m24-infra-oidc-bootstrap
+  cancel-in-progress: false
+
+env:
+  TF_DIR: terraform/birzha_test
+  DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 30
+    steps:
+      - name: Checkout exact infrastructure main
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform 1.9.8
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare one-time legacy deployer token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography >/dev/null
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          p=Path(os.environ['RUNNER_TEMP'])/'yc-key.json'
+          key=json.loads(p.read_text())
+          assert key['service_account_id']==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID']
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600}, key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens',data=json.dumps({'jwt':signed}).encode(),headers={'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: token=json.loads(r.read())['iamToken']
+          assert token
+          print(f'::add-mask::{token}')
+          (Path(os.environ['RUNNER_TEMP'])/'legacy-iam-token').write_text(token)
+          print('LEGACY_BOOTSTRAP_TOKEN=PASS')
+          PY
+
+      - name: Initialize protected remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+
+      - name: Capture current MCP coordinates to preserve
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
+          resources=(s.get('values',{}).get('root_module',{}).get('resources') or [])
+          matches=[r for r in resources if r.get('address')=='yandex_serverless_container.mcp[0]']
+          assert len(matches)==1, f'current MCP container missing/ambiguous: {len(matches)}'
+          v=matches[0]['values']; images=v.get('image') or []
+          assert len(images)==1, images
+          image=images[0]; env=image.get('environment') or {}
+          vals={
+            'PRESERVE_MCP_IMAGE_URL':image.get('url',''),
+            'PRESERVE_SOURCE_SHA':env.get('BIRZHA_SOURCE_COMMIT',''),
+            'PRESERVE_ALLOWED_HOSTS':env.get('MCP_ALLOWED_HOSTS',''),
+            'PRESERVE_ALLOWED_ORIGINS':env.get('MCP_ALLOWED_ORIGINS',''),
+          }
+          assert vals['PRESERVE_MCP_IMAGE_URL'].startswith('cr.yandex/'), vals
+          assert len(vals['PRESERVE_SOURCE_SHA'])==40, vals
+          for k,val in vals.items():
+            assert '\n' not in val
+            with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'{k}={val}\n')
+          print('CURRENT_RUNTIME_PRESERVATION=PASS')
+          PY
+
+      - name: Plan only OIDC bootstrap additions
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/bootstrap.tfplan" \
+            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
+            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="m24_infra_oidc_bootstrap_enabled=true" > "$RUNNER_TEMP/bootstrap-plan.txt"
+          rc=$?
+          set -e
+          test "$rc" = 2 || { cat "$RUNNER_TEMP/bootstrap-plan.txt"; exit 1; }
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/bootstrap.tfplan" > "$RUNNER_TEMP/bootstrap-plan.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'bootstrap-plan.json').read_text())
+          expected={
+            'yandex_iam_service_account.orchestrator_timer',
+            'yandex_iam_service_account_iam_member.terraform_orchestrator_timer_user',
+            'yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap[0]',
+            'yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap[0]',
+            'yandex_iam_workload_identity_federated_credential.github_infra_deployer',
+          }
+          changed={}
+          for r in d.get('resource_changes',[]):
+            a=r.get('change',{}).get('actions',[])
+            if a==['no-op']: continue
+            changed[r['address']]=a
+          assert set(changed)==expected, changed
+          assert all(a==['create'] for a in changed.values()), changed
+          print('OIDC_BOOTSTRAP_PLAN=PASS')
+          PY
+
+      - name: Apply exact bootstrap plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/bootstrap.tfplan"
+
+      - name: Prove GitHub OIDC to Terraform deployer
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENCODED_AUDIENCE="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          OIDC_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${ENCODED_AUDIENCE}")"
+          OIDC_JWT="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$OIDC_RESPONSE")"
+          echo "::add-mask::$OIDC_JWT"
+          python - "$OIDC_JWT" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '=' * (-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT'], c.get('sub')
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE'], c.get('aud')
+          assert c.get('ref')=='refs/heads/main'
+          print('INFRA_OIDC_CLAIMS=PASS')
+          PY
+          RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${OIDC_JWT}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$RESPONSE")"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          umask 077
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/oidc-iam-token"
+          echo 'INFRA_OIDC_TOKEN_EXCHANGE=PASS'
+
+      - name: Plan removal of temporary bootstrap grants using OIDC only
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/oidc-iam-token")"
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/cleanup.tfplan" \
+            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
+            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/cleanup-plan.txt"
+          rc=$?
+          set -e
+          test "$rc" = 2 || { cat "$RUNNER_TEMP/cleanup-plan.txt"; exit 1; }
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/cleanup.tfplan" > "$RUNNER_TEMP/cleanup-plan.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'cleanup-plan.json').read_text())
+          expected={
+            'yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap[0]',
+            'yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap[0]',
+          }
+          changed={}
+          for r in d.get('resource_changes',[]):
+            a=r.get('change',{}).get('actions',[])
+            if a==['no-op']: continue
+            changed[r['address']]=a
+          assert set(changed)==expected, changed
+          assert all(a==['delete'] for a in changed.values()), changed
+          print('OIDC_BOOTSTRAP_CLEANUP_PLAN=PASS')
+          PY
+
+      - name: Remove temporary bootstrap grants using OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/oidc-iam-token")"
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/cleanup.tfplan"
+
+      - name: Re-prove OIDC after temporary grants are gone
+        shell: bash
+        run: |
+          set -euo pipefail
+          ENCODED_AUDIENCE="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          OIDC_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${ENCODED_AUDIENCE}")"
+          OIDC_JWT="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$OIDC_RESPONSE")"
+          echo "::add-mask::$OIDC_JWT"
+          RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth-grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${OIDC_JWT}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$RESPONSE")"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/oidc-iam-token-final"
+          echo 'INFRA_OIDC_POST_CLEANUP=PASS'
+
+      - name: Prove final zero drift under OIDC
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/oidc-iam-token-final")"
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color \
+            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
+            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
+            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
+            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" > "$RUNNER_TEMP/final-plan.txt"
+          rc=$?
+          set -e
+          test "$rc" = 0 || { cat "$RUNNER_TEMP/final-plan.txt"; exit "$rc"; }
+          echo 'INFRA_OIDC_ZERO_DRIFT=PASS'
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/legacy-iam-token" "$RUNNER_TEMP/oidc-iam-token" "$RUNNER_TEMP/oidc-iam-token-final"
