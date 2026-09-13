@@ -1,0 +1,211 @@
+name: WB Weekly Main Export Diagnostic
+
+on:
+  push:
+    branches:
+      - diag/wb-weekly-report-set-2026-09-13
+    paths:
+      - .github/workflows/wb-weekly-main-export-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  export-weekly-main:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget -q --timeout=30 --tries=3 -O "$ARCHIVE" "$URL"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve MCP endpoint and bearer
+        id: target
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$DOMAIN" && test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Download and combine the two main weekly fragments
+        shell: bash
+        timeout-minutes: 15
+        env:
+          MCP_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          python -u - <<'PY'
+          import csv, hashlib, itertools, json, os, time
+          from pathlib import Path
+          import httpx
+
+          REPORT_IDS=(833903021,836274098)
+          OUT=Path(os.environ['RUNNER_TEMP'])/'wb_novokshenov__weekly_main__2026-08-31__2026-09-06.csv'
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          def retry_after(data):
+              return float(data.get('retry_after_seconds',0) or data.get('retry_after_sec',0) or 0)
+
+          def is_rate_limited(data):
+              return retry_after(data)>0 and (data.get('error_type')=='rate_limit' or data.get('error') in ('rate_limit','rate_limit_busy'))
+
+          headers={
+              'Authorization':'Bearer '+os.environ['MCP_BEARER'],
+              'Accept':'application/json, text/event-stream',
+              'Content-Type':'application/json',
+          }
+          ids=itertools.count(1)
+          with httpx.Client(timeout=90.0,follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'wb-weekly-main-export','version':'1'}
+                  }})
+              init=unpack(r); assert init and 'result' in init,init
+              h=dict(headers); sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+
+              def rpc(method,params=None):
+                  rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  d=unpack(rr); assert d and 'result' in d,(method,d); return d['result']
+
+              def call(name,args):
+                  result=rpc('tools/call',{'name':name,'arguments':args})
+                  assert not result.get('isError'),(name,result)
+                  text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None)
+                  assert text is not None,name
+                  return json.loads(text)
+
+              def call_wait(name,args):
+                  while True:
+                      data=call(name,args)
+                      if not is_rate_limited(data): return data
+                      wait=max(1.0,retry_after(data)+1.0)
+                      print(f'RATE_WAIT seconds={wait}',flush=True)
+                      time.sleep(wait)
+
+              all_rows=[]
+              counts={}
+              for report_id in REPORT_IDS:
+                  rows=[]; rrd=0
+                  while True:
+                      data=call_wait('wb_get_realization_report_by_id',{
+                          'seller':'wb_novokshenov','report_id':report_id,'limit':100000,'rrd_id':rrd,
+                      })
+                      if data.get('ok') is True and int(data.get('status',0) or 0)==204:
+                          break
+                      assert data.get('ok') is True and 200 <= int(data.get('status',0) or 0) < 300,data
+                      page=data.get('data') or []
+                      assert isinstance(page,list),data
+                      if not page: break
+                      for row in page:
+                          assert int(row.get('reportId'))==report_id,row.get('reportId')
+                          assert int(row.get('reportType'))==1,row.get('reportType')
+                      rows.extend(page)
+                      if len(page)<100000: break
+                      next_rrd=int(page[-1]['rrdId'])
+                      assert next_rrd>rrd,(rrd,next_rrd)
+                      rrd=next_rrd
+                  counts[str(report_id)]=len(rows)
+                  all_rows.extend(rows)
+                  print(f'REPORT_{report_id}_ROWS={len(rows)}',flush=True)
+
+          assert all_rows,'No rows downloaded'
+          fields=[]; seen=set()
+          for row in all_rows:
+              for key in row.keys():
+                  if key not in seen:
+                      seen.add(key); fields.append(key)
+          with OUT.open('w',encoding='utf-8-sig',newline='') as f:
+              w=csv.DictWriter(f,fieldnames=fields,delimiter=';',quoting=csv.QUOTE_MINIMAL,extrasaction='ignore')
+              w.writeheader(); w.writerows(all_rows)
+          raw=OUT.read_bytes(); sha=hashlib.sha256(raw).hexdigest()
+          print('COMBINED_ROWS='+str(len(all_rows)),flush=True)
+          print('COLUMNS='+str(len(fields)),flush=True)
+          print('BY_REPORT='+json.dumps(counts,sort_keys=True),flush=True)
+          print('CSV_BYTES='+str(len(raw)),flush=True)
+          print('CSV_SHA256='+sha,flush=True)
+          print('CSV_FILE='+str(OUT),flush=True)
+          PY
+
+      - name: Encrypt CSV before artifact transport
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > "$RUNNER_TEMP/public.crt" <<'CERT'
+          -----BEGIN CERTIFICATE-----
+          MIIDFzCCAf+gAwIBAgIUXTKBD+V35C4pEDksPUDmHgPdGpMwDQYJKoZIhvcNAQEL
+          BQAwGzEZMBcGA1UEAwwQd2Itd2Vla2x5LWV4cG9ydDAeFw0yNjA5MTMxMTM2Mjha
+          Fw0yNjA5MTQxMTM2MjhaMBsxGTAXBgNVBAMMEHdiLXdlZWtseS1leHBvcnQwggEi
+          MA0GCSqGSIb3DQEBAQUAA4IBDwAwggEKAoIBAQCdjoie4fGqsuZu3gq2//0OwURo
+          3MeuDQDkcVjvl81x54YWEEtAAD5ZQHBq2PbmsgkyLlp9ZHzoN7vLQvAcDY7riC0I
+          Y16hii5dupw3Mxkp2wmVHN8tg56BnRkUhrelZra+/KdG3rM0xKZOhxPyI8+0ibSR
+          PF8wrwZm0avIBxnfwWUae7G+jKkfxyoKR+AIUkLGN6KiIHa34A+7MiOigAiinZw+
+          FqqPK35582x+H2wXRPZBj3SdYfoSXj1pke1b89nL+VegXPPAGAZ9oCkO3J9wC509
+          DjGEIOAEsJ1dDlT7QFs+YGGGkG3p7j3ycmwk1dtXgEwA0+s33sFfFqSv9DOJAgMB
+          AAGjUzBRMB0GA1UdDgQWBBTwfZ1bcgq2gutA4nIdnire2xrWvDAfBgNVHSMEGDAW
+          gBTwfZ1bcgq2gutA4nIdnire2xrWvDAPBgNVHRMBAf8EBTADAQH/MA0GCSqGSIb3
+          DQEBCwUAA4IBAQApmVfC6MpsSiimrxK+zpI3EqSpWTUMbkyvDBG8uxQcobzwCQwS
+          TtsacJgPw4ShNQPzmY3UHGaY5o+E9fMZRz/lQ1CHEvwqUKM5ePxROj7IyBGPgwgC
+          MMbjnzfY4EcpFc+qHCtSznSpfjr0QHYnPH50xxRefoGIuT4weISJW44n6BzjdlV9
+          sz2Aoi9QOFUghPdkNFCbw3jleZg0EOdoFDGWlC7OgKsSPQrUnyfM5+Qfe8Je0I2N
+          V/E6NQ2FGYBdychd3yg+dCJwD1p2bCWzyvlnyxmKzCcFK08cDRnCS/+JPVhBhLHr
+          7WcZHwc8+VcLsvWVYIThsBQSqRfvsubfjQt0
+          -----END CERTIFICATE-----
+          CERT
+          SRC="$RUNNER_TEMP/wb_novokshenov__weekly_main__2026-08-31__2026-09-06.csv"
+          ENC="$RUNNER_TEMP/wb_novokshenov__weekly_main__2026-08-31__2026-09-06.csv.p7m"
+          test -s "$SRC"
+          openssl cms -encrypt -binary -aes256 -in "$SRC" -out "$ENC" -outform DER "$RUNNER_TEMP/public.crt"
+          rm -f "$SRC"
+          test -s "$ENC"
+          echo 'PLAINTEXT_REMOVED=PASS'
+
+      - name: Upload encrypted artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: wb-weekly-main-2026-08-31--2026-09-06-encrypted
+          path: ${{ runner.temp }}/wb_novokshenov__weekly_main__2026-08-31__2026-09-06.csv.p7m
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/public.crt" "$RUNNER_TEMP/wb_novokshenov__weekly_main__2026-08-31__2026-09-06.csv" "$RUNNER_TEMP/wb_novokshenov__weekly_main__2026-08-31__2026-09-06.csv.p7m"
