@@ -4,6 +4,12 @@ variable "m24_infra_oidc_bootstrap_enabled" {
   default     = false
 }
 
+variable "m24_observability_probe_enabled" {
+  description = "Temporary read-only M24 diagnostics access for Monitoring metrics and Cloud Logging records. Must return to false after evidence capture."
+  type        = bool
+  default     = false
+}
+
 resource "yandex_resourcemanager_folder_iam_member" "m24_infra_oidc_federation_user_bootstrap" {
   count       = var.m24_infra_oidc_bootstrap_enabled ? 1 : 0
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
@@ -18,6 +24,22 @@ resource "yandex_iam_service_account_iam_member" "m24_infra_oidc_credential_edit
   role               = "iam.serviceAccounts.federatedCredentialEditor"
   member             = "serviceAccount:${var.terraform_deployer_service_account_id}"
   sleep_after        = 5
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "m24_observability_monitoring_viewer" {
+  count       = var.m24_observability_probe_enabled ? 1 : 0
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "monitoring.viewer"
+  member      = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  sleep_after = 5
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "m24_observability_logging_reader" {
+  count       = var.m24_observability_probe_enabled ? 1 : 0
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "logging.reader"
+  member      = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  sleep_after = 5
 }
 
 resource "yandex_iam_service_account_iam_member" "terraform_infra_deployer_federated_credential_viewer" {
