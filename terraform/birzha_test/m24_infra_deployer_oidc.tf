@@ -1,5 +1,5 @@
 variable "m24_infra_oidc_bootstrap_enabled" {
-  description = "Temporary switch granting the central infra deployer only the permissions needed to create its GitHub OIDC federated credential. Must return to false after bootstrap."
+  description = "Temporary switch granting the central infra deployer only the permissions needed during OIDC state recovery. Must return to false after recovery."
   type        = bool
   default     = false
 }
@@ -29,7 +29,12 @@ resource "yandex_iam_service_account_iam_member" "terraform_infra_deployer_feder
 
 resource "yandex_iam_workload_identity_federated_credential" "github_infra_deployer" {
   service_account_id  = var.terraform_deployer_service_account_id
-  federation_id       = yandex_iam_workload_identity_oidc_federation.github_image_publisher.id
+
+  # This federation already existed in Yandex Cloud before Terraform started
+  # managing this credential. Recovery evidence proved the exact credential,
+  # service account and GitHub-main subject; Terraform adopts that live object
+  # instead of attempting to create a duplicate against the publisher federation.
+  federation_id       = "aje6jisuccivlu89ddtg"
   external_subject_id = "repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main"
 
   depends_on = [
@@ -40,6 +45,6 @@ resource "yandex_iam_workload_identity_federated_credential" "github_infra_deplo
 }
 
 output "m24_infra_deployer_oidc_credential_id" {
-  description = "GitHub OIDC federated credential for the BIRZHA Terraform deployer."
+  description = "Existing GitHub OIDC federated credential adopted by Terraform for the BIRZHA infra deployer."
   value       = yandex_iam_workload_identity_federated_credential.github_infra_deployer.id
 }
