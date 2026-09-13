@@ -17,10 +17,11 @@ concurrency:
 env:
   TF_DIR: terraform/birzha_test
   DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
-  EXPECTED_CREDENTIAL_ID: ajessgjl0bt8bqn20mbh
+  EXPECTED_REF_CREDENTIAL_ID: ajessgjl0bt8bqn20mbh
   EXPECTED_FEDERATION_ID: aje6jisuccivlu89ddtg
   OIDC_AUDIENCE: https://github.com/alexpmtk-afk
-  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
+  EXPECTED_REF_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
+  EXPECTED_ENV_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
 
 jobs:
   adopt:
@@ -104,7 +105,7 @@ jobs:
           print('PUBLIC_MCP_PRESERVATION=PASS')
           PY
 
-      - name: Reconfirm exact existing credential
+      - name: Reconfirm and adopt existing ref-scoped credential
         shell: bash
         run: |
           set -euo pipefail
@@ -117,28 +118,53 @@ jobs:
           import json,os
           from pathlib import Path
           d=json.loads((Path(os.environ['RUNNER_TEMP'])/'credentials.json').read_text())
-          m=[x for x in d.get('federatedCredentials',[]) if x.get('serviceAccountId')==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID'] and x.get('externalSubjectId')==os.environ['EXPECTED_OIDC_SUBJECT']]
+          m=[x for x in d.get('federatedCredentials',[]) if x.get('serviceAccountId')==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID'] and x.get('externalSubjectId')==os.environ['EXPECTED_REF_SUBJECT']]
           assert len(m)==1, len(m)
           x=m[0]
-          assert x.get('id')==os.environ['EXPECTED_CREDENTIAL_ID'], x.get('id')
+          assert x.get('id')==os.environ['EXPECTED_REF_CREDENTIAL_ID'], x.get('id')
           assert x.get('federationId')==os.environ['EXPECTED_FEDERATION_ID'], x.get('federationId')
-          print('EXACT_EXISTING_INFRA_OIDC_CREDENTIAL=PASS')
+          print('EXACT_REF_OIDC_CREDENTIAL=PASS')
           PY
+          export TF_VAR_yc_token="$TOKEN"
+          TARGET='yandex_iam_workload_identity_federated_credential.github_infra_deployer'
+          if terraform -chdir="$TF_DIR" state list | grep -Fxq "$TARGET"; then
+            echo 'REF_OIDC_IMPORT=ALREADY_MANAGED'
+          else
+            terraform -chdir="$TF_DIR" import -input=false "$TARGET" "$EXPECTED_REF_CREDENTIAL_ID"
+            echo 'REF_OIDC_IMPORT=PASS'
+          fi
 
-      - name: Import existing credential into Terraform state
+      - name: Create environment-scoped OIDC credential safely
         shell: bash
         run: |
           set -euo pipefail
           export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
-          TARGET='yandex_iam_workload_identity_federated_credential.github_infra_deployer'
+          TARGET='yandex_iam_workload_identity_federated_credential.github_infra_deployer_test_environment'
           if terraform -chdir="$TF_DIR" state list | grep -Fxq "$TARGET"; then
-            echo 'INFRA_OIDC_IMPORT=ALREADY_MANAGED'
+            echo 'ENV_OIDC_CREDENTIAL=ALREADY_MANAGED'
           else
-            terraform -chdir="$TF_DIR" import -input=false "$TARGET" "$EXPECTED_CREDENTIAL_ID"
-            echo 'INFRA_OIDC_IMPORT=PASS'
+            set +e
+            terraform -chdir="$TF_DIR" plan -refresh=false -detailed-exitcode -input=false -no-color \
+              -target="$TARGET" -var="m24_infra_oidc_bootstrap_enabled=true" \
+              -out="$RUNNER_TEMP/env-oidc.tfplan" > "$RUNNER_TEMP/env-oidc-plan.txt"
+            rc=$?
+            set -e
+            test "$rc" = 2 || { cat "$RUNNER_TEMP/env-oidc-plan.txt"; exit 1; }
+            terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/env-oidc.tfplan" > "$RUNNER_TEMP/env-oidc-plan.json"
+            python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'env-oidc-plan.json').read_text())
+          changed={r['address']:r['change']['actions'] for r in d.get('resource_changes',[]) if r.get('change',{}).get('actions')!=['no-op']}
+          target='yandex_iam_workload_identity_federated_credential.github_infra_deployer_test_environment'
+          assert changed=={target:['create']}, changed
+          print('ENV_OIDC_CREATE_PLAN=PASS')
+          PY
+            terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/env-oidc.tfplan"
+            echo 'ENV_OIDC_CREDENTIAL=CREATED'
           fi
 
-      - name: Prove no unintended drift before removing temporary bootstrap grants
+      - name: Prove no unintended drift before cleanup
         shell: bash
         run: |
           set -euo pipefail
@@ -155,7 +181,7 @@ jobs:
           test "$rc" = 0 || { cat "$RUNNER_TEMP/pre-cleanup-plan.txt"; exit "$rc"; }
           echo 'PRE_CLEANUP_ZERO_DRIFT=PASS'
 
-      - name: Prove GitHub OIDC token exchange works
+      - name: Prove GitHub Environment OIDC token exchange works
         shell: bash
         run: |
           set -euo pipefail
@@ -168,9 +194,10 @@ jobs:
           import base64,json,os,sys
           p=sys.argv[1].split('.')[1]; p += '=' * (-len(p)%4)
           c=json.loads(base64.urlsafe_b64decode(p))
-          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
-          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
-          assert c.get('ref')=='refs/heads/main'
+          assert c.get('sub')==os.environ['EXPECTED_ENV_SUBJECT'], c.get('sub')
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE'], c.get('aud')
+          assert c.get('ref')=='refs/heads/main', c.get('ref')
+          assert c.get('environment')=='test', c.get('environment')
           print('INFRA_OIDC_GITHUB_CLAIMS=PASS')
           PY
           RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${OIDC_JWT}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
