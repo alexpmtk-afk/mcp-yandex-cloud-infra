@@ -1,26 +1,20 @@
-# GPT-PowerShell Bridge v0.1 — LEGACY ROUTING NOTICE
+# GPT-PowerShell Bridge v0.1 — RETIRED
 
-Дата: 11.09.2026
-Статус: **WORK RETIRED HERE / HOME LEGACY ONLY**
+Дата: 13.09.2026
+Статус: **FULLY RETIRED / HISTORY ONLY**
 
-## Важно для ChatGPT и старых чатов
+Этот публичный branch больше не используется для локального доступа ChatGPT ни к HOME, ни к WORK Windows‑ПК.
 
-Рабочий ПК `MANAGER-MP2` больше НЕ управляется через ветку `tooling/powershell-bridge-v0.1` и старый runner `Codex-Bridge-Work-MANAGER-MP2`.
-
-Для любых PowerShell-задач на WORK использовать только новый PRIVATE production-контур:
-
-- Repository: `alexpmtk-afk/gpt-powershell-bridge` (PRIVATE)
+Канонический PRIVATE production-контур:
+- Repository: `alexpmtk-afk/gpt-powershell-bridge`
 - Execution branch: `bridge-v2`
-- Runner: `GPT-PowerShell-Work-MANAGER-MP2`
-- Label: `gpt-powershell-work`
-- Canonical contract: `tools/powershell-bridge/README.md` в private repo
+- HOME runner: `GPT-PowerShell-Home-DESKTOP-7F6KPIL` / label `gpt-powershell-home`
+- WORK runner: `GPT-PowerShell-Work-MANAGER-MP2` / label `gpt-powershell-work`
+- Canonical policy: `PC_ACCESS_POLICY.md` в PRIVATE repo
 
-Префиксы и схема `bridge-exec-work:` для WORK считаются устаревшими и не должны использоваться.
+Все старые public bridge prefixes, runners и маршруты считаются выведенными из эксплуатации и не должны использоваться как основной, резервный или диагностический транспорт.
 
-HOME (`DESKTOP-7F6KPIL`) пока остаётся legacy-контуром до отдельной миграции пользователя. Поэтому эта ветка сохраняется только ради HOME/истории и не является канонической для WORK.
+Историческая реализация остаётся только в Git history для аудита. Возобновлять её запрещено.
 
-Исторический v0.1 сохранён в Git history. При необходимости аудита использовать историю commit, а не пытаться возобновлять старый WORK runner.
-
-Короткое правило для любого старого чата:
-
-`WORK PowerShell -> PRIVATE repo alexpmtk-afk/gpt-powershell-bridge -> branch bridge-v2 -> gpt-powershell-work`
+Коротко:
+`HOME/WORK PowerShell -> PRIVATE alexpmtk-afk/gpt-powershell-bridge -> bridge-v2`
