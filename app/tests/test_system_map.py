@@ -11,15 +11,18 @@ from core.system_map import ARCHITECTURE_VERSION, SYSTEM_INSTRUCTIONS, SYSTEM_MA
 def test_canonical_map_fixes_yandex_runtime_boundaries():
     assert SYSTEM_MAP["status"] == "CANONICAL"
     assert SYSTEM_MAP["runtime"]["cloud"] == "Yandex Cloud only"
-    assert SYSTEM_MAP["storage_policy"]["primary_runtime_storage"] == "Yandex Cloud"
+    assert SYSTEM_MAP["storage_policy"]["primary_runtime_storage"] == "Yandex Object Storage"
+    assert "runtime service-account IAM token" in SYSTEM_MAP["storage_policy"]["archive_auth"]
     assert SYSTEM_MAP["storage_policy"]["google_cloud"] == "not part of the runtime architecture"
     assert "optional export/mirror only" in SYSTEM_MAP["storage_policy"]["google_drive"]
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
 
 
 def test_server_instructions_contain_hard_boundaries():
+    assert ARCHITECTURE_VERSION == "2026-09-13.v2"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
-    assert "Yandex Cloud" in SYSTEM_INSTRUCTIONS
+    assert "Yandex Object Storage" in SYSTEM_INSTRUCTIONS
+    assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
     assert "Google Cloud is not part" in SYSTEM_INSTRUCTIONS
     assert "fail closed" in SYSTEM_INSTRUCTIONS
 
