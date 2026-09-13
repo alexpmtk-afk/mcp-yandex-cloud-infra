@@ -114,20 +114,7 @@ jobs:
           assert env.get('YDB_CONNECTION_STRING','').startswith('grpcs://')
           assert (image.get('command') or [])==['python','-m','birzha.worker']
           assert worker.get('concurrency')==1
-
-          raw_timeout=worker.get('execution_timeout')
-          if isinstance(raw_timeout,(int,float)):
-              timeout_ok=float(raw_timeout)==120.0
-          else:
-              normalized=str(raw_timeout or '').strip().lower()
-              if normalized.endswith('s'):
-                  normalized=normalized[:-1]
-              try:
-                  timeout_ok=float(normalized)==120.0
-              except ValueError:
-                  timeout_ok=False
-          print(f'M24_WORKER_EXECUTION_TIMEOUT_REPR={raw_timeout!r}')
-          assert timeout_ok, raw_timeout
+          assert worker.get('execution_timeout')=='2m0s', worker.get('execution_timeout')
 
           binding=by_addr['yandex_serverless_container_iam_member.orchestrator_timer_invoker[0]']['values']
           assert binding.get('container_id')==os.environ['EXPECTED_WORKER_CONTAINER_ID']
