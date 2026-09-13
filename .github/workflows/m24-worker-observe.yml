@@ -60,19 +60,27 @@ jobs:
           "$RUNNER_TEMP/yc/yc" version
           echo 'YC_CLI_INSTALL=PASS'
 
-      - name: Inspect timer target, container revision and invoker binding
+      - name: Inspect timer target, latest container revision and invoker binding
         shell: bash
         run: |
           set -euo pipefail
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
           YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless trigger get --id="$TIMER_TRIGGER_ID" --format=json > "$RUNNER_TEMP/trigger.json"
-          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container get --id="$WORKER_CONTAINER_ID" --format=json > "$RUNNER_TEMP/container.json"
           YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container list-access-bindings --id="$WORKER_CONTAINER_ID" --format=json > "$RUNNER_TEMP/bindings.json"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container revision list --container-id="$WORKER_CONTAINER_ID" --format=json > "$RUNNER_TEMP/revisions.json"
           REVISION_ID="$(python - <<'PY'
           import json,os
           from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'container.json').read_text())
-          print(d.get('revision_id') or d.get('revisionId') or '')
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'revisions.json').read_text())
+          rows=d if isinstance(d,list) else (d.get('revisions') or d.get('containerRevisions') or [])
+          assert isinstance(rows,list) and rows, 'no revisions returned for worker container'
+          rows=[r for r in rows if isinstance(r,dict) and str(r.get('container_id') or r.get('containerId') or '')==os.environ['WORKER_CONTAINER_ID']]
+          assert rows, 'no revision belongs to expected worker container'
+          rows.sort(key=lambda r: str(r.get('created_at') or r.get('createdAt') or ''), reverse=True)
+          latest=rows[0]
+          revision_id=str(latest.get('id') or '')
+          assert revision_id, 'latest revision id missing'
+          print(revision_id)
           PY
           )"
           test -n "$REVISION_ID"
@@ -114,12 +122,15 @@ jobs:
 
           r=json.loads((base/'revision.json').read_text())
           revision_status=str(r.get('status') or '')
+          revision_container=str(r.get('container_id') or r.get('containerId') or '')
+          assert revision_container==os.environ['WORKER_CONTAINER_ID'], revision_container
           log_opts=r.get('log_options') or r.get('logOptions') or {}
           log_disabled=bool(log_opts.get('disabled')) if isinstance(log_opts,dict) else False
           runtime=r.get('runtime') or {}
           runtime_type=str(runtime.get('type') or '') if isinstance(runtime,dict) else ''
           assert revision_status=='ACTIVE', revision_status
           assert not log_disabled, 'worker revision logging is explicitly disabled'
+          print(f'M24_WORKER_REVISION_ID={r.get("id","")}')
           print(f'M24_WORKER_REVISION_STATUS={revision_status}')
           print(f'M24_WORKER_RUNTIME_TYPE={runtime_type or "UNKNOWN"}')
           print(f'M24_WORKER_LOGGING_DISABLED={str(log_disabled).upper()}')
@@ -222,4 +233,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/trigger.json" "$RUNNER_TEMP/container.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/bindings.json" "$RUNNER_TEMP/log-groups.json" "$RUNNER_TEMP/log-groups.err" "$RUNNER_TEMP"/monitoring-*.json "$RUNNER_TEMP"/monitoring-*-code.txt
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/trigger.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/bindings.json" "$RUNNER_TEMP/log-groups.json" "$RUNNER_TEMP/log-groups.err" "$RUNNER_TEMP"/monitoring-*.json "$RUNNER_TEMP"/monitoring-*-code.txt
