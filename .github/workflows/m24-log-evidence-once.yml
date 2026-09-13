@@ -21,7 +21,7 @@ env:
   FOLDER_ID: b1g00gqb66tbnfoumnkv
   WORKER_CONTAINER_ID: bbamdg0po6fkukhod2e9
   TIMER_TRIGGER_ID: a1s4ho32v7dha59aeu60
-  EXPECTED_REVISION_ID: bbareff7vhel123dbvp1
+  EXPECTED_REVISION_ID: bbaojh9elqpd5p5mdsei
 
 jobs:
   evidence:
@@ -174,7 +174,6 @@ jobs:
           print('M24_LOG_STATUS_VALUES=' + ','.join(f'{k}:{v}' for k,v in status_values.most_common(12)))
           print('M24_LOG_KNOWN_SIGNATURES=' + ','.join(f'{k}:{v}' for k,v in sorted(known.items())))
           print('M24_LOG_EXCEPTION_TYPES=' + ','.join(f'{k}:{v}' for k,v in signatures.most_common(20)))
-          # Fingerprints let repeated failures be compared without exposing message bodies.
           fps=Counter()
           for e in rows:
               if not isinstance(e,dict): continue
