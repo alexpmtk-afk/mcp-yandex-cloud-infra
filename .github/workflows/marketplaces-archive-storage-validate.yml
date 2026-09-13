@@ -6,6 +6,7 @@ on:
       - app/**
       - terraform/**
       - .github/workflows/deploy-mcp-test.yml
+      - .github/workflows/configure-card-monitor.yml
       - .github/workflows/marketplaces-system-map-acceptance.yml
       - .github/workflows/marketplaces-archive-storage-validate.yml
       - .github/workflows/marketplaces-archive-versioning.yml
@@ -57,6 +58,11 @@ jobs:
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/deploy-mcp-test.yml
           grep -q 'yandex_storage_bucket.marketplace_archive' .github/workflows/deploy-mcp-test.yml
+          grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/configure-card-monitor.yml
+          grep -q 'archive_bucket=' .github/workflows/configure-card-monitor.yml
+          grep -q -- '--execution-timeout 600s' .github/workflows/configure-card-monitor.yml
+          grep -q 'ARCHIVE_OBJECT_STORAGE_AFTER_CARD_MONITOR=PASS' .github/workflows/configure-card-monitor.yml
+          ! grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/configure-card-monitor.yml
           grep -q 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf
           grep -A5 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf | grep -q 'role.*=.*"storage.editor"'
           grep -A20 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'deployer_archive_storage_editor'
@@ -68,12 +74,12 @@ jobs:
           grep -q 'VERSIONING_ENABLED' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'ARCHIVE_PRIVATE_ACCESS=PASS' .github/workflows/marketplaces-archive-versioning.yml
           ! grep -q 'yc storage bucket update' .github/workflows/marketplaces-archive-versioning.yml
-          ! grep -q 'storage.admin' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'storage.admin' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/configure-card-monitor.yml
           grep -q 'folder add-access-binding' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'folder remove-access-binding' .github/workflows/marketplaces-archive-versioning.yml
           test "$(grep -c -- '--role storage.admin' .github/workflows/marketplaces-archive-versioning.yml)" = 2
           grep -q 'EXISTING_ADMIN.*= 0' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'ARCHIVE_TEMP_ADMIN_GRANTED=1' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'ARCHIVE_TEMP_ADMIN_REVOKED=PASS' .github/workflows/marketplaces-archive-versioning.yml
-          ! grep -R -E 'resource "yandex_iam_service_account_(static_)?access_key"|aws_access_key_id|aws_secret_access_key' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/marketplaces-archive-versioning.yml
+          ! grep -R -E 'resource "yandex_iam_service_account_(static_)?access_key"|aws_access_key_id|aws_secret_access_key' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/configure-card-monitor.yml .github/workflows/marketplaces-archive-versioning.yml
           echo 'ARCHIVE_RUNTIME_VALIDATE=PASS'

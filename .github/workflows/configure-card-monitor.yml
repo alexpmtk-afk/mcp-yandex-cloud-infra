@@ -83,7 +83,10 @@ jobs:
           GATEWAY_JSON="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json)"
           GATEWAY_ID="$(jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].id//.[0].id//empty' <<<"$GATEWAY_JSON")"
           DOMAIN="$(jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty' <<<"$GATEWAY_JSON")"
-          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA GATEWAY_SA REGISTRY_ID NETWORK_ID REDIS_HOST GATEWAY_ID DOMAIN; do
+          ARCHIVE_BUCKET="marketplaces-mcp-archive-${FOLDER_ID}"
+          timeout 45s yc storage bucket get --name "$ARCHIVE_BUCKET" --format json > "$RUNNER_TEMP/archive-bucket.json"
+          test "$(jq -r '.name//empty' "$RUNNER_TEMP/archive-bucket.json")" = "$ARCHIVE_BUCKET"
+          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA GATEWAY_SA REGISTRY_ID NETWORK_ID REDIS_HOST GATEWAY_ID DOMAIN ARCHIVE_BUCKET; do
             test -n "${!v}"
           done
           echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
@@ -97,6 +100,7 @@ jobs:
           echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
           echo "gateway=$GATEWAY_ID" >> "$GITHUB_OUTPUT"
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "archive_bucket=$ARCHIVE_BUCKET" >> "$GITHUB_OUTPUT"
           echo 'CARD_MONITOR_RESOURCES=RESOLVED'
 
       - name: Ensure dedicated Card Monitor ingest secret
@@ -165,14 +169,15 @@ jobs:
           RUNTIME_SA: ${{ steps.resources.outputs.runtime_sa }}
           NETWORK_ID: ${{ steps.resources.outputs.network }}
           REDIS_HOST: ${{ steps.resources.outputs.redis_host }}
+          ARCHIVE_BUCKET: ${{ steps.resources.outputs.archive_bucket }}
           IMAGE: ${{ steps.runtime.outputs.image }}
         run: |
           set -euo pipefail
           timeout 180s yc serverless container revision deploy \
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
-            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 60s --concurrency 8 \
+            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 600s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
@@ -204,12 +209,13 @@ jobs:
             > "$RUNNER_TEMP/gateway-update.json"
           echo 'CARD_MONITOR_GATEWAY=UPDATED'
 
-      - name: End-to-end Card Monitor acceptance
+      - name: End-to-end Card Monitor and archive acceptance
         shell: bash
         timeout-minutes: 5
         env:
           DOMAIN: ${{ steps.resources.outputs.domain }}
           SOURCE_SHA: ${{ steps.runtime.outputs.source_sha }}
+          ARCHIVE_BUCKET: ${{ steps.resources.outputs.archive_bucket }}
         run: |
           set -euo pipefail
           BASE="https://${DOMAIN}"
@@ -250,23 +256,32 @@ jobs:
                   if line.startswith('data:'):
                       return json.loads(line[5:].strip())
               return r.json()
-          with httpx.Client(timeout=45,follow_redirects=True) as c:
+          with httpx.Client(timeout=60,follow_redirects=True) as c:
               r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'card-monitor-acceptance','version':'1'}}})
               init=unpack(r); assert 'result' in init,init
               sid=r.headers.get('mcp-session-id')
               if sid: h['Mcp-Session-Id']=sid
               def rpc(method,params=None):
                   d=unpack(c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})); assert 'result' in d,d; return d['result']
+              def call(name,args):
+                  out=rpc('tools/call',{'name':name,'arguments':args})
+                  assert not out.get('isError'),out
+                  text=next(x['text'] for x in out['content'] if x.get('type')=='text')
+                  return json.loads(text)
               names={x['name'] for x in rpc('tools/list')['tools']}
-              need={'card_monitor_status','card_monitor_get_latest','card_monitor_get_history','card_monitor_compare_prices'}
+              need={'card_monitor_status','card_monitor_get_latest','card_monitor_get_history','card_monitor_compare_prices','marketplace_archive_status'}
               assert need <= names, sorted(need-names)
-              out=rpc('tools/call',{'name':'card_monitor_status','arguments':{}})
-              assert not out.get('isError'),out
-              text=next(x['text'] for x in out['content'] if x.get('type')=='text')
-              status=json.loads(text)
+              status=call('card_monitor_status',{})
               assert status['batch']['run_id'].startswith('cloud-deploy-smoke-'),status
+              archive=call('marketplace_archive_status',{'year':2026})
+              assert archive.get('ok') is True,archive
+              storage=archive.get('storage') or {}
+              assert storage.get('backend')=='yandex_object_storage',storage
+              assert storage.get('reachable') is True,storage
+              assert storage.get('bucket')==os.environ['ARCHIVE_BUCKET'],storage
               print('CARD_MONITOR_MCP_TOOLS=PASS')
               print('CARD_MONITOR_REDIS_ROUNDTRIP=PASS')
+              print('ARCHIVE_OBJECT_STORAGE_AFTER_CARD_MONITOR=PASS')
           PY
           echo 'CARD_MONITOR_CLOUD_ACCEPTANCE=PASS'
 
@@ -274,7 +289,7 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-service-account-key.json" \
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/archive-bucket.json" \
             "$RUNNER_TEMP/lockbox-payload.json" "$RUNNER_TEMP/new-secret-version.json" \
             "$RUNNER_TEMP/current-payload.json" "$RUNNER_TEMP/card-monitor-token" \
             "$RUNNER_TEMP/mcp-bearer" "$RUNNER_TEMP/card-monitor-revision.json" \
