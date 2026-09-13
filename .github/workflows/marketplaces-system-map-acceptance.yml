@@ -2,12 +2,25 @@ name: Marketplaces System Map Acceptance
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/marketplaces-system-map-acceptance.yml
+  workflow_run:
+    workflows:
+      - Deploy Marketplaces MCP TEST
+    types:
+      - completed
 
 permissions:
   contents: read
 
 jobs:
   verify:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 10
