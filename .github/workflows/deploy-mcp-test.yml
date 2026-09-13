@@ -13,6 +13,9 @@ on:
 permissions:
   contents: read
 
+env:
+  ARCHIVE_DRIVE_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+
 concurrency:
   group: marketplaces-mcp-test-terraform
   cancel-in-progress: false
@@ -132,6 +135,8 @@ jobs:
           for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN ARCHIVE_BUCKET; do
             test -n "${!v}"
           done
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/secret-keys.json"
+          jq -e '[.entries[].key] | index("google_drive_oauth_json") != null' "$RUNNER_TEMP/secret-keys.json" >/dev/null
           echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
           echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
@@ -142,6 +147,7 @@ jobs:
           echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
           echo "archive_bucket=$ARCHIVE_BUCKET" >> "$GITHUB_OUTPUT"
+          echo 'google_drive_oauth_lockbox=RESOLVED'
           echo 'test_resources=RESOLVED'
 
       - name: Build and push exact MCP image
@@ -179,10 +185,11 @@ jobs:
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
             --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 600s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_oauth_json" \
             --format json --no-user-output > "$RUNNER_TEMP/revision.json"
           REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"
           test -n "$REVISION_ID"
@@ -245,7 +252,7 @@ jobs:
           echo 'authenticated_initialize_200=PASS'
           echo 'MCP_READINESS=PASS'
 
-      - name: Remote MCP, archive storage, and live WB/Ozon acceptance
+      - name: Remote MCP, canonical Drive archive, and live WB/Ozon acceptance
         shell: bash
         timeout-minutes: 8
         env:
@@ -305,10 +312,11 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'8'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'9'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
+              assert 'Google Drive' in instructions, instructions
               assert 'Yandex Object Storage' in instructions, instructions
               assert 'MULTI-DATASET' in instructions, instructions
               assert 'marketplace_metric_route' in instructions, instructions
@@ -345,8 +353,8 @@ jobs:
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-14.v1', system_map
-              assert system_map['storage_policy']['primary_runtime_storage'] == 'Yandex Object Storage', system_map
+              assert system_map.get('architecture_version') == '2026-09-14.v2', system_map
+              assert system_map['storage_policy']['primary_archive_storage'] == 'Google Drive', system_map
               assert system_map['archive_policy']['multi_dataset'] is True, system_map
               assert system_map['archive_policy']['no_single_report_is_complete_database'] is True, system_map
               print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
@@ -372,10 +380,16 @@ jobs:
               archive = call('marketplace_archive_status', {'year':datetime.date.today().year})
               assert archive.get('ok') is True, archive
               storage = archive.get('storage') or {}
-              assert storage.get('backend') == 'yandex_object_storage', archive
+              assert storage.get('backend') == 'google_drive_primary', archive
               assert storage.get('reachable') is True, archive
-              assert storage.get('bucket') == os.environ['ARCHIVE_BUCKET'], archive
-              print('ARCHIVE_OBJECT_STORAGE=PASS', flush=True)
+              assert storage.get('root_folder_id') == os.environ['ARCHIVE_DRIVE_ROOT_ID'], archive
+              assert storage.get('root_name') == 'MCP архив базы данных', archive
+              queue_storage = storage.get('queue_and_staging') or {}
+              assert queue_storage.get('backend') == 'yandex_object_storage', archive
+              assert queue_storage.get('reachable') is True, archive
+              assert queue_storage.get('bucket') == os.environ['ARCHIVE_BUCKET'], archive
+              print('ARCHIVE_GOOGLE_DRIVE_PRIMARY=PASS', flush=True)
+              print('ARCHIVE_YANDEX_QUEUE_BACKUP=PASS', flush=True)
 
               wb = call('wb_get_sales', {'date_from':datetime.date.today().isoformat(),'flag':0})
               wb_state = live_ok_or_rate_limited('WB', wb)
@@ -412,4 +426,4 @@ jobs:
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/unauth" "$RUNNER_TEMP/auth"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/secret-keys.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/unauth" "$RUNNER_TEMP/auth"
