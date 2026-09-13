@@ -28,12 +28,9 @@ resource "yandex_iam_service_account_iam_member" "terraform_infra_deployer_feder
 }
 
 resource "yandex_iam_workload_identity_federated_credential" "github_infra_deployer" {
-  service_account_id  = var.terraform_deployer_service_account_id
+  service_account_id = var.terraform_deployer_service_account_id
 
-  # This federation already existed in Yandex Cloud before Terraform started
-  # managing this credential. Recovery evidence proved the exact credential,
-  # service account and GitHub-main subject; Terraform adopts that live object
-  # instead of attempting to create a duplicate against the publisher federation.
+  # Existing ref-scoped credential adopted from Yandex Cloud.
   federation_id       = "aje6jisuccivlu89ddtg"
   external_subject_id = "repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main"
 
@@ -44,7 +41,28 @@ resource "yandex_iam_workload_identity_federated_credential" "github_infra_deplo
   ]
 }
 
+resource "yandex_iam_workload_identity_federated_credential" "github_infra_deployer_test_environment" {
+  service_account_id = var.terraform_deployer_service_account_id
+
+  # Jobs using GitHub Environment `test` receive an environment-scoped OIDC
+  # subject, not the ref-scoped subject above. This separate credential keeps
+  # both modes valid without replacing or weakening the existing credential.
+  federation_id       = "aje6jisuccivlu89ddtg"
+  external_subject_id = "repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test"
+
+  depends_on = [
+    yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap,
+    yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap,
+    yandex_iam_service_account_iam_member.terraform_infra_deployer_federated_credential_viewer,
+  ]
+}
+
 output "m24_infra_deployer_oidc_credential_id" {
-  description = "Existing GitHub OIDC federated credential adopted by Terraform for the BIRZHA infra deployer."
+  description = "Existing ref-scoped GitHub OIDC federated credential adopted by Terraform for the BIRZHA infra deployer."
   value       = yandex_iam_workload_identity_federated_credential.github_infra_deployer.id
+}
+
+output "m24_infra_deployer_test_environment_oidc_credential_id" {
+  description = "GitHub Environment test OIDC federated credential for BIRZHA infrastructure automation."
+  value       = yandex_iam_workload_identity_federated_credential.github_infra_deployer_test_environment.id
 }
