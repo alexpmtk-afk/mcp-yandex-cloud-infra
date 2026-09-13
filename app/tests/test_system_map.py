@@ -18,12 +18,27 @@ def test_canonical_map_fixes_yandex_runtime_boundaries():
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
 
 
+def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
+    assert SYSTEM_MAP["archive_policy"]["multi_dataset"] is True
+    assert SYSTEM_MAP["archive_policy"]["no_single_report_is_complete_database"] is True
+    assert SYSTEM_MAP["archive_policy"]["initial_history_backfill"] == 2026
+    assert SYSTEM_MAP["archive_policy"]["planned_history_floor"] == 2024
+    excluded = SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["not_authoritative_for"]
+    assert "customer orders/order events" in excluded
+    assert "stock-on-date history" in excluded
+    assert SYSTEM_MAP["data_routing_policy"]["canonical_metric_router_tool"] == "marketplace_metric_route"
+    assert "orders are customer order events" in SYSTEM_MAP["data_routing_policy"]["orders_vs_realization"]
+
+
 def test_server_instructions_contain_hard_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-13.v2"
+    assert ARCHITECTURE_VERSION == "2026-09-14.v1"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
     assert "Yandex Object Storage" in SYSTEM_INSTRUCTIONS
     assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
     assert "Google Cloud is not part" in SYSTEM_INSTRUCTIONS
+    assert "MULTI-DATASET" in SYSTEM_INSTRUCTIONS
+    assert "NOT authoritative for customer orders" in SYSTEM_INSTRUCTIONS
+    assert "marketplace_metric_route" in SYSTEM_INSTRUCTIONS
     assert "fail closed" in SYSTEM_INSTRUCTIONS
 
 

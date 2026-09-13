@@ -12,6 +12,7 @@ from .archive_tools import register_archive_tools
 from .archive_yandex import build_yandex_archive_store_from_env
 from .business_registry import resolve_business_cabinet
 from .card_monitor import register_tools as register_card_monitor_tools
+from .data_catalog import register_data_catalog_tools
 from .system_map import SYSTEM_INSTRUCTIONS, register_system_map_tool
 from .tools import resolve_named_cabinet
 
@@ -227,6 +228,7 @@ def build(**fastmcp_kwargs: Any) -> FastMCP:
     archive_store = build_yandex_archive_store_from_env()
     modules["_archive_store"] = archive_store
     register_system_map_tool(combined)
+    register_data_catalog_tools(combined)
     _register_finance_tools(combined, modules)
     register_archive_tools(combined, modules, archive_store)
     register_card_monitor_tools(combined)
