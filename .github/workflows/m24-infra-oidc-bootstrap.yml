@@ -17,6 +17,7 @@ concurrency:
 env:
   TF_DIR: terraform/birzha_test
   DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_FEDERATION_ID: ajeccljd5pi9ive0i18u
   OIDC_AUDIENCE: https://github.com/alexpmtk-afk
   EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
 
@@ -86,81 +87,99 @@ jobs:
           s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
           resources=(s.get('values',{}).get('root_module',{}).get('resources') or [])
           matches=[r for r in resources if r.get('address')=='yandex_serverless_container.mcp[0]']
-          assert len(matches)==1, f'current MCP container missing/ambiguous: {len(matches)}'
-          v=matches[0]['values']; images=v.get('image') or []
-          assert len(images)==1, images
-          image=images[0]; env=image.get('environment') or {}
+          assert len(matches)==1
+          image=(matches[0]['values'].get('image') or [])[0]
+          env=image.get('environment') or {}
           vals={
             'PRESERVE_MCP_IMAGE_URL':image.get('url',''),
             'PRESERVE_SOURCE_SHA':env.get('BIRZHA_SOURCE_COMMIT',''),
             'PRESERVE_ALLOWED_HOSTS':env.get('MCP_ALLOWED_HOSTS',''),
             'PRESERVE_ALLOWED_ORIGINS':env.get('MCP_ALLOWED_ORIGINS',''),
           }
-          assert vals['PRESERVE_MCP_IMAGE_URL'].startswith('cr.yandex/'), vals
-          assert len(vals['PRESERVE_SOURCE_SHA'])==40, vals
+          assert vals['PRESERVE_MCP_IMAGE_URL'].startswith('cr.yandex/')
+          assert len(vals['PRESERVE_SOURCE_SHA'])==40
           for k,val in vals.items():
             assert '\n' not in val
             with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'{k}={val}\n')
           print('CURRENT_RUNTIME_PRESERVATION=PASS')
           PY
 
-      - name: Plan only OIDC bootstrap additions without forbidden refresh
+      - name: Create permanent self-viewer binding only
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
+          TARGET='yandex_iam_service_account_iam_member.terraform_infra_deployer_federated_credential_viewer'
+          if terraform -chdir="$TF_DIR" state list | grep -Fxq "$TARGET"; then
+            echo 'INFRA_DEPLOYER_SELF_VIEWER=ALREADY_MANAGED'
+          else
+            set +e
+            terraform -chdir="$TF_DIR" plan -refresh=false -detailed-exitcode -input=false -no-color -target="$TARGET" -out="$RUNNER_TEMP/self-viewer.tfplan" > "$RUNNER_TEMP/self-viewer-plan.txt"
+            rc=$?
+            set -e
+            test "$rc" = 2 || { cat "$RUNNER_TEMP/self-viewer-plan.txt"; exit 1; }
+            terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/self-viewer.tfplan" > "$RUNNER_TEMP/self-viewer-plan.json"
+            python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'self-viewer-plan.json').read_text())
+          c={r['address']:r['change']['actions'] for r in d.get('resource_changes',[]) if r.get('change',{}).get('actions')!=['no-op']}
+          assert c=={'yandex_iam_service_account_iam_member.terraform_infra_deployer_federated_credential_viewer':['create']}, c
+          print('SELF_VIEWER_PLAN=PASS')
+          PY
+            terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/self-viewer.tfplan"
+          fi
+
+      - name: Discover exact pre-existing GitHub federated credential
+        shell: bash
+        run: |
+          set -euo pipefail
+          IAM_TOKEN="$(cat "$RUNNER_TEMP/legacy-iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${IAM_TOKEN}" \
+            "https://iam.api.cloud.yandex.net/iam/v1/workload/federatedCredentials?serviceAccountId=${DEPLOYER_SERVICE_ACCOUNT_ID}&pageSize=1000" \
+            -o "$RUNNER_TEMP/federated-credentials.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'federated-credentials.json').read_text())
+          assert not d.get('nextPageToken')
+          matches=[x for x in d.get('federatedCredentials',[]) if x.get('externalSubjectId')==os.environ['EXPECTED_OIDC_SUBJECT'] and x.get('federationId')==os.environ['OIDC_FEDERATION_ID'] and x.get('serviceAccountId')==os.environ['DEPLOYER_SERVICE_ACCOUNT_ID']]
+          assert len(matches)==1, len(matches)
+          cid=matches[0].get('id',''); assert cid.startswith('aje')
+          with open(os.environ['GITHUB_ENV'],'a') as f: f.write(f'INFRA_OIDC_CREDENTIAL_ID={cid}\n')
+          print('EXISTING_INFRA_OIDC_CREDENTIAL=FOUND_ONE')
+          PY
+
+      - name: Import existing federated credential into Terraform state
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
+          TARGET='yandex_iam_workload_identity_federated_credential.github_infra_deployer'
+          if terraform -chdir="$TF_DIR" state list | grep -Fxq "$TARGET"; then
+            echo 'INFRA_OIDC_CREDENTIAL_IMPORT=ALREADY_MANAGED'
+          else
+            terraform -chdir="$TF_DIR" import -input=false "$TARGET" "$INFRA_OIDC_CREDENTIAL_ID"
+            echo 'INFRA_OIDC_CREDENTIAL_IMPORT=PASS'
+          fi
+
+      - name: Prove normal refresh and zero drift with bootstrap grants present
         shell: bash
         run: |
           set -euo pipefail
           export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
           set +e
-          terraform -chdir="$TF_DIR" plan -refresh=false -detailed-exitcode -input=false -no-color -out="$RUNNER_TEMP/bootstrap.tfplan" \
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color \
             -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
             -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
             -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
             -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
-            -var="m24_infra_oidc_bootstrap_enabled=true" > "$RUNNER_TEMP/bootstrap-plan.txt"
+            -var="m24_infra_oidc_bootstrap_enabled=true" > "$RUNNER_TEMP/pre-oidc-plan.txt"
           rc=$?
           set -e
-          test "$rc" = 2 || { cat "$RUNNER_TEMP/bootstrap-plan.txt"; exit 1; }
-          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/bootstrap.tfplan" > "$RUNNER_TEMP/bootstrap-plan.json"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'bootstrap-plan.json').read_text())
-          expected={
-            'yandex_iam_service_account.orchestrator_timer',
-            'yandex_iam_service_account_iam_member.terraform_orchestrator_timer_user',
-            'yandex_iam_service_account_iam_member.terraform_historical_preparer_federated_credential_viewer',
-            'yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap[0]',
-            'yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap[0]',
-            'yandex_iam_workload_identity_federated_credential.github_infra_deployer',
-          }
-          changed={}
-          for r in d.get('resource_changes',[]):
-            a=r.get('change',{}).get('actions',[])
-            if a==['no-op']: continue
-            changed[r['address']]=a
-          assert set(changed)==expected, changed
-          assert all(a==['create'] for a in changed.values()), changed
-          print('OIDC_BOOTSTRAP_PLAN=PASS')
-          PY
-
-      - name: Apply exact bootstrap plan
-        shell: bash
-        run: |
-          set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
-          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/bootstrap.tfplan"
-
-      - name: Prove normal Terraform refresh after viewer bootstrap
-        shell: bash
-        run: |
-          set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/legacy-iam-token")"
-          terraform -chdir="$TF_DIR" plan -refresh-only -input=false -no-color \
-            -var="mcp_image_url=${PRESERVE_MCP_IMAGE_URL}" \
-            -var="source_commit_sha=${PRESERVE_SOURCE_SHA}" \
-            -var="mcp_allowed_hosts=${PRESERVE_ALLOWED_HOSTS}" \
-            -var="mcp_allowed_origins=${PRESERVE_ALLOWED_ORIGINS}" \
-            -var="m24_infra_oidc_bootstrap_enabled=true" >/dev/null
-          echo 'NORMAL_REFRESH_AFTER_VIEWER=PASS'
+          test "$rc" = 0 || { cat "$RUNNER_TEMP/pre-oidc-plan.txt"; exit "$rc"; }
+          echo 'NORMAL_REFRESH_PRE_OIDC=PASS'
 
       - name: Prove GitHub OIDC to Terraform deployer
         shell: bash
@@ -175,8 +194,8 @@ jobs:
           import base64,json,os,sys
           p=sys.argv[1].split('.')[1]; p += '=' * (-len(p)%4)
           c=json.loads(base64.urlsafe_b64decode(p))
-          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT'], c.get('sub')
-          assert c.get('aud')==os.environ['OIDC_AUDIENCE'], c.get('aud')
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
           assert c.get('ref')=='refs/heads/main'
           print('INFRA_OIDC_CLAIMS=PASS')
           PY
@@ -205,20 +224,15 @@ jobs:
           test "$rc" = 2 || { cat "$RUNNER_TEMP/cleanup-plan.txt"; exit 1; }
           terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/cleanup.tfplan" > "$RUNNER_TEMP/cleanup-plan.json"
           python - <<'PY'
-          import json, os
+          import json,os
           from pathlib import Path
           d=json.loads((Path(os.environ['RUNNER_TEMP'])/'cleanup-plan.json').read_text())
           expected={
-            'yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap[0]',
-            'yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap[0]',
+            'yandex_resourcemanager_folder_iam_member.m24_infra_oidc_federation_user_bootstrap[0]':['delete'],
+            'yandex_iam_service_account_iam_member.m24_infra_oidc_credential_editor_bootstrap[0]':['delete'],
           }
-          changed={}
-          for r in d.get('resource_changes',[]):
-            a=r.get('change',{}).get('actions',[])
-            if a==['no-op']: continue
-            changed[r['address']]=a
-          assert set(changed)==expected, changed
-          assert all(a==['delete'] for a in changed.values()), changed
+          changed={r['address']:r['change']['actions'] for r in d.get('resource_changes',[]) if r.get('change',{}).get('actions')!=['no-op']}
+          assert changed==expected, changed
           print('OIDC_BOOTSTRAP_CLEANUP_PLAN=PASS')
           PY
 
@@ -266,4 +280,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/legacy-iam-token" "$RUNNER_TEMP/oidc-iam-token" "$RUNNER_TEMP/oidc-iam-token-final"
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/legacy-iam-token" "$RUNNER_TEMP/oidc-iam-token" "$RUNNER_TEMP/oidc-iam-token-final" "$RUNNER_TEMP/federated-credentials.json"
