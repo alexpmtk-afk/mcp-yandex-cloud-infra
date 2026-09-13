@@ -90,13 +90,13 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers, json={
                   'jsonrpc':'2.0','id':1,'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'system-map-acceptance','version':'1'}
+                      'clientInfo':{'name':'system-map-acceptance','version':'2'}
                   }})
               init = unpack(r)
               assert 'result' in init, init
               instructions = init['result'].get('instructions','')
               assert 'CANONICAL MARKETPLACES MCP ARCHITECTURE' in instructions, instructions
-              assert 'Yandex Cloud' in instructions, instructions
+              assert 'Yandex Object Storage' in instructions, instructions
               h = dict(headers)
               sid = r.headers.get('mcp-session-id')
               if sid: h['Mcp-Session-Id'] = sid
@@ -115,8 +115,9 @@ jobs:
               text = next(x['text'] for x in result['content'] if x.get('type')=='text')
               body = json.loads(text)
               assert body['status'] == 'CANONICAL', body
+              assert body['architecture_version'] == '2026-09-13.v2', body
               assert body['runtime']['cloud'] == 'Yandex Cloud only', body
-              assert body['storage_policy']['primary_runtime_storage'] == 'Yandex Cloud', body
+              assert body['storage_policy']['primary_runtime_storage'] == 'Yandex Object Storage', body
               assert body['storage_policy']['google_cloud'] == 'not part of the runtime architecture', body
               print('MARKETPLACE_SYSTEM_MAP_LIVE=PASS')
               print('architecture_version=' + body['architecture_version'])
