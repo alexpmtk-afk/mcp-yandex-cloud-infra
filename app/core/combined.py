@@ -8,6 +8,8 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
+from .archive_drive import build_drive_archive_store_from_env
+from .archive_tools import register_archive_tools
 from .business_registry import resolve_business_cabinet
 from .card_monitor import register_tools as register_card_monitor_tools
 from .tools import resolve_named_cabinet
@@ -220,7 +222,10 @@ def build(**fastmcp_kwargs: Any) -> FastMCP:
                 "openWorldHint": False,
             },
         )(_rate_status_tool(mod.client))
+    archive_store = build_drive_archive_store_from_env()
+    modules["_archive_store"] = archive_store
     _register_finance_tools(combined, modules)
+    register_archive_tools(combined, modules, archive_store)
     register_card_monitor_tools(combined)
     return combined
 
