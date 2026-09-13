@@ -305,11 +305,13 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'7'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'8'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
               assert 'Yandex Object Storage' in instructions, instructions
+              assert 'MULTI-DATASET' in instructions, instructions
+              assert 'marketplace_metric_route' in instructions, instructions
               print('initialize=PASS', flush=True)
               h = dict(headers0)
               sid = r.headers.get('mcp-session-id')
@@ -337,15 +339,35 @@ jobs:
               need = {
                   'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status',
                   'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query',
-                  'marketplace_system_map'
+                  'marketplace_system_map','marketplace_data_catalog','marketplace_metric_route'
               }
               assert need <= names, sorted(need-names)
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-13.v2', system_map
+              assert system_map.get('architecture_version') == '2026-09-14.v1', system_map
               assert system_map['storage_policy']['primary_runtime_storage'] == 'Yandex Object Storage', system_map
-              print('SYSTEM_MAP_V2=PASS', flush=True)
+              assert system_map['archive_policy']['multi_dataset'] is True, system_map
+              assert system_map['archive_policy']['no_single_report_is_complete_database'] is True, system_map
+              print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
+
+              catalog = call('marketplace_data_catalog', {})
+              assert catalog.get('version') == '2026-09-14.v1', catalog
+              assert catalog['principles']['multi_dataset_archive'] is True, catalog
+              assert catalog['principles']['no_single_report_is_complete_database'] is True, catalog
+              finance = catalog['datasets']['wb_weekly_finance_main']
+              assert 'orders placed by customers' in finance['not_authoritative_for'], finance
+              print('DATA_CATALOG=PASS', flush=True)
+
+              orders_route = call('marketplace_metric_route', {'metric':'заказанные единицы','marketplace':'wb'})
+              assert orders_route.get('ok') is True, orders_route
+              assert orders_route.get('business_metric') == 'ordered_units', orders_route
+              assert orders_route['routes']['wb']['dataset'] == 'wb_orders_daily', orders_route
+              assert orders_route['routes']['wb']['archive_implemented'] is False, orders_route
+              sales_route = call('marketplace_metric_route', {'metric':'продажи за 2025 год','marketplace':'wb'})
+              assert sales_route.get('ok') is False, sales_route
+              assert sales_route.get('status') == 'AMBIGUOUS', sales_route
+              print('BUSINESS_METRIC_ROUTING=PASS', flush=True)
 
               archive = call('marketplace_archive_status', {'year':datetime.date.today().year})
               assert archive.get('ok') is True, archive
