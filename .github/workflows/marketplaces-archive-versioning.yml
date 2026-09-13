@@ -50,6 +50,9 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          DEPLOYER_SA="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$DEPLOYER_SA"
+          echo "ARCHIVE_DEPLOYER_SA=$DEPLOYER_SA" >> "$GITHUB_ENV"
           yc config profile create archive-versioning || true
           yc config set service-account-key "$KEY_FILE"
 
@@ -61,6 +64,7 @@ jobs:
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
+          echo "ARCHIVE_FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           BUCKET="marketplaces-mcp-archive-${FOLDER_ID}"
 
           timeout 60s yc storage bucket get --name "$BUCKET" --format json > "$RUNNER_TEMP/bucket-before.json"
@@ -70,12 +74,42 @@ jobs:
             IAM_TOKEN="$(timeout 45s yc iam create-token)"
             test -n "$IAM_TOKEN"
             echo "::add-mask::$IAM_TOKEN"
-            timeout 60s curl -fsS -X PATCH \
-              "https://storage.api.cloud.yandex.net/storage/v1/buckets/${BUCKET}" \
+            timeout 45s curl -fsS \
               -H "Authorization: Bearer ${IAM_TOKEN}" \
-              -H 'Content-Type: application/json' \
-              --data '{"updateMask":"versioning","versioning":"VERSIONING_ENABLED"}' \
-              > "$RUNNER_TEMP/bucket-update.json"
+              "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders/${FOLDER_ID}:listAccessBindings?pageSize=1000" \
+              > "$RUNNER_TEMP/folder-bindings-before.json"
+            EXISTING_ADMIN="$(jq --arg sa "$ARCHIVE_DEPLOYER_SA" '[.accessBindings[]? | select(.roleId=="storage.admin" and .subject.type=="serviceAccount" and .subject.id==$sa)] | length' "$RUNNER_TEMP/folder-bindings-before.json")"
+            test "$EXISTING_ADMIN" = 0
+
+            timeout 60s yc resource-manager folder add-access-binding \
+              --id "$FOLDER_ID" \
+              --role storage.admin \
+              --service-account-id "$ARCHIVE_DEPLOYER_SA" \
+              --no-user-output
+            echo 'ARCHIVE_TEMP_ADMIN_GRANTED=1' >> "$GITHUB_ENV"
+
+            UPDATED=0
+            for attempt in $(seq 1 12); do
+              IAM_TOKEN="$(timeout 45s yc iam create-token)"
+              test -n "$IAM_TOKEN"
+              echo "::add-mask::$IAM_TOKEN"
+              HTTP_CODE="$(timeout 60s curl -sS -o "$RUNNER_TEMP/bucket-update.json" -w '%{http_code}' -X PATCH \
+                "https://storage.api.cloud.yandex.net/storage/v1/buckets/${BUCKET}" \
+                -H "Authorization: Bearer ${IAM_TOKEN}" \
+                -H 'Content-Type: application/json' \
+                --data '{"updateMask":"versioning","versioning":"VERSIONING_ENABLED"}' || true)"
+              if [[ "$HTTP_CODE" == 200 || "$HTTP_CODE" == 201 || "$HTTP_CODE" == 202 ]]; then
+                UPDATED=1
+                break
+              fi
+              if [[ "$HTTP_CODE" != 403 ]]; then
+                echo "unexpected versioning update status=$HTTP_CODE"
+                exit 1
+              fi
+              echo "temporary admin propagation attempt $attempt/12"
+              sleep 5
+            done
+            test "$UPDATED" = 1
           fi
 
           ok=0
@@ -96,7 +130,28 @@ jobs:
           echo 'ARCHIVE_VERSIONING=PASS'
           echo 'ARCHIVE_PRIVATE_ACCESS=PASS'
 
-      - name: Cleanup ephemeral credentials
+      - name: Revoke temporary archive admin and cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/bucket-before.json" "$RUNNER_TEMP/bucket-update.json" "$RUNNER_TEMP/bucket-after.json"
+        run: |
+          set -euo pipefail
+          if [[ "${ARCHIVE_TEMP_ADMIN_GRANTED:-0}" == 1 ]]; then
+            test -n "${ARCHIVE_FOLDER_ID:-}"
+            test -n "${ARCHIVE_DEPLOYER_SA:-}"
+            timeout 60s yc resource-manager folder remove-access-binding \
+              --id "$ARCHIVE_FOLDER_ID" \
+              --role storage.admin \
+              --service-account-id "$ARCHIVE_DEPLOYER_SA" \
+              --no-user-output
+            IAM_TOKEN="$(timeout 45s yc iam create-token)"
+            test -n "$IAM_TOKEN"
+            echo "::add-mask::$IAM_TOKEN"
+            timeout 45s curl -fsS \
+              -H "Authorization: Bearer ${IAM_TOKEN}" \
+              "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders/${ARCHIVE_FOLDER_ID}:listAccessBindings?pageSize=1000" \
+              > "$RUNNER_TEMP/folder-bindings-after.json"
+            REMAINING_ADMIN="$(jq --arg sa "$ARCHIVE_DEPLOYER_SA" '[.accessBindings[]? | select(.roleId=="storage.admin" and .subject.type=="serviceAccount" and .subject.id==$sa)] | length' "$RUNNER_TEMP/folder-bindings-after.json")"
+            test "$REMAINING_ADMIN" = 0
+            echo 'ARCHIVE_TEMP_ADMIN_REVOKED=PASS'
+          fi
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/bucket-before.json" "$RUNNER_TEMP/bucket-update.json" "$RUNNER_TEMP/bucket-after.json" "$RUNNER_TEMP/folder-bindings-before.json" "$RUNNER_TEMP/folder-bindings-after.json"
