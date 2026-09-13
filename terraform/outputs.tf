@@ -14,3 +14,13 @@ output "lockbox_secret_id" {
 output "mcp_gateway_url" {
   value = var.mcp_image_url == null ? null : "https://${data.yandex_api_gateway.mcp_existing.domain}"
 }
+
+output "wb_orders_ydb_endpoint" {
+  description = "Connection string for the selective canonical WB ORDERS Historical Store."
+  value       = yandex_ydb_database_serverless.marketplace_history.ydb_full_endpoint
+}
+
+output "wb_orders_ydb_database_id" {
+  description = "YDB database ID for the selective canonical WB ORDERS Historical Store."
+  value       = yandex_ydb_database_serverless.marketplace_history.id
+}

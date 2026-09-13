@@ -1,0 +1,126 @@
+name: Apply Marketplaces WB ORDERS YDB TEST
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-wb-orders-ydb-test
+  cancel-in-progress: false
+
+jobs:
+  plan-and-apply:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare ephemeral Yandex provider key
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Initialize Marketplaces TEST remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Build exact YDB-only plan
+        id: plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          terraform -chdir=terraform plan -detailed-exitcode -input=false -no-color \
+            -out="$RUNNER_TEMP/wb-orders-ydb.tfplan" \
+            -target=yandex_ydb_database_serverless.marketplace_history \
+            -target=yandex_ydb_database_iam_binding.runtime_history_editor \
+            > "$RUNNER_TEMP/wb-orders-ydb-plan.txt"
+          RC=$?
+          set -e
+          if [ "$RC" -ne 0 ] && [ "$RC" -ne 2 ]; then
+            cat "$RUNNER_TEMP/wb-orders-ydb-plan.txt"
+            exit "$RC"
+          fi
+          terraform -chdir=terraform show -json "$RUNNER_TEMP/wb-orders-ydb.tfplan" > "$RUNNER_TEMP/wb-orders-ydb-plan.json"
+          echo "plan_rc=$RC" >> "$GITHUB_OUTPUT"
+
+      - name: Assert plan scope and safety
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+
+          plan = json.loads((Path(os.environ['RUNNER_TEMP']) / 'wb-orders-ydb-plan.json').read_text())
+          allowed = {
+              'yandex_ydb_database_serverless.marketplace_history',
+              'yandex_ydb_database_iam_binding.runtime_history_editor',
+          }
+          changed = []
+          for resource in plan.get('resource_changes', []):
+              actions = resource.get('change', {}).get('actions', [])
+              if actions == ['no-op']:
+                  continue
+              address = resource['address']
+              if address not in allowed:
+                  raise SystemExit(f'Unexpected resource in plan: {address} actions={actions}')
+              if 'delete' in actions:
+                  raise SystemExit(f'Destructive action forbidden: {address} actions={actions}')
+              changed.append((address, actions))
+          print('WB_ORDERS_YDB_PLAN_SCOPE_PASS')
+          print('changed_resources=' + str(changed))
+          PY
+
+      - name: Apply exact reviewed YDB plan
+        if: steps.plan.outputs.plan_rc == '2'
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform apply -input=false -auto-approve "$RUNNER_TEMP/wb-orders-ydb.tfplan"
+
+      - name: Verify durable store outputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB_ID="$(terraform -chdir=terraform output -raw wb_orders_ydb_database_id)"
+          ENDPOINT="$(terraform -chdir=terraform output -raw wb_orders_ydb_endpoint)"
+          test -n "$DB_ID"
+          test -n "$ENDPOINT"
+          case "$ENDPOINT" in
+            grpcs://*|grpc://*) ;;
+            *) echo 'Unexpected YDB endpoint scheme' >&2; exit 1 ;;
+          esac
+          echo 'WB_ORDERS_YDB_APPLY_PASS'
+
+      - name: Remove ephemeral provider key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
