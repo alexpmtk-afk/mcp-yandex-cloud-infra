@@ -11,6 +11,10 @@ output "lockbox_secret_id" {
   sensitive = true
 }
 
+output "marketplace_archive_bucket_name" {
+  value = yandex_storage_bucket.marketplace_archive.bucket
+}
+
 output "mcp_gateway_url" {
   value = var.mcp_image_url == null ? null : "https://${data.yandex_api_gateway.mcp_existing.domain}"
 }

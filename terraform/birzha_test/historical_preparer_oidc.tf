@@ -17,10 +17,10 @@ resource "yandex_resourcemanager_folder_iam_member" "historical_preparer_ydb_edi
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "historical_preparer_wif_user_bootstrap" {
-  count      = var.historical_preparer_bootstrap_enabled ? 1 : 0
-  folder_id  = yandex_resourcemanager_folder.birzha_test.id
-  role       = "iam.workloadIdentityFederations.user"
-  member     = "serviceAccount:${var.terraform_deployer_service_account_id}"
+  count       = var.historical_preparer_bootstrap_enabled ? 1 : 0
+  folder_id   = yandex_resourcemanager_folder.birzha_test.id
+  role        = "iam.workloadIdentityFederations.user"
+  member      = "serviceAccount:${var.terraform_deployer_service_account_id}"
   sleep_after = 5
 }
 

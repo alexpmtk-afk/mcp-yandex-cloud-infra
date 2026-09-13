@@ -22,7 +22,7 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Iterable
 
-from .archive_drive import GoogleDriveArchiveStore
+from .archive_yandex import YandexObjectStorageArchiveStore
 from .business_registry import resolve_business_cabinet
 from .rate_limit import redis_connection_kwargs, redis_url_from_env
 from .tools import resolve_named_cabinet
@@ -44,7 +44,7 @@ REGISTRY_FIELDS = (
     "create_date",
     "year",
     "annual_file",
-    "drive_file_id",
+    "storage_object_key",
     "rows",
     "bytes",
     "sha256",
@@ -69,7 +69,6 @@ class ReportFragment:
 
 
 def logical_week(period_date: str) -> tuple[str, str]:
-    """Map any fragment date to its Monday-Sunday logical report week."""
     value = date.fromisoformat(str(period_date)[:10])
     start = value - timedelta(days=value.weekday())
     return start.isoformat(), (start + timedelta(days=6)).isoformat()
@@ -117,8 +116,10 @@ def encode_csv(fieldnames: Iterable[str], rows: Iterable[dict[str, Any]]) -> byt
     return ("\ufeff" + output.getvalue()).encode("utf-8")
 
 
-def merge_annual_csv(existing: bytes | None, new_rows: list[dict[str, Any]]) -> tuple[bytes, dict[str, Any]]:
-    """Merge provider rows into one deterministic annual CSV without duplicates."""
+def merge_annual_csv(
+    existing: bytes | None,
+    new_rows: list[dict[str, Any]],
+) -> tuple[bytes, dict[str, Any]]:
     old_fields, old_rows = parse_csv_bytes(existing or b"")
     fieldnames = list(old_fields)
     seen_fields = set(fieldnames)
@@ -130,7 +131,11 @@ def merge_annual_csv(existing: bytes | None, new_rows: list[dict[str, Any]]) -> 
     if not fieldnames and new_rows:
         fieldnames = list(new_rows[0].keys())
     if not fieldnames:
-        return existing or b"", {"added_rows": 0, "total_rows": len(old_rows), "columns": 0}
+        return existing or b"", {
+            "added_rows": 0,
+            "total_rows": len(old_rows),
+            "columns": 0,
+        }
 
     by_key: dict[tuple[str, str], dict[str, Any]] = {}
     anonymous: list[dict[str, Any]] = []
@@ -146,7 +151,7 @@ def merge_annual_csv(existing: bytes | None, new_rows: list[dict[str, Any]]) -> 
                 by_key[key] = row
             return not existed
         marker = json.dumps(
-            {k: _stringify(row.get(k)) for k in fieldnames},
+            {key: _stringify(row.get(key)) for key in fieldnames},
             ensure_ascii=False,
             sort_keys=True,
         )
@@ -260,8 +265,6 @@ def normalize_main_fragments(rows: Iterable[dict[str, Any]]) -> list[ReportFragm
 
 
 class ArchiveLock:
-    """Redis-backed lock so two MCP clients cannot update the same archive at once."""
-
     RELEASE_SCRIPT = """
     if redis.call('GET', KEYS[1]) == ARGV[1] then
       return redis.call('DEL', KEYS[1])
@@ -269,7 +272,11 @@ class ArchiveLock:
     return 0
     """
 
-    def __init__(self, key: str = "marketplace-archive:v1:wb-finance", ttl_seconds: int = 900) -> None:
+    def __init__(
+        self,
+        key: str = "marketplace-archive:v1:wb-finance",
+        ttl_seconds: int = 900,
+    ) -> None:
         self.key = key
         self.ttl_seconds = max(60, int(ttl_seconds))
         self.token = secrets.token_hex(16)
@@ -302,18 +309,28 @@ class ArchiveLock:
 
 
 class WBFinanceArchiveManager:
-    def __init__(self, wb_module: Any, store: GoogleDriveArchiveStore) -> None:
+    def __init__(self, wb_module: Any, store: YandexObjectStorageArchiveStore) -> None:
         self.wb = wb_module
         self.store = store
 
     @staticmethod
     def _retry_after(data: dict[str, Any]) -> float:
         try:
-            return float(data.get("retry_after_seconds", 0) or data.get("retry_after_sec", 0) or 0)
+            return float(
+                data.get("retry_after_seconds", 0)
+                or data.get("retry_after_sec", 0)
+                or 0
+            )
         except (TypeError, ValueError):
             return 0.0
 
-    async def _call_wait(self, spec: Any, *, creds: dict[str, str], **kwargs: Any) -> dict[str, Any]:
+    async def _call_wait(
+        self,
+        spec: Any,
+        *,
+        creds: dict[str, str],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         while True:
             data = await self.wb.client.call_spec(spec, creds_override=creds, **kwargs)
             retry_after = self._retry_after(data)
@@ -435,7 +452,7 @@ class WBFinanceArchiveManager:
             result["cabinets"][cabinet] = {
                 "complete_report_ids": len(complete_ids),
                 "annual_file": annual_name,
-                "drive_file_id": annual_file.id if annual_file else None,
+                "storage_object_key": annual_file.id if annual_file else None,
                 "bytes": annual_file.size if annual_file else 0,
             }
         return result
@@ -480,28 +497,26 @@ class WBFinanceArchiveManager:
                     )
                     annual_data = merged
                     for fragment in todo:
-                        records.append(
-                            {
-                                "marketplace": "wb",
-                                "cabinet": cabinet,
-                                "dataset": DATASET,
-                                "report_type": MAIN_REPORT_TYPE,
-                                "report_id": fragment.report_id,
-                                "date_from": fragment.date_from,
-                                "date_to": fragment.date_to,
-                                "logical_week_from": fragment.logical_week_from,
-                                "logical_week_to": fragment.logical_week_to,
-                                "create_date": fragment.create_date,
-                                "year": year,
-                                "annual_file": annual_name,
-                                "drive_file_id": annual_file.id,
-                                "rows": fragment_rows.get(fragment.report_id, 0),
-                                "bytes": len(merged),
-                                "sha256": hashlib.sha256(merged).hexdigest(),
-                                "status": "COMPLETE",
-                                "ingested_at_utc": datetime.now(timezone.utc).isoformat(),
-                            }
-                        )
+                        records.append({
+                            "marketplace": "wb",
+                            "cabinet": cabinet,
+                            "dataset": DATASET,
+                            "report_type": MAIN_REPORT_TYPE,
+                            "report_id": fragment.report_id,
+                            "date_from": fragment.date_from,
+                            "date_to": fragment.date_to,
+                            "logical_week_from": fragment.logical_week_from,
+                            "logical_week_to": fragment.logical_week_to,
+                            "create_date": fragment.create_date,
+                            "year": year,
+                            "annual_file": annual_name,
+                            "storage_object_key": annual_file.id,
+                            "rows": fragment_rows.get(fragment.report_id, 0),
+                            "bytes": len(merged),
+                            "sha256": hashlib.sha256(merged).hexdigest(),
+                            "status": "COMPLETE",
+                            "ingested_at_utc": datetime.now(timezone.utc).isoformat(),
+                        })
                 else:
                     fields, current_rows = parse_csv_bytes(annual_data or b"")
                     stats = {
@@ -509,9 +524,7 @@ class WBFinanceArchiveManager:
                         "total_rows": len(current_rows),
                         "columns": len(fields),
                         "bytes": len(annual_data or b""),
-                        "sha256": (
-                            hashlib.sha256(annual_data).hexdigest() if annual_data else None
-                        ),
+                        "sha256": hashlib.sha256(annual_data).hexdigest() if annual_data else None,
                     }
                 return {
                     "cabinet": cabinet,
@@ -520,7 +533,7 @@ class WBFinanceArchiveManager:
                     "downloaded_report_ids": [fragment.report_id for fragment in todo],
                     "remaining_report_ids": [fragment.report_id for fragment in pending[len(todo):]],
                     "annual_file": annual_name,
-                    "drive_file_id": annual_file.id if annual_file else None,
+                    "storage_object_key": annual_file.id if annual_file else None,
                     **stats,
                 }
 
