@@ -18,7 +18,7 @@ jobs:
       github.event.workflow_run.conclusion == 'success'
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -69,22 +69,29 @@ jobs:
 
       - name: Build typed live finance capability matrix through MCP
         shell: bash
-        timeout-minutes: 5
+        timeout-minutes: 8
         env:
           MCP_URL: ${{ steps.target.outputs.url }}
         run: |
           set -euo pipefail
           export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
           python -m pip install --quiet 'httpx>=0.27,<1'
-          timeout 240s python -u - <<'PY'
-          import datetime, itertools, json, os
+          timeout 450s python -u - <<'PY'
+          import datetime, itertools, json, os, time
           import httpx
 
           def unpack(r):
               r.raise_for_status()
               for line in r.text.splitlines():
-                  if line.startswith('data:'): return json.loads(line[5:].strip())
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
               return r.json() if r.text.strip() else None
+
+          def retry_after(data):
+              return float(data.get('retry_after_seconds',0) or data.get('retry_after_sec',0) or 0)
+
+          def is_rate_limited(data):
+              return retry_after(data) > 0 and (data.get('error_type') == 'rate_limit' or data.get('error') in ('rate_limit','rate_limit_busy'))
 
           def state(name, data):
               if data.get('ok') is True and 200 <= int(data.get('status',0)) < 300:
@@ -92,32 +99,43 @@ jobs:
               if int(data.get('code',0) or 0) == 403 and data.get('error_type') == 'forbidden':
                   if 'missing a required role' in str(data.get('message','')):
                       print(f'{name}=BLOCKED_MISSING_API_ROLE',flush=True); return 'missing_role'
-              retry=float(data.get('retry_after_seconds',0) or data.get('retry_after_sec',0) or 0)
-              if retry > 0 and (data.get('error_type') == 'rate_limit' or data.get('error') in ('rate_limit','rate_limit_busy')):
-                  print(f'{name}=RATE_LIMIT_PROTECTED retry_after={retry}',flush=True); return 'rate_limit'
+              if is_rate_limited(data):
+                  print(f'{name}=RATE_LIMIT_PROTECTED retry_after={retry_after(data)}',flush=True); return 'rate_limit'
               raise AssertionError((name,data))
 
           timeout=httpx.Timeout(connect=10.0,read=60.0,write=30.0,pool=10.0)
           headers={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
           ids=itertools.count(1)
           with httpx.Client(timeout=timeout,follow_redirects=True) as c:
-              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'typed-finance-capability-matrix','version':'3'}}})
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'typed-finance-capability-matrix','version':'4'}}})
               init=unpack(r); assert init and 'result' in init,init
               h=dict(headers); sid=r.headers.get('mcp-session-id')
               if sid: h['Mcp-Session-Id']=sid
               h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
               n=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'}); assert n.status_code in (200,202)
+
               def rpc(method,params=None):
                   rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
                   d=unpack(rr); assert d and 'result' in d,(method,d); return d['result']
+
               def call(name,args):
                   result=rpc('tools/call',{'name':name,'arguments':args}); assert not result.get('isError'),(name,result)
                   text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None); assert text is not None,name
                   return json.loads(text)
 
+              def call_with_rate_wait(name,args,max_wait=90):
+                  data=call(name,args)
+                  if is_rate_limited(data):
+                      wait=min(max(1.0,retry_after(data)+1.0),float(max_wait))
+                      print(f'{name}=WAIT_FOR_QUOTA seconds={wait}',flush=True)
+                      time.sleep(wait)
+                      data=call(name,args)
+                  return data
+
               names={x['name'] for x in rpc('tools/list')['tools']}
-              required={'wb_get_realization_report','ozon_get_accrual_types','ozon_get_accruals_by_day','ozon_get_realization'}
+              required={'wb_list_realization_reports','wb_get_realization_report_by_id','ozon_get_accrual_types','ozon_get_accruals_by_day','ozon_get_realization'}
               assert required <= names,sorted(required-names)
+              assert 'wb_get_realization_report' not in names
               print('TYPED_FINANCE_TOOLS=PASS',flush=True)
 
               today=datetime.date.today(); day=(today-datetime.timedelta(days=1)).isoformat(); prev=today.replace(day=1)-datetime.timedelta(days=1)
@@ -125,9 +143,32 @@ jobs:
               results['ozon_types']=state('OZON_ACCRUAL_TYPES',call('ozon_get_accrual_types',{}))
               results['ozon_day']=state('OZON_ACCRUAL_BY_DAY',call('ozon_get_accruals_by_day',{'day':day,'last_id':''}))
               results['ozon_realization']=state('OZON_REALIZATION',call('ozon_get_realization',{'month':prev.month,'year':prev.year}))
-              results['wb_realization']=state('WB_REALIZATION',call('wb_get_realization_report',{'date_from':(today-datetime.timedelta(days=2)).isoformat(),'date_to':day,'limit':1,'rrdid':0}))
+
+              list_data=call_with_rate_wait('wb_list_realization_reports',{
+                  'seller':'wb_novokshenov',
+                  'date_from':(today-datetime.timedelta(days=60)).isoformat(),
+                  'date_to':today.isoformat(),
+                  'period':'weekly','limit':1000,'offset':0,
+              })
+              results['wb_list']=state('WB_WEEKLY_REPORT_LIST',list_data)
+              assert results['wb_list']=='pass',list_data
+              reports=list_data.get('data') or []
+              assert isinstance(reports,list) and reports,'WB weekly report list is empty'
+              latest=max(reports,key=lambda x:(str(x.get('dateTo','')),str(x.get('createDate','')),int(x.get('reportId',0))))
+              report_id=int(latest['reportId'])
+              print('WB_LATEST_WEEKLY_REPORT='+json.dumps({k:latest.get(k) for k in ('reportId','dateFrom','dateTo','createDate','sellerFinanceName')},ensure_ascii=False),flush=True)
+
+              detail_data=call_with_rate_wait('wb_get_realization_report_by_id',{
+                  'seller':'wb_novokshenov','report_id':report_id,'limit':1,'rrd_id':0,
+              },max_wait=90)
+              results['wb_detail']=state('WB_WEEKLY_REPORT_DETAIL_BY_ID',detail_data)
+              assert results['wb_detail']=='pass',detail_data
+              rows=detail_data.get('data') or []
+              assert isinstance(rows,list) and rows,'WB weekly report detail returned no rows'
+              assert int(rows[0].get('reportId',report_id))==report_id
+              print('WB_WEEKLY_REPORT_ROUTE=PASS',flush=True)
+
               print('FINANCE_CAPABILITY_MATRIX='+json.dumps(results,sort_keys=True),flush=True)
-              assert results['wb_realization'] in ('pass','rate_limit')
               ozon_states={results['ozon_types'],results['ozon_day'],results['ozon_realization']}; assert ozon_states <= {'pass','missing_role'}
               if 'missing_role' in ozon_states: print('OZON_FINANCE_ACCESS=BLOCKED_BY_API_KEY_ROLE',flush=True)
               else: print('OZON_FINANCE_ACCESS=PASS',flush=True)
