@@ -8,6 +8,7 @@ on:
       - .github/workflows/deploy-mcp-test.yml
       - .github/workflows/marketplaces-system-map-acceptance.yml
       - .github/workflows/marketplaces-archive-storage-validate.yml
+      - .github/workflows/marketplaces-archive-versioning.yml
   workflow_dispatch:
 
 permissions:
@@ -59,6 +60,12 @@ jobs:
           grep -q 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf
           grep -A5 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf | grep -q 'role.*=.*"storage.editor"'
           grep -A20 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'deployer_archive_storage_editor'
-          ! grep -A20 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'disabled_statickey_auth.*=.*true'
-          ! grep -R -E 'resource "yandex_iam_service_account_(static_)?access_key"|aws_access_key_id|aws_secret_access_key' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml
+          ! grep -A25 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'disabled_statickey_auth.*=.*true'
+          ! grep -A25 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'versioning'
+          grep -q 'yc storage bucket update' .github/workflows/marketplaces-archive-versioning.yml
+          grep -q -- '--versioning versioning-enabled' .github/workflows/marketplaces-archive-versioning.yml
+          grep -q 'VERSIONING_ENABLED' .github/workflows/marketplaces-archive-versioning.yml
+          grep -q 'ARCHIVE_PRIVATE_ACCESS=PASS' .github/workflows/marketplaces-archive-versioning.yml
+          ! grep -q 'storage.admin' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/marketplaces-archive-versioning.yml
+          ! grep -R -E 'resource "yandex_iam_service_account_(static_)?access_key"|aws_access_key_id|aws_secret_access_key' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/marketplaces-archive-versioning.yml
           echo 'ARCHIVE_RUNTIME_VALIDATE=PASS'
