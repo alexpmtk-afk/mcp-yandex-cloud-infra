@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-14.v1"
+ARCHITECTURE_VERSION = "2026-09-14.v2"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
@@ -20,11 +20,15 @@ SYSTEM_MAP: dict[str, Any] = {
         "marketplace_sources": ["Wildberries official API", "Ozon official API", "Ozon Performance official API"],
     },
     "storage_policy": {
-        "primary_runtime_storage": "Yandex Object Storage",
-        "archive_auth": "Serverless Container runtime service-account IAM token from metadata; no static archive key",
-        "archive_layout": "private dedicated bucket; server-owned annual dataset files plus registry",
-        "google_drive": "optional export/mirror only; never a required runtime dependency or source of truth",
-        "google_cloud": "not part of the runtime architecture",
+        "primary_archive_storage": "Google Drive",
+        "canonical_archive_data": "annual marketplace dataset CSV files plus reports registry",
+        "google_drive_root": "MCP архив базы данных",
+        "google_drive_auth": "OAuth refresh credential kept in Yandex Lockbox; access token only in runtime memory",
+        "yandex_object_storage": "durable archive job state, staging, and byte-for-byte backup of canonical files",
+        "yandex_archive_auth": "Serverless Container runtime service-account IAM token from metadata; no static archive key",
+        "archive_write_order": "Google Drive canonical write first; Yandex backup second",
+        "read_through_migration": "if a canonical file is absent on Drive but exists in Yandex Object Storage, copy it to Drive before use",
+        "google_cloud": "not part of the runtime architecture; only Google Drive API is used as archive storage",
         "client_local_files": "never authoritative for shared server state",
     },
     "archive_policy": {
@@ -34,6 +38,7 @@ SYSTEM_MAP: dict[str, Any] = {
         "default_update_scope": "all configured marketplace cabinets for the selected dataset",
         "idempotent": True,
         "registry_required": True,
+        "canonical_source_of_truth": "Google Drive annual dataset CSV files plus reports registry",
         "initial_history_backfill": 2026,
         "planned_history_floor": 2024,
         "annual_partitioning": "one logical annual dataset per marketplace/cabinet/dataset/year",
@@ -46,6 +51,8 @@ SYSTEM_MAP: dict[str, Any] = {
             "logical_week": "Monday-Sunday",
             "month_boundary": "multiple WB reportId fragments may belong to one logical week and must be combined logically",
             "report_type_2": "По выкупам; separate dataset, never mixed into main",
+            "row_deduplication": "(reportId, rrdId)",
+            "registry_deduplication": "(cabinet, dataset, report_id)",
             "not_authoritative_for": [
                 "customer orders/order events",
                 "stock-on-date history",
@@ -78,10 +85,10 @@ SYSTEM_MAP: dict[str, Any] = {
         "provenance_required": "answers from archive analytics must identify the dataset/source used",
     },
     "routing_policy": {
-        "update_database": "route to the server archive update workflow for the selected dataset; compare registry and fetch only missing provider data",
-        "historical_queries": "first route the business metric; use only the matching shared archive dataset when its period is covered",
+        "update_database": "route to the server archive update workflow for the selected dataset; compare canonical Drive registry and fetch only missing provider data",
+        "historical_queries": "first route the business metric; use only the matching canonical Google Drive archive dataset when its period is covered",
         "current_or_uncovered": "use the matching official provider API or explicit gap/backfill workflow",
-        "multi_client": "all clients must see the same remote state and canonical data catalog; no chat-local architecture decisions",
+        "multi_client": "all clients must see the same remote canonical Drive state and data catalog; no chat-local architecture decisions",
     },
     "change_control": {
         "new_cloud_provider": "FORBIDDEN without explicit architecture change",
@@ -105,15 +112,16 @@ SYSTEM_MAP: dict[str, Any] = {
 
 SYSTEM_INSTRUCTIONS = f"""CANONICAL MARKETPLACES MCP ARCHITECTURE — {ARCHITECTURE_VERSION}
 Treat marketplace_system_map and marketplace_data_catalog as server-side sources of truth.
-Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture.
-Primary shared archive storage is Yandex Object Storage, accessed by the Serverless Container runtime service account with a temporary IAM token. Do not introduce a static archive key unless the canonical architecture is explicitly changed.
-Google Drive may only be an optional export/mirror and must never become a required runtime dependency or source of truth.
+Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture; only the Google Drive API is used as the canonical archive storage surface.
+Canonical marketplace archive data is stored on Google Drive under the server-owned `MCP архив базы данных` root: annual dataset CSV files and the reports registry are the source of truth.
+Yandex Object Storage remains required for durable queue/job state, staging, and a secondary byte-for-byte backup of canonical Drive files. It uses the Serverless Container runtime service account and a temporary IAM token; no static archive key is required.
+Google Drive OAuth refresh credentials must remain in Yandex Lockbox; Drive access tokens exist only in runtime memory.
 The marketplace archive is MULTI-DATASET. No single report or annual CSV is the complete WB/Ozon business database.
 The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for customer orders, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
 Before answering a historical business question, interpret the requested business metric and route it through marketplace_metric_route / marketplace_data_catalog to the correct dataset. Generic 'sales/продажи' is ambiguous unless its business meaning is clear.
 Never silently substitute the weekly finance dataset for orders, stocks, advertising, funnels, or any other missing dataset. Surface the gap or use the matching official provider API/backfill path.
 Initial historical backfill is 2026; planned archive depth is through 2024 where provider history allows it. The same multi-dataset principle applies to both Wildberries and Ozon.
-For database/archive tasks, use server-owned shared state, registry/idempotent update logic, and official WB/Ozon APIs. Do not invent chat-local storage, a new cloud provider, or a new architecture path.
+For database/archive tasks, use server-owned shared state, canonical Drive files, registry/idempotent update logic, and official WB/Ozon APIs. Do not invent chat-local storage, bypass Drive with another source of truth, or introduce a new architecture path.
 If a requested implementation conflicts with the canonical map or data catalog, fail closed and surface the conflict instead of silently changing architecture.
 """
 
