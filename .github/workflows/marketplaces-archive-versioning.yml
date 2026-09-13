@@ -61,13 +61,29 @@ jobs:
           timeout 60s yc storage bucket get --name "$BUCKET" --format json > "$RUNNER_TEMP/bucket-before.json"
           test "$(jq -r '.name//empty' "$RUNNER_TEMP/bucket-before.json")" = "$BUCKET"
 
-          timeout 60s yc storage bucket update \
-            --name "$BUCKET" \
-            --versioning versioning-enabled \
-            --format json > "$RUNNER_TEMP/bucket-update.json"
+          if [[ "$(jq -r '.versioning//empty' "$RUNNER_TEMP/bucket-before.json")" != "VERSIONING_ENABLED" ]]; then
+            IAM_TOKEN="$(timeout 45s yc iam create-token)"
+            test -n "$IAM_TOKEN"
+            echo "::add-mask::$IAM_TOKEN"
+            timeout 60s curl -fsS -X PATCH \
+              "https://storage.api.cloud.yandex.net/storage/v1/buckets/${BUCKET}" \
+              -H "Authorization: Bearer ${IAM_TOKEN}" \
+              -H 'Content-Type: application/json' \
+              --data '{"updateMask":"versioning","versioning":"VERSIONING_ENABLED"}' \
+              > "$RUNNER_TEMP/bucket-update.json"
+          fi
 
-          timeout 60s yc storage bucket get --name "$BUCKET" --format json > "$RUNNER_TEMP/bucket-after.json"
-          test "$(jq -r '.versioning//empty' "$RUNNER_TEMP/bucket-after.json")" = "VERSIONING_ENABLED"
+          ok=0
+          for attempt in $(seq 1 12); do
+            timeout 60s yc storage bucket get --name "$BUCKET" --format json > "$RUNNER_TEMP/bucket-after.json"
+            if [[ "$(jq -r '.versioning//empty' "$RUNNER_TEMP/bucket-after.json")" == "VERSIONING_ENABLED" ]]; then
+              ok=1
+              break
+            fi
+            echo "versioning propagation attempt $attempt/12"
+            sleep 5
+          done
+          test "$ok" = 1
           test "$(jq -r '.anonymous_access_flags.read//false' "$RUNNER_TEMP/bucket-after.json")" != "true"
           test "$(jq -r '.anonymous_access_flags.list//false' "$RUNNER_TEMP/bucket-after.json")" != "true"
           test "$(jq -r '.anonymous_access_flags.config_read//false' "$RUNNER_TEMP/bucket-after.json")" != "true"

@@ -62,10 +62,12 @@ jobs:
           grep -A20 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'deployer_archive_storage_editor'
           ! grep -A25 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'disabled_statickey_auth.*=.*true'
           ! grep -A25 'resource "yandex_storage_bucket" "marketplace_archive"' terraform/mcp_test.tf | grep -q 'versioning'
-          grep -q 'yc storage bucket update' .github/workflows/marketplaces-archive-versioning.yml
-          grep -q -- '--versioning versioning-enabled' .github/workflows/marketplaces-archive-versioning.yml
+          grep -q 'storage.api.cloud.yandex.net/storage/v1/buckets' .github/workflows/marketplaces-archive-versioning.yml
+          grep -q '"updateMask":"versioning"' .github/workflows/marketplaces-archive-versioning.yml
+          grep -q '"versioning":"VERSIONING_ENABLED"' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'VERSIONING_ENABLED' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'ARCHIVE_PRIVATE_ACCESS=PASS' .github/workflows/marketplaces-archive-versioning.yml
+          ! grep -q 'yc storage bucket update' .github/workflows/marketplaces-archive-versioning.yml
           ! grep -q 'storage.admin' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/marketplaces-archive-versioning.yml
           ! grep -R -E 'resource "yandex_iam_service_account_(static_)?access_key"|aws_access_key_id|aws_secret_access_key' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/marketplaces-archive-versioning.yml
           echo 'ARCHIVE_RUNTIME_VALIDATE=PASS'
