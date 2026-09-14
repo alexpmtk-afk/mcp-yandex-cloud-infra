@@ -1,0 +1,65 @@
+name: BIRZHA YDB Live Role Audit Once
+
+on:
+  push:
+    branches: [birzha-ydb-resume-20260914-v2]
+    paths: ['.github/workflows/birzha-ydb-live-role-audit-once.yml']
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors -o "$RUNNER_TEMP/yc.tgz" 'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and audit live bindings
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+          CLOUD_ID: b1gi4pr9msenirafh2c7
+          FOLDER_NAME: birzha-mcp-forecast-test
+          EXPECTED_FOLDER_ID: b1g00gqb66tbnfoumnkv
+          YDB_ID: etnes7omhgut11oulsd5
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$DEPLOYER_ID"
+          yc config profile create birzha-ydb-role-audit || true
+          yc config set service-account-key "$KEY_FILE"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$FOLDER_NAME" '.[]|select(.name==$n and .status=="ACTIVE")|.id' | head -1)"
+          test "$FOLDER_ID" = "$EXPECTED_FOLDER_ID"
+          PREPARER_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-historical-preparer")|.id' | head -1)"
+          RUNTIME_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-runtime")|.id' | head -1)"
+          test -n "$PREPARER_ID"
+          echo "HISTORICAL_PREPARER_ID=$PREPARER_ID"
+          echo "RUNTIME_ID=$RUNTIME_ID"
+          echo "DEPLOYER_ID=$DEPLOYER_ID"
+          yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json > "$RUNNER_TEMP/access.json"
+          echo 'HISTORICAL_PREPARER_FOLDER_ROLES:'
+          jq -r --arg sid "$PREPARER_ID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/access.json" | sort -u
+          echo 'DEPLOYER_FOLDER_ROLES:'
+          jq -r --arg sid "$DEPLOYER_ID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/access.json" | sort -u
+          DB="$(yc ydb database get --id "$YDB_ID" --format json)"
+          test "$(jq -r '.name' <<< "$DB")" = 'birzha-mcp-forecast-state'
+          echo "YDB_STATUS=$(jq -r '.status' <<< "$DB")"
+          echo 'LIVE_ROLE_AUDIT=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/access.json"
