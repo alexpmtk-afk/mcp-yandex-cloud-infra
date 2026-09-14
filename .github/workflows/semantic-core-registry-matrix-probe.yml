@@ -1,0 +1,101 @@
+name: Semantic Core Registry Matrix Probe
+
+on:
+  push:
+    branches:
+      - fix/semantic-core-test-iam-20260914
+    paths:
+      - .github/workflows/semantic-core-registry-matrix-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors -o "$RUNNER_TEMP/yc.tgz" \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create semantic-registry-matrix || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+          yc container registry configure-docker
+
+      - name: Build one immutable probe image
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/probe"
+          printf 'FROM scratch\nLABEL purpose="semantic-core-registry-matrix-probe"\n' > "$RUNNER_TEMP/probe/Dockerfile"
+          docker build --tag semantic-registry-probe:local "$RUNNER_TEMP/probe"
+
+      - name: Probe Terraform-candidate registry crpnhk1
+        id: crpnhk1
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/crpnhk1hs1gsai91b164/semantic-core-probe:${GITHUB_SHA}"
+          docker tag semantic-registry-probe:local "$IMAGE"
+          docker push "$IMAGE"
+          echo 'REGISTRY_PUSH_CRP_NHK1=PASS'
+
+      - name: Probe second registry crpi89
+        id: crpi89
+        continue-on-error: true
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/crpi89vgdta1237ndquv/semantic-core-probe:${GITHUB_SHA}"
+          docker tag semantic-registry-probe:local "$IMAGE"
+          docker push "$IMAGE"
+          echo 'REGISTRY_PUSH_CRP_I89=PASS'
+
+      - name: Summarize matrix and require at least one writable candidate
+        shell: bash
+        env:
+          NHK_OUTCOME: ${{ steps.crpnhk1.outcome }}
+          I89_OUTCOME: ${{ steps.crpi89.outcome }}
+        run: |
+          set -euo pipefail
+          echo "crpnhk1hs1gsai91b164=$NHK_OUTCOME"
+          echo "crpi89vgdta1237ndquv=$I89_OUTCOME"
+          if [[ "$NHK_OUTCOME" == success ]]; then
+            echo 'WRITABLE_REGISTRY=crpnhk1hs1gsai91b164'
+            exit 0
+          fi
+          if [[ "$I89_OUTCOME" == success ]]; then
+            echo 'WRITABLE_REGISTRY=crpi89vgdta1237ndquv'
+            exit 0
+          fi
+          echo 'WRITABLE_REGISTRY=NONE'
+          exit 1
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz"
