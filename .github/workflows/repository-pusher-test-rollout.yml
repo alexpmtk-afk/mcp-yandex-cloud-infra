@@ -60,6 +60,12 @@ jobs:
           TARGET_REPO_ID="$(timeout 45s yc container repository list --registry-id "$REGISTRY_ID" --format json | jq -r --arg n "$REGISTRY_ID/marketplaces-mcp" '.[]|select(.name==$n)|.id'|head -1)"
           test -n "$TARGET_REPO_ID"
 
+          timeout 90s yc container registry add-access-binding "$REGISTRY_ID" \
+            --role container-registry.admin \
+            --subject "serviceAccount:$CI_SA_ID"
+          echo 'temporary_test_registry_admin=GRANTED'
+          sleep 20
+
           timeout 90s yc container registry set-ip-permissions "$REGISTRY_ID" \
             --pull 0.0.0.0/1,128.0.0.0/1 \
             --push 0.0.0.0/1,128.0.0.0/1 \
@@ -70,7 +76,12 @@ jobs:
             --role container-registry.images.pusher \
             --subject "serviceAccount:$CI_SA_ID"
           echo 'repository_registry_pusher_binding=PASS'
-          sleep 20
+
+          timeout 90s yc container registry remove-access-binding "$REGISTRY_ID" \
+            --role container-registry.admin \
+            --subject "serviceAccount:$CI_SA_ID"
+          echo 'temporary_test_registry_admin=REMOVED'
+          sleep 10
 
           IAM_TOKEN="$(yc iam create-token)"
           test -n "$IAM_TOKEN"
