@@ -1,4 +1,5 @@
 import importlib.util
+import sys
 from pathlib import Path
 
 import pytest
@@ -7,6 +8,7 @@ MODULE = Path(__file__).resolve().parents[1] / "python_client" / "bridge_client.
 spec = importlib.util.spec_from_file_location("bridge_client_large_read", MODULE)
 assert spec and spec.loader
 bridge_client = importlib.util.module_from_spec(spec)
+sys.modules[spec.name] = bridge_client
 spec.loader.exec_module(bridge_client)
 
 
