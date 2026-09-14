@@ -1,0 +1,50 @@
+name: Google Drive Bridge v1 CI
+
+on:
+  pull_request:
+    paths:
+      - 'shared/google-drive-bridge/**'
+      - '.github/workflows/google-drive-bridge-v1-ci.yml'
+  push:
+    branches:
+      - feature/google-drive-bridge-v1
+    paths:
+      - 'shared/google-drive-bridge/**'
+      - '.github/workflows/google-drive-bridge-v1-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  python-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python -m pip install --disable-pip-version-check httpx pytest
+      - run: python -m py_compile shared/google-drive-bridge/python_client/bridge_client.py
+      - run: pytest -q shared/google-drive-bridge/tests
+
+  static-contract:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Validate required bridge invariants
+        shell: bash
+        run: |
+          set -euo pipefail
+          f='shared/google-drive-bridge/bridge.gs'
+          grep -Fq "MCP_DRIVE_BRIDGE_PROJECT_ID" "$f"
+          grep -Fq "MCP_DRIVE_BRIDGE_ROOT_ID" "$f"
+          grep -Fq "PROJECT_MISMATCH" "$f"
+          grep -Fq "SHORTCUT_FORBIDDEN" "$f"
+          grep -Fq "idempotency_key" "$f"
+          grep -Fq "resumable_start" "$f"
+          grep -Fq "sheet_write_chunk" "$f"
+          if grep -Fq "getScriptLock(); lock.waitLock" "$f"; then
+            echo 'Global whole-request ScriptLock pattern is forbidden'
+            exit 1
+          fi
+          echo 'BRIDGE_STATIC_CONTRACT=PASS'
