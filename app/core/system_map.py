@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-14.v4"
+ARCHITECTURE_VERSION = "2026-09-14.v5"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
@@ -66,6 +66,41 @@ SYSTEM_MAP: dict[str, Any] = {
             "ozon": ["finance", "orders/shipments", "stock snapshots", "promotion/performance", "sales funnel"],
         },
     },
+    "advertising_policy": {
+        "current_scope": "Wildberries only; Ozon advertising is explicitly out of scope for this phase",
+        "phase": "WB Advertising M0 read-only",
+        "credential_service": "wb_ads",
+        "credentials": "Promotion-scoped WB credentials are server-side only and must be injected from Yandex Lockbox; never stored on Drive/GitHub",
+        "live_state_source": "Wildberries Promotion API",
+        "active_campaign_status": 9,
+        "m0_tools": [
+            "wb_ads_list_active_campaigns",
+            "wb_ads_get_campaign_stats",
+            "wb_ads_audit_active",
+        ],
+        "m0_default_audit_period": "last 7 full Europe/Moscow calendar days ending yesterday",
+        "m0_batch_limit": "at most 50 campaign IDs in one /adv/v3/fullstats request; fail closed instead of returning a partial audit",
+        "metric_class": "advertising_attribution_operational",
+        "profitability_boundary": "advertising attribution metrics are not actual business profit; real profitability requires approved joins to sales/buyouts, returns, finance and unit economics",
+        "archive_domain": "База данных/WB/<cabinet>/<year>/advertising",
+        "archive_status": "2026 Drive category scaffold (stats/state/finance/config/audit) exists for wb_dmitrieva, wb_novokshenov and wb_laser_master; ingestion/coverage/registry integration is not yet implemented or accepted",
+        "planned_datasets": [
+            "ads_campaign_daily",
+            "ads_product_daily",
+            "ads_search_cluster_daily",
+            "ads_campaign_snapshots",
+            "ads_expenses",
+            "ads_payments",
+            "ads_bid_history",
+            "ads_product_membership_history",
+            "ads_placement_history",
+            "ads_minus_phrase_history",
+            "ads_mcp_actions",
+        ],
+        "historical_routing": "when Advertising Archive V1 is implemented and coverage is proven, closed historical periods must be archive-first; current state/control stays live",
+        "write_control_status": "not accepted in M0; dedicated start/pause/stop/bid/budget/product/cluster control tools require a later safety-reviewed phase",
+        "safety_override": "provider GET endpoints that mutate campaign state (start/pause/stop/delete) are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb",
+    },
     "data_routing_policy": {
         "canonical_catalog_tool": "marketplace_data_catalog",
         "canonical_metric_router_tool": "marketplace_metric_route",
@@ -89,6 +124,7 @@ SYSTEM_MAP: dict[str, Any] = {
         "update_database": "route to the server archive update workflow for the selected dataset; compare canonical Drive registry and fetch only missing provider data",
         "historical_queries": "first route the business metric; use only the matching canonical Google Drive archive dataset when its period is covered",
         "current_or_uncovered": "use the matching official provider API or explicit gap/backfill workflow",
+        "advertising_live_vs_archive": "campaign state/current control is live; closed advertising analytics becomes archive-first only after the ad dataset binding and coverage are implemented and proven",
         "multi_client": "all clients must see the same remote canonical Drive state and data catalog; no chat-local architecture decisions",
     },
     "change_control": {
@@ -123,6 +159,9 @@ Before answering a historical business question, interpret the requested busines
 Never silently substitute the weekly finance dataset for orders, stocks, advertising, funnels, or any other missing dataset. Surface the gap or use the matching official provider API/backfill path.
 Initial historical backfill is 2026; planned archive depth is through 2024 where provider history allows it. The same multi-dataset principle applies to both Wildberries and Ozon.
 For database/archive tasks, use server-owned shared state, canonical Drive files, registry/idempotent update logic, and official WB/Ozon APIs. Do not invent chat-local storage, bypass Drive with another source of truth, or introduce a new architecture path.
+WB Advertising M0 is Wildberries-only and read-only: use dedicated server-side wb_ads Promotion credentials; current campaign state is live from WB Promotion API; M0 advertising-attribution metrics must never be presented as actual business profit.
+The advertising Drive folder scaffold is not proof that Advertising Archive V1 ingestion or historical coverage exists. Do not route historical ad analytics to the archive until dataset bindings, registry coverage and validation are implemented and accepted.
+Provider GET endpoints that change advertising state are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb.
 If a requested implementation conflicts with the canonical map or data catalog, fail closed and surface the conflict instead of silently changing architecture.
 """
 
