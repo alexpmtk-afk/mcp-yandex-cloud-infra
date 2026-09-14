@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bridge_url:
-        description: Dedicated Marketplaces Apps Script Bridge v1 /exec URL
+        description: Marketplaces Apps Script Bridge v1 /exec URL
         required: true
         type: string
       foreign_file_id:
@@ -19,8 +19,8 @@ env:
   PROJECT_ID: marketplaces
   EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
   EXPECTED_BRIDGE_RELEASE: 1.0.0-alpha.2
-  LOCKBOX_NAME: marketplaces-google-drive-bridge-v1
-  LOCKBOX_KEY: gdrive_bridge_secret
+  LOCKBOX_NAME: marketplaces-mcp-api-credentials
+  LOCKBOX_KEY: gdrive_bridge_v1_secret
 
 concurrency:
   group: marketplaces-drive-bridge-v1-acceptance
@@ -87,11 +87,10 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          yc config profile create github-ci || true
+          yc config profile create bridge-v1-marketplaces-acceptance || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Resolve dedicated Bridge v1 credential
-        id: credential
+      - name: Resolve Marketplaces project Bridge v1 credential
         shell: bash
         run: |
           set -euo pipefail
@@ -104,13 +103,14 @@ jobs:
           timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
           VERSION_ID="$(jq -r --arg k "$LOCKBOX_KEY" '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index($k) != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
           test -n "$VERSION_ID"
-          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key "$LOCKBOX_KEY" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
           BRIDGE_SECRET="$(jq -r --arg k "$LOCKBOX_KEY" '.entries[]|select(.key==$k)|.text_value // empty' "$RUNNER_TEMP/payload.json")"
           test -n "$BRIDGE_SECRET"
           echo "::add-mask::$BRIDGE_SECRET"
           printf '%s' "$BRIDGE_SECRET" > "$RUNNER_TEMP/bridge-secret"
           chmod 600 "$RUNNER_TEMP/bridge-secret"
-          echo 'DEDICATED_MARKETPLACES_BRIDGE_CREDENTIAL=RESOLVED'
+          echo "MARKETPLACES_BRIDGE_V1_SECRET_VERSION_ID=$VERSION_ID"
+          echo 'MARKETPLACES_PROJECT_BRIDGE_V1_CREDENTIAL=RESOLVED'
 
       - name: Authenticated deep health and alpha.2 capability gate
         shell: bash
@@ -129,11 +129,7 @@ jobs:
           sys.path.insert(0,str(root/'python_client'))
           from bridge_client import BridgeConfig, GoogleDriveBridgeClient
           async def main():
-              client=GoogleDriveBridgeClient(BridgeConfig(
-                  url=os.environ['GDRIVE_BRIDGE_URL'],
-                  secret=os.environ['GDRIVE_BRIDGE_SECRET'],
-                  project_id='marketplaces',
-              ))
+              client=GoogleDriveBridgeClient(BridgeConfig(url=os.environ['GDRIVE_BRIDGE_URL'],secret=os.environ['GDRIVE_BRIDGE_SECRET'],project_id='marketplaces'))
               health=await client.health()
               assert int(health.get('protocol_version') or 0) == 1, health
               assert health.get('bridge_release') == os.environ['GDRIVE_BRIDGE_EXPECTED_RELEASE'], health
