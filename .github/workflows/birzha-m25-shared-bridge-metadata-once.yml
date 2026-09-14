@@ -1,0 +1,89 @@
+name: BIRZHA M25 Shared Bridge Metadata Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/birzha-m25-shared-bridge-metadata-once.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Validate BIRZHA worker and mirror Terraform
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform fmt -check -diff terraform/birzha_test/m24_autonomous_worker.tf terraform/birzha_test/m25_market_mirror.tf
+          terraform -chdir=terraform/birzha_test init -backend=false -input=false -lockfile=readonly
+          terraform -chdir=terraform/birzha_test validate
+          echo 'BIRZHA_TERRAFORM_VALIDATE=PASS'
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz' \
+            -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate metadata reader
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create birzha-m25-metadata || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve shared bridge metadata only
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID='b1gi4pr9msenirafh2c7'
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id' | head -1)"
+          test -n "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id' | head -1)"
+          test "$SECRET_ID" = 'e6qb8b3u57e71731j1os'
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          test "$(jq -r --arg id "$VERSION_ID" '[.[]|select(.id==$id)|.payload_entry_keys[]] | index("google_drive_bridge_secret") != null' "$RUNNER_TEMP/versions.json")" = true
+          BIRZHA_FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-test")|.id' | head -1)"
+          test -n "$BIRZHA_FOLDER_ID"
+          BIRZHA_RUNTIME_SA="$(yc iam service-account list --folder-id "$BIRZHA_FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-runtime")|.id' | head -1)"
+          test -n "$BIRZHA_RUNTIME_SA"
+          echo "SHARED_BRIDGE_SECRET_ID=$SECRET_ID"
+          echo "SHARED_BRIDGE_ACTIVE_VERSION_ID=$VERSION_ID"
+          echo "BIRZHA_RUNTIME_SERVICE_ACCOUNT_ID=$BIRZHA_RUNTIME_SA"
+          echo 'SECRET_PAYLOAD_READ=NO'
+          echo 'BIRZHA_SHARED_BRIDGE_METADATA=PASS'
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/versions.json"
