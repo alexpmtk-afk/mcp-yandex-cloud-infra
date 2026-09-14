@@ -1,0 +1,19 @@
+{
+  "project_id": "replace-me",
+  "bridge_protocol_version": 1,
+  "bridge_release": "1.0.0",
+  "archive_root_id": "replace-me",
+  "archive_root_name": "replace-me",
+  "secret_property": "MCP_DRIVE_BRIDGE_SECRET",
+  "capabilities": {
+    "drive_small_io": true,
+    "drive_resumable_upload": true,
+    "drive_large_download": true,
+    "google_sheets_chunked": false
+  },
+  "limits": {
+    "small_read_max_bytes": 5242880,
+    "small_write_max_bytes": 5242880,
+    "sheet_chunk_max_rows": 5000
+  }
+}
