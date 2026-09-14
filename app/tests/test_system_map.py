@@ -20,7 +20,7 @@ def test_canonical_map_fixes_storage_boundaries():
     assert "no Google OAuth refresh token" in storage["google_drive_auth"]
     assert "staging filename" in storage["google_drive_large_upload"]
     assert "SHA256" in storage["google_drive_large_upload"]
-    assert "promotion" in storage["google_drive_large_upload"]
+    assert "promote" in storage["google_drive_large_upload"]
     assert "immutable candidate" in storage["yandex_object_storage"]
     assert "backup" in storage["yandex_object_storage"]
     assert "runtime service-account IAM token" in storage["yandex_archive_auth"]
