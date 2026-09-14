@@ -1,0 +1,84 @@
+name: Semantic Core Configure Docker Probe
+
+on:
+  push:
+    branches:
+      - fix/semantic-core-test-iam-20260914
+    paths:
+      - .github/workflows/semantic-core-configure-docker-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/yc.tgz" \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create semantic-configure-docker-probe || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve TEST registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          test -n "$REGISTRY_ID"
+          echo "TEST_REGISTRY_ID=$REGISTRY_ID" >> "$GITHUB_ENV"
+          echo "existing_registry=$REGISTRY_ID"
+
+      - name: Configure Docker exactly like last successful deploy
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc container registry configure-docker
+          grep -q 'cr.yandex' "$HOME/.docker/config.json"
+          echo 'YC_CONFIGURE_DOCKER=PASS'
+
+      - name: Push scratch image through yc credential helper
+        shell: bash
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/${TEST_REGISTRY_ID}/semantic-core-helper-probe:${GITHUB_SHA}"
+          mkdir -p "$RUNNER_TEMP/probe"
+          printf 'FROM scratch\nLABEL purpose="semantic-core-yc-helper-probe"\n' > "$RUNNER_TEMP/probe/Dockerfile"
+          docker build --tag "$IMAGE" "$RUNNER_TEMP/probe"
+          docker push "$IMAGE"
+          echo "probe_image=$IMAGE"
+          echo 'YC_HELPER_PUSH=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz"
