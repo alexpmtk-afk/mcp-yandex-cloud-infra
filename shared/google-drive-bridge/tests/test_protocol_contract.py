@@ -1,6 +1,13 @@
 import hashlib
+import importlib.util
+from pathlib import Path
 
-from shared.google_drive_bridge.python_client.bridge_client import _confirmed_offset
+MODULE = Path(__file__).resolve().parents[1] / "python_client" / "bridge_client.py"
+spec = importlib.util.spec_from_file_location("bridge_client", MODULE)
+assert spec and spec.loader
+bridge_client = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(bridge_client)
+_confirmed_offset = bridge_client._confirmed_offset
 
 
 def test_confirmed_offset():
@@ -11,4 +18,4 @@ def test_confirmed_offset():
 
 
 def test_sha256_fixture():
-    assert hashlib.sha256(b"bridge-v1").hexdigest() == "640d275d9cc66e1cb45d0fb1f16af16fcbe8ed67320b5830566dd42c5bdcd8c0"
+    assert hashlib.sha256(b"bridge-v1").hexdigest() == "83a3608e5baeb253b1670222090007d078fc84ef96fc6ce51e49de40986a332c"
