@@ -14,11 +14,12 @@ def test_canonical_map_fixes_storage_boundaries():
     storage = SYSTEM_MAP["storage_policy"]
     assert storage["primary_archive_storage"] == "Google Drive"
     assert storage["google_drive_root"] == "MCP архив базы данных"
+    assert "Apps Script" in storage["google_drive_auth"]
     assert "Yandex Lockbox" in storage["google_drive_auth"]
     assert "job state" in storage["yandex_object_storage"]
     assert "backup" in storage["yandex_object_storage"]
     assert "runtime service-account IAM token" in storage["yandex_archive_auth"]
-    assert "only Google Drive API" in storage["google_cloud"]
+    assert "no Google Cloud OAuth runtime dependency" in storage["google_cloud"]
     assert SYSTEM_MAP["archive_policy"]["canonical_source_of_truth"] == "Google Drive annual dataset CSV files plus reports registry"
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["row_deduplication"] == "(reportId, rrdId)"
@@ -37,9 +38,10 @@ def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
 
 
 def test_server_instructions_contain_hard_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-14.v2"
+    assert ARCHITECTURE_VERSION == "2026-09-14.v4"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
     assert "Google Drive" in SYSTEM_INSTRUCTIONS
+    assert "Apps Script" in SYSTEM_INSTRUCTIONS
     assert "Yandex Object Storage" in SYSTEM_INSTRUCTIONS
     assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
     assert "Yandex Lockbox" in SYSTEM_INSTRUCTIONS
