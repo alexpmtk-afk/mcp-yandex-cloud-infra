@@ -1,5 +1,5 @@
-name: Diagnose Marketplaces Registry IP Policy
-# Trigger read-only registry policy diagnostic.
+name: Diagnose Marketplaces Registry Access
+# Trigger read-only registry policy and repository diagnostic.
 
 on:
   push:
@@ -62,20 +62,23 @@ jobs:
             sleep 15
           fi
 
-      - name: Read registry IP permissions and registry IAM bindings
+      - name: Read registry policies, IAM bindings and repositories
         shell: bash
         run: |
           set -euo pipefail
           yc container registry list-ip-permissions "$REGISTRY_ID" --format json --no-user-output > "$RUNNER_TEMP/ip-policy.json"
           yc container registry list-access-bindings "$REGISTRY_ID" --format json --no-user-output > "$RUNNER_TEMP/registry-bindings.json"
+          yc container repository list --registry-id "$REGISTRY_ID" --format json --no-user-output > "$RUNNER_TEMP/repositories.json"
           echo '--- registry_ip_permissions ---'
           jq -c '.' "$RUNNER_TEMP/ip-policy.json"
+          echo '--- repository_names ---'
+          jq -r '.[].name' "$RUNNER_TEMP/repositories.json"
           echo '--- registry_access_bindings ---'
           jq -c '.' "$RUNNER_TEMP/registry-bindings.json"
-          PUSH_COUNT="$(jq '[.[] | select((.action // .permission // "") == "PUSH")] | length' "$RUNNER_TEMP/ip-policy.json")"
-          TOTAL_COUNT="$(jq 'length' "$RUNNER_TEMP/ip-policy.json")"
-          echo "ip_policy_total=$TOTAL_COUNT"
-          echo "push_ip_permissions=$PUSH_COUNT"
+          EXPECTED="${REGISTRY_ID}/marketplaces-mcp"
+          EXISTS="$(jq -r --arg n "$EXPECTED" 'any(.[]; .name==$n)' "$RUNNER_TEMP/repositories.json")"
+          echo "target_repository_exists=$EXISTS"
+          echo "repository_count=$(jq 'length' "$RUNNER_TEMP/repositories.json")"
 
       - name: Cleanup temporary admin
         if: always()
@@ -85,5 +88,5 @@ jobs:
           if [[ "${ADMIN_ADDED:-false}" == "true" && -n "${FOLDER_ID:-}" && -n "${CI_SA_ID:-}" ]]; then
             yc resource-manager folder remove-access-binding "$FOLDER_ID" --role admin --service-account-id "$CI_SA_ID" >/dev/null 2>&1 || true
           fi
-          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bindings.json" "$RUNNER_TEMP/ip-policy.json" "$RUNNER_TEMP/registry-bindings.json"
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bindings.json" "$RUNNER_TEMP/ip-policy.json" "$RUNNER_TEMP/registry-bindings.json" "$RUNNER_TEMP/repositories.json"
           echo 'diagnostic_cleanup=PASS'
