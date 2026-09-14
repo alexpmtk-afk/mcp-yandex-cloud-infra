@@ -108,7 +108,7 @@ jobs:
               return response.json() if response.text.strip() else None
 
           def tool(name, arguments):
-              timeout = httpx.Timeout(connect=15.0, read=75.0, write=30.0, pool=15.0)
+              timeout = httpx.Timeout(connect=15.0, read=300.0, write=30.0, pool=15.0)
               headers0 = {
                   'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
                   'Accept': 'application/json, text/event-stream',
