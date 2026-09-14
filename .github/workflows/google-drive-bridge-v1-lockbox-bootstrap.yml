@@ -1,0 +1,210 @@
+name: Google Drive Bridge v1 Project Lockbox Bootstrap
+
+on:
+  workflow_dispatch:
+    inputs:
+      project:
+        description: Project identity
+        required: true
+        type: choice
+        options:
+          - marketplaces
+          - birzha
+      bridge_url:
+        description: Project-isolated Apps Script Bridge v1 /exec URL
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: drive-bridge-v1-lockbox-${{ inputs.project }}
+  cancel-in-progress: false
+
+jobs:
+  bootstrap:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve project contract
+        id: project
+        shell: bash
+        env:
+          PROJECT: ${{ inputs.project }}
+          MARKETPLACES_SECRET: ${{ secrets.MARKETPLACES_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET }}
+          BIRZHA_SECRET: ${{ secrets.BIRZHA_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET }}
+        run: |
+          set -euo pipefail
+          grep -Fxq 'protocol_version=1' shared/google-drive-bridge/VERSION
+          grep -Fxq 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
+          case "$PROJECT" in
+            marketplaces)
+              ROOT_ID='1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ'
+              ROOT_NAME='MCP архив базы данных'
+              FOLDER_NAME='marketplaces-mcp-test'
+              LOCKBOX_NAME='marketplaces-mcp-api-credentials'
+              BOOTSTRAP_SECRET="$MARKETPLACES_SECRET"
+              ;;
+            birzha)
+              ROOT_ID='1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2'
+              ROOT_NAME='Архив рыночных данных'
+              FOLDER_NAME='birzha-mcp-forecast-test'
+              LOCKBOX_NAME='birzha-mcp-forecast-test-auth'
+              BOOTSTRAP_SECRET="$BIRZHA_SECRET"
+              ;;
+            *) echo 'invalid project' >&2; exit 2 ;;
+          esac
+          test -n "$BOOTSTRAP_SECRET"
+          echo "::add-mask::$BOOTSTRAP_SECRET"
+          printf '%s' "$BOOTSTRAP_SECRET" > "$RUNNER_TEMP/bridge-secret"
+          chmod 600 "$RUNNER_TEMP/bridge-secret"
+          echo "root_id=$ROOT_ID" >> "$GITHUB_OUTPUT"
+          echo "root_name=$ROOT_NAME" >> "$GITHUB_OUTPUT"
+          echo "folder_name=$FOLDER_NAME" >> "$GITHUB_OUTPUT"
+          echo "lockbox_name=$LOCKBOX_NAME" >> "$GITHUB_OUTPUT"
+          echo 'BRIDGE_V1_STABLE_CONTRACT=PASS'
+
+      - name: Validate isolated Bridge identity
+        shell: bash
+        env:
+          PROJECT: ${{ inputs.project }}
+          BRIDGE_URL: ${{ inputs.bridge_url }}
+          ROOT_ID: ${{ steps.project.outputs.root_id }}
+        run: |
+          set -euo pipefail
+          SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
+          export SECRET
+          python - <<'PY'
+          import json,os,urllib.request,uuid
+          body={'secret':os.environ['SECRET'],'project_id':os.environ['PROJECT'],'request_id':str(uuid.uuid4()),'action':'health','payload':{}}
+          req=urllib.request.Request(os.environ['BRIDGE_URL'],data=json.dumps(body).encode(),headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=60) as r: data=json.loads(r.read().decode())
+          assert data.get('ok') is True,data
+          assert int(data.get('protocol_version') or 0)==1,data
+          assert data.get('project_id')==os.environ['PROJECT'],data
+          result=data.get('result') or {}
+          assert result.get('bridge_release')=='1.0.0',data
+          assert result.get('root_id')==os.environ['ROOT_ID'],data
+          print('BRIDGE_V1_IDENTITY=PASS')
+          PY
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and resolve project Lockbox
+        id: lockbox
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+          FOLDER_NAME: ${{ steps.project.outputs.folder_name }}
+          LOCKBOX_NAME: ${{ steps.project.outputs.lockbox_name }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY="$RUNNER_TEMP/yc-key.json"; umask 077; printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY")"; test -n "$DEPLOYER_ID"
+          yc config profile create bridge-v1-lockbox >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r --arg n "$FOLDER_NAME" '.[]|select(.name==$n)|.id'|head -1)"; test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$LOCKBOX_NAME" '.[]|select(.name==$n)|.id'|head -1)"; test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          BASE_VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"; test -n "$BASE_VERSION"
+          echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+          echo "deployer_id=$DEPLOYER_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Check current v1 credential
+        id: change
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          BASE_VERSION: ${{ steps.lockbox.outputs.base_version }}
+        run: |
+          set -euo pipefail
+          TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$TARGET"
+          KEYS="$(jq -r --arg id "$BASE_VERSION" '.[]|select(.id==$id)|(.payload_entry_keys//[])[]?' "$RUNNER_TEMP/versions.json")"
+          if grep -Fxq gdrive_bridge_v1_secret <<< "$KEYS"; then
+            yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --format json --no-user-output > "$RUNNER_TEMP/current.json"
+            CURRENT="$(jq -r '.entries[]|select(.key=="gdrive_bridge_v1_secret")|.text_value//empty' "$RUNNER_TEMP/current.json")"; echo "::add-mask::$CURRENT"
+            if [[ -n "$CURRENT" && "$CURRENT" == "$TARGET" ]]; then
+              echo 'required=false' >> "$GITHUB_OUTPUT"; echo "version=$BASE_VERSION" >> "$GITHUB_OUTPUT"; exit 0
+            fi
+          fi
+          echo 'required=true' >> "$GITHUB_OUTPUT"
+
+      - name: Grant temporary folder admin for version write
+        if: steps.change.outputs.required == 'true'
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
+          DEPLOYER_ID: ${{ steps.lockbox.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          yc resource-manager folder add-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID"
+          sleep 15
+
+      - name: Add isolated v1 key preserving all existing keys
+        if: steps.change.outputs.required == 'true'
+        id: version
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          BASE_VERSION: ${{ steps.lockbox.outputs.base_version }}
+        run: |
+          set -euo pipefail
+          TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$TARGET"; export TARGET
+          python - <<'PY' > "$RUNNER_TEMP/change.json"
+          import json,os
+          print(json.dumps([{'key':'gdrive_bridge_v1_secret','text_value':os.environ['TARGET']}],separators=(',',':')))
+          PY
+          chmod 600 "$RUNNER_TEMP/change.json"
+          yc lockbox secret add-version --id "$SECRET_ID" --base-version-id "$BASE_VERSION" \
+            --description 'Google Drive Bridge Protocol v1 project-isolated credential' \
+            --payload - --format json --no-user-output < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new.json"
+          VERSION="$(jq -r '.id//.response.id//empty' "$RUNNER_TEMP/new.json")"; test -n "$VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Verify final Lockbox v1 key
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          BASE_VERSION: ${{ steps.lockbox.outputs.base_version }}
+          NEW_VERSION: ${{ steps.version.outputs.version }}
+          EXISTING_VERSION: ${{ steps.change.outputs.version }}
+          REQUIRED: ${{ steps.change.outputs.required }}
+        run: |
+          set -euo pipefail
+          VERSION="$EXISTING_VERSION"; [[ "$REQUIRED" == true ]] && VERSION="$NEW_VERSION"; test -n "$VERSION"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION" --key gdrive_bridge_v1_secret --format json --no-user-output > "$RUNNER_TEMP/final.json"
+          ACTUAL="$(jq -r '.entries[]|select(.key=="gdrive_bridge_v1_secret")|.text_value//empty' "$RUNNER_TEMP/final.json")"
+          TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$ACTUAL"
+          [[ "$ACTUAL" == "$TARGET" ]]
+          echo "BRIDGE_V1_LOCKBOX_VERSION_ID=$VERSION"
+          echo 'BRIDGE_V1_LOCKBOX_BOOTSTRAP=PASS'
+
+      - name: Revoke temporary folder admin
+        if: always() && steps.change.outputs.required == 'true'
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
+          DEPLOYER_ID: ${{ steps.lockbox.outputs.deployer_id }}
+        run: yc resource-manager folder remove-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID" || true
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/current.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json" "$RUNNER_TEMP/final.json"
