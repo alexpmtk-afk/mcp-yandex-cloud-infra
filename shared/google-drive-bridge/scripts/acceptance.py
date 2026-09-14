@@ -30,6 +30,38 @@ async def expect_error(coro, code: str) -> None:
     raise RuntimeError(f"expected bridge error {code}")
 
 
+async def _concurrent_resource_acceptance(client: GoogleDriveBridgeClient, project: str, path: str) -> None:
+    async def one(slot: str) -> tuple[str, bytes, str]:
+        payload = f"bridge-v1-concurrency:{project}:{slot}:".encode() + secrets.token_bytes(128)
+        sha = hashlib.sha256(payload).hexdigest()
+        name = f"concurrent-{slot}-{project}.bin"
+        result = await client.write_small(
+            path,
+            name,
+            payload,
+            mime_type="application/octet-stream",
+            idempotency_key=f"acceptance-concurrent:{project}:{slot}:{sha}",
+        )
+        file_id = str((result.get("file") or {}).get("id") or "")
+        if not file_id:
+            raise RuntimeError(f"concurrent write {slot} returned no file id")
+        return name, payload, file_id
+
+    results = await asyncio.gather(one("a"), one("b"), one("c"), one("d"))
+    try:
+        reads = await asyncio.gather(*(client.read_small(path, name) for name, _, _ in results))
+        for (name, expected, file_id), (meta, raw) in zip(results, reads):
+            if raw != expected:
+                raise RuntimeError(f"concurrent read bytes mismatch for {name}")
+            if str((meta or {}).get("id") or "") != file_id:
+                raise RuntimeError(f"concurrent read file id mismatch for {name}")
+    finally:
+        await asyncio.gather(*(
+            client.trash_by_id(file_id, idempotency_key=f"acceptance-concurrent-trash:{project}:{file_id}")
+            for _, _, file_id in results
+        ))
+
+
 async def main() -> None:
     url = env("GDRIVE_BRIDGE_URL")
     secret = env("GDRIVE_BRIDGE_SECRET")
@@ -91,6 +123,9 @@ async def main() -> None:
     else:
         print("FOREIGN_ROOT=SKIP (set GDRIVE_BRIDGE_FOREIGN_FILE_ID)")
 
+    await _concurrent_resource_acceptance(client, project, diag_path)
+    print("INDEPENDENT_RESOURCE_CONCURRENCY=PASS")
+
     await client.trash_by_id(
         file_id,
         idempotency_key=f"acceptance-trash:{project}:{file_id}",
@@ -137,13 +172,26 @@ async def main() -> None:
             raise RuntimeError("large size mismatch")
         if str(meta.get("sha256_checksum") or "").lower() != sha:
             raise RuntimeError("large SHA256 mismatch")
+        print(f"LARGE_RESUMABLE={len(large)} bytes PASS")
+
+        download_meta, downloaded = await client.download_large_by_id(
+            large_file_id,
+            max_bytes=max(len(large), 1),
+        )
+        if downloaded != large:
+            raise RuntimeError("large direct-download bytes mismatch")
+        if int(download_meta.get("size") or -1) != len(large):
+            raise RuntimeError("large direct-download size mismatch")
+        if str(download_meta.get("sha256_checksum") or "").lower() != sha:
+            raise RuntimeError("large direct-download SHA256 mismatch")
+        print(f"LARGE_DIRECT_DOWNLOAD={len(downloaded)} bytes SHA256 PASS")
+
         await client.trash_by_id(
             large_file_id,
             idempotency_key=f"acceptance-trash-large:{project}:{large_file_id}",
         )
-        print(f"LARGE_RESUMABLE={len(large)} bytes PASS")
     else:
-        print("LARGE_RESUMABLE=SKIP (set GDRIVE_BRIDGE_RUN_LARGE=1)")
+        print("LARGE_RESUMABLE_AND_DOWNLOAD=SKIP (set GDRIVE_BRIDGE_RUN_LARGE=1)")
 
     print("COMMON_ACCEPTANCE=PASS")
 

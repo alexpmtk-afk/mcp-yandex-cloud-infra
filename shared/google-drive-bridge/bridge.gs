@@ -1,6 +1,6 @@
 /**
  * Yandex Cloud <-> Google Drive Bridge
- * Protocol v1 / release 1.0.0-alpha.1
+ * Protocol v1 / release 1.0.0-alpha.2
  *
  * Same source is deployed separately for every client project.
  * Required Script Properties:
@@ -14,7 +14,7 @@
  *   MCP_DRIVE_BRIDGE_SHEETS_ENABLED (true|false)
  */
 const BRIDGE_PROTOCOL_VERSION = 1;
-const BRIDGE_RELEASE = '1.0.0-alpha.1';
+const BRIDGE_RELEASE = '1.0.0-alpha.2';
 const PROP_SECRET = 'MCP_DRIVE_BRIDGE_SECRET';
 const PROP_PROJECT = 'MCP_DRIVE_BRIDGE_PROJECT_ID';
 const PROP_ROOT_ID = 'MCP_DRIVE_BRIDGE_ROOT_ID';
@@ -22,9 +22,11 @@ const PROP_ROOT_NAME = 'MCP_DRIVE_BRIDGE_ROOT_NAME';
 const PROP_SMALL_MAX = 'MCP_DRIVE_BRIDGE_SMALL_MAX_BYTES';
 const PROP_SHEETS = 'MCP_DRIVE_BRIDGE_SHEETS_ENABLED';
 const DEFAULT_SMALL_MAX = 5 * 1024 * 1024;
+const DOWNLOAD_TICKET_TTL_SECONDS = 21600;
 const FOLDER_MIME = 'application/vnd.google-apps.folder';
 const SHEET_MIME = 'application/vnd.google-apps.spreadsheet';
 const SHORTCUT_MIME = 'application/vnd.google-apps.shortcut';
+const GOOGLE_APPS_PREFIX = 'application/vnd.google-apps.';
 
 function doGet() {
   try {
@@ -82,13 +84,14 @@ function dispatch_(action, p, idem, cfg) {
   if (action === 'trash_by_id') return trashById_(p, cfg);
   if (action === 'resumable_start') return resumableStart_(p, idem, cfg);
   if (action === 'promote_verified') return promoteVerified_(p, idem, cfg);
+  if (action === 'large_download_start') return largeDownloadStart_(p, cfg);
+  if (action === 'large_download_poll') return largeDownloadPoll_(p, cfg);
   if (action === 'sheet_ensure') return sheetEnsure_(p, idem, cfg);
   if (action === 'sheet_stage_begin') return sheetStageBegin_(p, idem, cfg);
   if (action === 'sheet_write_chunk') return sheetWriteChunk_(p, idem, cfg);
   if (action === 'sheet_verify') return sheetVerify_(p, cfg);
   if (action === 'sheet_commit') return sheetCommit_(p, idem, cfg);
   if (action === 'sheet_abort') return sheetAbort_(p, idem, cfg);
-  if (action === 'large_download_start') throw bridgeError_('NOT_IMPLEMENTED', 'large direct download capability is not implemented in alpha.1', false);
   throw bridgeError_('UNKNOWN_ACTION', 'unknown action', false);
 }
 
@@ -124,7 +127,8 @@ function health_(cfg) {
     capabilities: {
       drive_small_io: true,
       drive_resumable_upload: true,
-      drive_large_download: false,
+      drive_large_download: true,
+      drive_large_download_transport: 'drive_files_download_lro',
       google_sheets_chunked: cfg.sheetsEnabled,
       fixed_root_file_id_guard: true,
       idempotent_mutations: true,
@@ -290,6 +294,165 @@ function promoteFile_(folder, fileId, stageName, canonicalName, expectedBytes, e
   return {file: metadata_(fileId, cfg), sha256: expectedSha, previous_file_trashed: previousTrashed, promoted: true};
 }
 
+function largeDownloadStart_(p, cfg) {
+  const fileId = cleanId_(p.file_id, 'file_id');
+  assertFileInsideRoot_(fileId, cfg);
+  const meta = rawMetadata_(fileId);
+  validateLargeDownloadMeta_(meta);
+  const operation = startDriveDownloadOperation_(fileId, meta.resourceKey || '');
+  if (operation.done === true) {
+    return completedDownloadResult_(operation, meta, fileId, '');
+  }
+
+  const operationName = validateOperationName_(operation.name);
+  const ticket = Utilities.getUuid().replace(/-/g, '');
+  const binding = {
+    file_id: fileId,
+    operation_name: operationName,
+    size: Number(meta.size),
+    sha256: String(meta.sha256Checksum || '').toLowerCase(),
+    modified_time: String(meta.modifiedTime || ''),
+    resource_key: String(meta.resourceKey || ''),
+    mime_type: String(meta.mimeType || '')
+  };
+  CacheService.getScriptCache().put(downloadTicketKey_(ticket), JSON.stringify(binding), DOWNLOAD_TICKET_TTL_SECONDS);
+  return {
+    ready: false,
+    download_ticket: ticket,
+    file_id: fileId,
+    total_bytes: binding.size,
+    sha256: binding.sha256,
+    mime_type: binding.mime_type,
+    modified_time: binding.modified_time
+  };
+}
+
+function largeDownloadPoll_(p, cfg) {
+  const ticket = cleanId_(p.download_ticket, 'download_ticket');
+  const cache = CacheService.getScriptCache();
+  const raw = cache.get(downloadTicketKey_(ticket));
+  if (!raw) throw bridgeError_('DOWNLOAD_TICKET_EXPIRED', 'download ticket is missing or expired; restart large_download_start', true);
+  let binding;
+  try { binding = JSON.parse(raw); } catch (err) { throw bridgeError_('DOWNLOAD_TICKET_INVALID', 'download ticket state is invalid', true); }
+
+  const fileId = cleanId_(binding.file_id, 'file_id');
+  assertFileInsideRoot_(fileId, cfg);
+  const meta = rawMetadata_(fileId);
+  validateLargeDownloadMeta_(meta);
+  if (Number(meta.size) !== Number(binding.size) ||
+      String(meta.sha256Checksum || '').toLowerCase() !== String(binding.sha256 || '').toLowerCase() ||
+      String(meta.modifiedTime || '') !== String(binding.modified_time || '')) {
+    cache.remove(downloadTicketKey_(ticket));
+    throw bridgeError_('DOWNLOAD_SOURCE_CHANGED', 'Drive file changed while preparing direct download', true);
+  }
+
+  const operation = pollDriveDownloadOperation_(validateOperationName_(binding.operation_name), binding.resource_key || '');
+  if (operation.done !== true) {
+    return {
+      ready: false,
+      download_ticket: ticket,
+      file_id: fileId,
+      total_bytes: Number(binding.size),
+      sha256: String(binding.sha256),
+      mime_type: String(binding.mime_type || ''),
+      modified_time: String(binding.modified_time || '')
+    };
+  }
+  cache.remove(downloadTicketKey_(ticket));
+  return completedDownloadResult_(operation, meta, fileId, ticket);
+}
+
+function validateLargeDownloadMeta_(meta) {
+  if (meta.trashed) throw bridgeError_('FILE_TRASHED', 'cannot download a trashed file', false);
+  if (String(meta.mimeType || '').indexOf(GOOGLE_APPS_PREFIX) === 0) {
+    throw bridgeError_('BLOB_DOWNLOAD_ONLY', 'large direct download v1 requires a blob file, not a Google Workspace document', false);
+  }
+  if (meta.capabilities && meta.capabilities.canDownload === false) {
+    throw bridgeError_('DOWNLOAD_FORBIDDEN', 'Drive reports canDownload=false', false);
+  }
+  if (meta.size == null || !Number.isFinite(Number(meta.size)) || Number(meta.size) < 0) {
+    throw bridgeError_('SIZE_UNAVAILABLE', 'Drive file size is unavailable', false);
+  }
+  if (!/^[0-9a-f]{64}$/i.test(String(meta.sha256Checksum || ''))) {
+    throw bridgeError_('SHA256_UNAVAILABLE', 'Drive SHA256 is required for verified large download', false);
+  }
+}
+
+function startDriveDownloadOperation_(fileId, resourceKey) {
+  const headers = {
+    Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+    Accept: 'application/json'
+  };
+  if (resourceKey) headers['X-Goog-Drive-Resource-Keys'] = fileId + '/' + resourceKey;
+  const response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '/download', {
+    method: 'post',
+    headers: headers,
+    payload: '',
+    muteHttpExceptions: true,
+    followRedirects: false
+  });
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw bridgeError_('LARGE_DOWNLOAD_START_FAILED', 'Drive files.download failed with HTTP ' + code, retryableHttp_(code));
+  }
+  try { return JSON.parse(response.getContentText() || '{}'); }
+  catch (err) { throw bridgeError_('LARGE_DOWNLOAD_START_FAILED', 'Drive files.download returned invalid JSON', true); }
+}
+
+function pollDriveDownloadOperation_(operationName, resourceKey) {
+  const headers = {
+    Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+    Accept: 'application/json'
+  };
+  if (resourceKey) headers['X-Goog-Drive-Resource-Keys'] = resourceKey;
+  const response = UrlFetchApp.fetch('https://www.googleapis.com/drive/v3/' + operationName, {
+    method: 'get',
+    headers: headers,
+    muteHttpExceptions: true,
+    followRedirects: false
+  });
+  const code = response.getResponseCode();
+  if (code < 200 || code >= 300) {
+    throw bridgeError_('LARGE_DOWNLOAD_POLL_FAILED', 'Drive operations.get failed with HTTP ' + code, retryableHttp_(code));
+  }
+  try { return JSON.parse(response.getContentText() || '{}'); }
+  catch (err) { throw bridgeError_('LARGE_DOWNLOAD_POLL_FAILED', 'Drive operations.get returned invalid JSON', true); }
+}
+
+function completedDownloadResult_(operation, meta, fileId, ticket) {
+  if (operation.error) {
+    const errorCode = Number(operation.error.code || 0);
+    throw bridgeError_('LARGE_DOWNLOAD_OPERATION_FAILED', String(operation.error.message || 'Drive download operation failed'), retryableDriveOperationCode_(errorCode));
+  }
+  const response = operation.response && typeof operation.response === 'object' ? operation.response : {};
+  const downloadUri = String(response.downloadUri || '').trim();
+  if (!downloadUri || downloadUri.indexOf('https://') !== 0) {
+    throw bridgeError_('LARGE_DOWNLOAD_URI_MISSING', 'completed Drive download operation returned no HTTPS downloadUri', true);
+  }
+  return {
+    ready: true,
+    download_ticket: ticket || null,
+    file_id: fileId,
+    total_bytes: Number(meta.size),
+    sha256: String(meta.sha256Checksum || '').toLowerCase(),
+    mime_type: String(meta.mimeType || ''),
+    modified_time: String(meta.modifiedTime || ''),
+    resource_key: String(meta.resourceKey || ''),
+    partial_download_allowed: Boolean(response.partialDownloadAllowed),
+    download_uri: downloadUri
+  };
+}
+
+function validateOperationName_(value) {
+  const name = String(value || '').trim();
+  if (!/^operations\/[A-Za-z0-9._~%\/-]+$/.test(name)) throw bridgeError_('INVALID_DOWNLOAD_OPERATION', 'Drive operation name is invalid', false);
+  return name;
+}
+
+function downloadTicketKey_(ticket) { return 'bridge-download:' + String(ticket); }
+function retryableHttp_(code) { return [408,425,429,500,502,503,504].indexOf(Number(code)) >= 0; }
+function retryableDriveOperationCode_(code) { return [1,2,4,8,10,13,14].indexOf(Number(code)) >= 0; }
+
 function sheetEnsure_(p, idem, cfg) {
   requireSheets_(cfg);
   const existingId = String(p.spreadsheet_id || '').trim();
@@ -385,7 +548,6 @@ function sheetCommit_(p, idem, cfg) {
   let stage = ss.getSheetByName(stageTitle);
   const target = ss.getSheetByName(targetTitle);
 
-  // Replay after successful commit: stage is gone and target is present.
   if (!stage && target) {
     if (expectedDigest) {
       const td = sheetDigestV1_(target, target.getLastRow(), target.getLastColumn());
@@ -410,7 +572,6 @@ function sheetCommit_(p, idem, cfg) {
     if (backup) ss.deleteSheet(backup);
     return {committed: true, replayed: false, spreadsheet_id: spreadsheetId, target_sheet_title: targetTitle, target_sheet_id: stage.getSheetId()};
   } catch (err) {
-    // Best-effort rollback of the canonical tab name.
     try {
       const newTarget = ss.getSheetByName(targetTitle);
       const oldBackup = ss.getSheetByName(backupTitle);
@@ -437,13 +598,15 @@ function resolveFolder_(path, createMissing, cfg) {
   let folder = DriveApp.getFolderById(cfg.rootId);
   const normalized = normalizePath_(path);
   if (!normalized) return folder;
-  normalized.split('/').forEach(function(name) {
+  const parts = normalized.split('/');
+  for (let i = 0; i < parts.length; i++) {
+    if (!folder) return null;
+    const name = parts[i];
     const it = folder.getFoldersByName(name);
     if (it.hasNext()) folder = it.next();
     else if (createMissing) folder = folder.createFolder(name);
-    else folder = null;
-    if (!folder) return;
-  });
+    else return null;
+  }
   return folder;
 }
 
@@ -483,7 +646,7 @@ function assertFileInsideRoot_(fileId, cfg) {
 
 function rawMetadata_(fileId) {
   try {
-    return Drive.Files.get(fileId, {fields: 'id,name,mimeType,parents,size,modifiedTime,sha256Checksum,md5Checksum,trashed,shortcutDetails'});
+    return Drive.Files.get(fileId, {fields: 'id,name,mimeType,parents,size,modifiedTime,sha256Checksum,md5Checksum,trashed,shortcutDetails,resourceKey,capabilities(canDownload)'});
   } catch (err) {
     throw bridgeError_('FILE_LOOKUP_FAILED', 'Drive file metadata lookup failed', false);
   }
