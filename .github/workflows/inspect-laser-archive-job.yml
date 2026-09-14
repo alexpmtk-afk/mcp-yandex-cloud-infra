@@ -1,0 +1,86 @@
+name: Inspect Laser Archive Job
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/inspect-laser-archive-job.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI and httpx
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+
+      - name: Inspect durable Laser Master job
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create inspect-laser-job || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/payload.json")"
+          echo "::add-mask::$BEARER"
+          export MCP_URL="https://${DOMAIN}/mcp" MCP_BEARER="$BEARER"
+          python -u - <<'PY'
+          import json, os, httpx
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+          h={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          with httpx.Client(timeout=httpx.Timeout(connect=15,read=60,write=30,pool=15),follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'inspect-laser-job','version':'1'}}})
+              init=unpack(r); assert init and 'result' in init
+              hh=dict(h); sid=r.headers.get('mcp-session-id')
+              if sid: hh['Mcp-Session-Id']=sid
+              hh['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              c.post(os.environ['MCP_URL'],headers=hh,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              rr=c.post(os.environ['MCP_URL'],headers=hh,json={'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'marketplace_archive_job_status','arguments':{'job_id':'wb-finance-wb_laser_master-2026'}}})
+              d=unpack(rr); assert d and 'result' in d
+              result=d['result']; assert not result.get('isError'), result
+              text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),'')
+              p=json.loads(text)
+              print('JOB_STATUS='+json.dumps(p,ensure_ascii=False),flush=True)
+              print('STATUS='+str(p.get('status')))
+              print('PHASE='+str(p.get('phase')))
+              print('REPORTS_TOTAL='+str(p.get('reports_total')))
+              print('REPORT_INDEX='+str(p.get('report_index')))
+              print('COMPLETED_COUNT='+str(len(p.get('completed_report_ids') or [])))
+              print('CURRENT_RRD_ID='+str(p.get('current_rrd_id')))
+              print('PROVIDER_CALLS='+str(p.get('provider_calls')))
+              print('LAST_ERROR='+str(p.get('last_error')))
+              print('UPDATED_AT='+str(p.get('updated_at_utc')))
+          PY
+
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json"
