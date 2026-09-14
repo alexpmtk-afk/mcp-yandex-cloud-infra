@@ -44,11 +44,13 @@ resource "yandex_serverless_container" "orchestrator_worker" {
     type = "http"
   }
 
+  # Bridge v1 is project-isolated. The secret id/version below must belong to
+  # Birzha and MUST NOT point at the Marketplaces Lockbox.
   dynamic "secrets" {
-    for_each = var.m25_market_mirror_bridge_url == null ? [] : [1]
+    for_each = var.m25_birzha_bridge_v1_url == null ? [] : [1]
     content {
-      id                   = var.m25_shared_drive_bridge_secret_id
-      version_id           = var.m25_shared_drive_bridge_secret_version_id
+      id                   = var.m25_birzha_bridge_v1_secret_id
+      version_id           = var.m25_birzha_bridge_v1_secret_version_id
       key                  = "google_drive_bridge_secret"
       environment_variable = "BIRZHA_MARKET_MIRROR_BRIDGE_SECRET"
     }
@@ -62,9 +64,11 @@ resource "yandex_serverless_container" "orchestrator_worker" {
       BIRZHA_ORCHESTRATOR_WORKER          = "true"
       BIRZHA_SOURCE_COMMIT                = var.m24_worker_source_sha
       YDB_CONNECTION_STRING               = yandex_ydb_database_serverless.state.ydb_full_endpoint
-      BIRZHA_MARKET_MIRROR_REQUIRED       = var.m25_market_mirror_required ? "true" : "false"
-      BIRZHA_MARKET_MIRROR_BRIDGE_URL     = coalesce(var.m25_market_mirror_bridge_url, "")
-      BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID = var.m25_market_mirror_root_folder_id
+      BIRZHA_MARKET_MIRROR_REQUIRED       = var.m25_birzha_bridge_v1_required ? "true" : "false"
+      BIRZHA_MARKET_MIRROR_BRIDGE_URL     = coalesce(var.m25_birzha_bridge_v1_url, "")
+      BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID = var.m25_birzha_bridge_v1_root_folder_id
+      BIRZHA_MARKET_MIRROR_PROJECT_ID     = "birzha"
+      BIRZHA_MARKET_MIRROR_CHUNK_ROWS     = tostring(var.m25_birzha_bridge_v1_chunk_rows)
     }
   }
 
@@ -75,22 +79,25 @@ resource "yandex_serverless_container" "orchestrator_worker" {
 
   lifecycle {
     precondition {
-      condition     = !var.m25_market_mirror_required || var.m25_market_mirror_bridge_url != null
-      error_message = "m25_market_mirror_bridge_url must be set before mandatory market mirror is enabled."
+      condition     = !var.m25_birzha_bridge_v1_required || var.m25_birzha_bridge_v1_url != null
+      error_message = "m25_birzha_bridge_v1_url must be set before mandatory Bridge v1 mirror is enabled."
     }
     precondition {
       condition = (
-        var.m25_market_mirror_bridge_url == null ||
-        var.m25_shared_drive_bridge_secret_version_id != null
+        var.m25_birzha_bridge_v1_url == null ||
+        (
+          var.m25_birzha_bridge_v1_secret_id != null &&
+          var.m25_birzha_bridge_v1_secret_version_id != null
+        )
       )
-      error_message = "m25_shared_drive_bridge_secret_version_id is required when the shared Drive bridge is enabled."
+      error_message = "Dedicated Birzha Bridge v1 Lockbox id/version are required when Bridge v1 is enabled."
     }
   }
 
   depends_on = [
     yandex_ydb_database_iam_binding.runtime_editor,
     yandex_resourcemanager_folder_iam_member.runtime_registry_pull,
-    yandex_lockbox_secret_iam_member.runtime_market_mirror,
+    yandex_lockbox_secret_iam_member.runtime_market_mirror_v1,
   ]
 }
 
