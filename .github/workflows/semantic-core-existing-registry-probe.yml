@@ -72,6 +72,8 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          echo '--- REGISTRY METADATA ---'
+          yc container registry get "$TEST_REGISTRY_ID" --format json || true
           echo '--- IP PERMISSIONS ---'
           yc container registry list-ip-permissions "$TEST_REGISTRY_ID" --format json || true
           echo '--- FOLDER BINDINGS FOR CI ---'
@@ -83,9 +85,14 @@ jobs:
           echo '--- REPOSITORY BINDINGS FOR CI ---'
           yc container repository list-access-bindings "$TEST_REPOSITORY_ID" --format json \
             | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
+          echo '--- EXISTING IMAGES ---'
+          yc container image list --repository-name "$TEST_REGISTRY_ID/marketplaces-mcp" --limit 5 --format json > "$RUNNER_TEMP/images.json"
+          jq -c '[.[] | {id,name,digest,tags,created_at}]' "$RUNNER_TEMP/images.json"
+          IMAGE_COUNT="$(jq 'length' "$RUNNER_TEMP/images.json")"
+          echo "image_count=$IMAGE_COUNT"
           echo 'READ_ONLY_REGISTRY_DIAGNOSTIC=PASS'
 
-      - name: Prove direct pusher data-plane access
+      - name: Prove pull with same identity
         shell: bash
         run: |
           set -euo pipefail
@@ -94,6 +101,16 @@ jobs:
           echo "::add-mask::$IAM_TOKEN"
           printf '%s' "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
           unset IAM_TOKEN
+          DIGEST="$(jq -r '.[0].digest // empty' "$RUNNER_TEMP/images.json")"
+          test -n "$DIGEST"
+          EXISTING_IMAGE="cr.yandex/${TEST_REGISTRY_ID}/marketplaces-mcp@${DIGEST}"
+          docker pull "$EXISTING_IMAGE"
+          echo 'EXISTING_REGISTRY_DIRECT_PULL=PASS'
+
+      - name: Prove direct pusher data-plane access
+        shell: bash
+        run: |
+          set -euo pipefail
           PROBE_TAG="semantic-direct-probe-${GITHUB_SHA}"
           IMAGE="cr.yandex/${TEST_REGISTRY_ID}/marketplaces-mcp:${PROBE_TAG}"
           mkdir -p "$RUNNER_TEMP/registry-probe"
@@ -106,4 +123,4 @@ jobs:
       - name: Cleanup credential
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/images.json"
