@@ -1,0 +1,117 @@
+name: Inspect Laser Durable State Direct
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/inspect-laser-object-state-direct.yml
+      - .github/workflows/control/inspect-laser-object-state-direct.txt
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-laser-direct-readonly
+  cancel-in-progress: false
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create inspect-laser-direct || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          TOKEN="$(yc iam create-token)"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/iam-token"
+          chmod 600 "$RUNNER_TEMP/iam-token"
+          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          echo "ARCHIVE_BUCKET=marketplaces-mcp-archive-${FOLDER_ID}" >> "$GITHUB_ENV"
+
+      - name: Verify durable job and immutable candidate read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          BASE="https://storage.yandexcloud.net/${ARCHIVE_BUCKET}"
+          JOB_KEY='app/jobs/wb-finance/wb-finance-wb_laser_master-2026.json'
+          CANDIDATE_KEY='app/jobs/wb-finance/wb-finance-wb_laser_master-2026/finalize/annual-candidate.csv'
+
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 120 \
+            -H "Authorization: Bearer $TOKEN" \
+            "$BASE/$JOB_KEY" -o "$RUNNER_TEMP/job-before.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=json.loads(Path(os.environ['RUNNER_TEMP']+'/job-before.json').read_text('utf-8'))
+          final=dict(p.get('finalize') or {})
+          assert p.get('job_id') == 'wb-finance-wb_laser_master-2026', p.get('job_id')
+          assert len(p.get('fragments') or []) == 38, len(p.get('fragments') or [])
+          assert len(p.get('completed_report_ids') or []) == 23, len(p.get('completed_report_ids') or [])
+          assert final.get('phase') == 'UPLOAD_ANNUAL', final
+          assert int(final.get('report_id') or 0) == 743994450, final
+          expected_bytes=int(final.get('annual_bytes') or 0)
+          expected_sha=str(final.get('annual_sha256') or '').strip().lower()
+          assert expected_bytes > 0, expected_bytes
+          assert len(expected_sha) == 64 and all(c in '0123456789abcdef' for c in expected_sha), expected_sha
+          Path(os.environ['RUNNER_TEMP']+'/expected-bytes').write_text(str(expected_bytes))
+          Path(os.environ['RUNNER_TEMP']+'/expected-sha').write_text(expected_sha)
+          print('LASER_STATE=23/38')
+          print('FINALIZE_PHASE=UPLOAD_ANNUAL')
+          print('FINALIZE_REPORT_ID=743994450')
+          print('PROVIDER_CALLS='+str(p.get('provider_calls')))
+          print('STATE_UPDATED_AT='+str(p.get('updated_at_utc')))
+          PY
+
+          EXPECTED_BYTES="$(cat "$RUNNER_TEMP/expected-bytes")"
+          EXPECTED_SHA="$(cat "$RUNNER_TEMP/expected-sha")"
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 300 \
+            -H "Authorization: Bearer $TOKEN" \
+            "$BASE/$CANDIDATE_KEY" -o "$RUNNER_TEMP/annual-candidate.csv"
+          ACTUAL_BYTES="$(wc -c < "$RUNNER_TEMP/annual-candidate.csv" | tr -d ' ')"
+          ACTUAL_SHA="$(sha256sum "$RUNNER_TEMP/annual-candidate.csv" | awk '{print $1}')"
+          test "$ACTUAL_BYTES" = "$EXPECTED_BYTES"
+          test "$ACTUAL_SHA" = "$EXPECTED_SHA"
+          echo "CANDIDATE_BYTES=$ACTUAL_BYTES"
+          echo 'CANDIDATE_SHA256=PASS'
+
+          curl --fail --silent --show-error --retry 4 --retry-all-errors --max-time 120 \
+            -H "Authorization: Bearer $TOKEN" \
+            "$BASE/$JOB_KEY" -o "$RUNNER_TEMP/job-after.json"
+          cmp "$RUNNER_TEMP/job-before.json" "$RUNNER_TEMP/job-after.json"
+          echo 'JOB_STATE_UNCHANGED=PASS'
+          echo 'READ_ONLY_VERIFICATION=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/iam-token" \
+            "$RUNNER_TEMP/job-before.json" "$RUNNER_TEMP/job-after.json" \
+            "$RUNNER_TEMP/annual-candidate.csv" "$RUNNER_TEMP/expected-bytes" "$RUNNER_TEMP/expected-sha"
