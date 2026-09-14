@@ -16,6 +16,9 @@ def test_canonical_map_fixes_storage_boundaries():
     assert storage["google_drive_root"] == "MCP архив базы данных"
     assert "Apps Script" in storage["google_drive_auth"]
     assert "Yandex Lockbox" in storage["google_drive_auth"]
+    assert "no Google OAuth refresh token" in storage["google_drive_auth"]
+    assert "Google Drive API" in storage["google_drive_large_upload"]
+    assert "bounded chunks" in storage["google_drive_large_upload"]
     assert "job state" in storage["yandex_object_storage"]
     assert "backup" in storage["yandex_object_storage"]
     assert "runtime service-account IAM token" in storage["yandex_archive_auth"]
@@ -23,6 +26,18 @@ def test_canonical_map_fixes_storage_boundaries():
     assert SYSTEM_MAP["archive_policy"]["canonical_source_of_truth"] == "Google Drive annual dataset CSV files plus reports registry"
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["row_deduplication"] == "(reportId, rrdId)"
+
+
+def test_large_file_policy_uses_apps_script_session_broker_without_refresh_token():
+    policy = SYSTEM_MAP["archive_policy"]["large_file_upload"]
+    assert policy["transport"] == "Google Drive API resumable upload"
+    assert policy["session_broker"] == "Google Apps Script bridge"
+    assert policy["yandex_google_oauth_refresh_token"] == "forbidden/not required"
+    assert policy["apps_script_large_base64_upload"] == "forbidden"
+    assert "one bounded chunk" in policy["worker_model"]
+    assert "confirmed byte offset" in policy["resume_state"]
+    assert "256 KiB" in policy["chunk_rule"]
+    assert "COMMIT" in policy["commit_rule"]
 
 
 def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
@@ -56,10 +71,12 @@ def test_wb_advertising_m0_boundaries_are_explicit():
 
 
 def test_server_instructions_contain_hard_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-14.v5"
+    assert ARCHITECTURE_VERSION == "2026-09-14.v15"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
     assert "Google Drive" in SYSTEM_INSTRUCTIONS
     assert "Apps Script" in SYSTEM_INSTRUCTIONS
+    assert "resumable-session" in SYSTEM_INSTRUCTIONS
+    assert "No Google OAuth refresh token" in SYSTEM_INSTRUCTIONS
     assert "Yandex Object Storage" in SYSTEM_INSTRUCTIONS
     assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
     assert "Yandex Lockbox" in SYSTEM_INSTRUCTIONS
