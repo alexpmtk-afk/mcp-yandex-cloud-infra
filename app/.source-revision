@@ -1,9 +1,10 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@e5c4f4044d9921c65cc6e646081e4ee2a0a6b900
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@9787547f223ceffcef2f9e25a0de10b8f893babd
 Purpose: production TEST rollout of Google Drive as the canonical marketplace archive plus WB Advertising M0 read-only tools, retaining Yandex Object Storage for durable queue/staging and backup.
 Architecture contract: annual dataset CSV files and reports registry are authoritative on Google Drive; Yandex Object Storage stores job state/staging/resume state and a byte-for-byte backup; the Apps Script bridge secret is stored in Yandex Lockbox; no Google OAuth refresh token is stored in Yandex.
 Large-file contract: Apps Script brokers official Google Drive API resumable-session creation; Yandex uploads bounded chunks directly to the returned session URI and persists confirmed offsets. Large annual CSVs are never transported through Apps Script as one base64 POST.
+Diagnostic contract: before the existing Laser Master candidate may replace the canonical annual file, the same candidate is uploaded to a temporary Drive filename, verified by exact size + Drive SHA256, then trashed; this diagnostic must not call WB, repeat PREPARE, advance completed_count, or move the durable phase out of UPLOAD_ANNUAL.
 Production overlays: preserve the multi-dataset data catalog/routing, runtime service-account archive authentication and other runtime hardening already present in this vendored snapshot; Advertising M0 is layered on top rather than replacing those controls.
 Advertising contract: WB only in this phase; live campaign state comes from Promotion API using dedicated server-side wb_ads credentials; advertising-attribution metrics are not actual business profit; Advertising Archive V1 category scaffold exists on Drive for all three WB cabinets but ingestion/coverage/registry integration is not yet accepted.
 Security contract: Promotion start/pause/stop are WRITE and delete is DESTRUCTIVE at MCP level even though WB exposes them as HTTP GET operations. M0 exposes only read-only advertising business tools.
-Source acceptance: marketplaces-mcp-ru resumable Apps Script-broker design merged as e5c4f4044d9921c65cc6e646081e4ee2a0a6b900 with CI/security/dependency/supply-chain PASS.
+Source acceptance: marketplaces-mcp-ru diagnostic resumable copy merged as 9787547f223ceffcef2f9e25a0de10b8f893babd after CI/security/dependency/supply-chain PASS; main post-merge workflows observed completed without failure.
 Synced: 2026-09-14.
