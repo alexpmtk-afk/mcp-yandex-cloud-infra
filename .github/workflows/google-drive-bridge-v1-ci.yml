@@ -97,20 +97,14 @@ jobs:
           grep -Fq 'create-deployment' "$py"
           grep -Fq 'prove_remote_source_clean' "$py"
           grep -Fq 'bootstrap_install' "$boot"
-          grep -Fq "PropertiesService.getScriptProperties" "$boot"
+          grep -Fq 'PropertiesService.getScriptProperties' "$boot"
           grep -Fq 'gh repo clone' "$ps"
-          if grep -Eqi 'credentials\.json|client_secret\.json|client_secret[[:space:]]*=' "$py"; then
-            echo 'Custom OAuth credentials are forbidden in the final owner bootstrap' >&2
+          if grep -Eqi -- '(--credentials|load_client\(|discover_credentials\(|client_secret[[:space:]]*=)' "$py"; then
+            echo 'Custom OAuth credential loading is forbidden in the final owner bootstrap' >&2
             exit 1
           fi
-          if grep -Fq 'secret:' shared/google-drive-bridge/deploy/marketplaces_config.gs | grep -v "secret: ''"; then
-            echo 'Marketplaces deploy config may not contain a secret value' >&2
-            exit 1
-          fi
-          if grep -Fq 'secret:' shared/google-drive-bridge/deploy/birzha_config.gs | grep -v "secret: ''"; then
-            echo 'Birzha deploy config may not contain a secret value' >&2
-            exit 1
-          fi
+          grep -Fq "secret: ''" shared/google-drive-bridge/deploy/marketplaces_config.gs
+          grep -Fq "secret: ''" shared/google-drive-bridge/deploy/birzha_config.gs
           echo 'BRIDGE_OWNER_BOOTSTRAP_STATIC=PASS'
 
       - name: Prove secret values are not committed
