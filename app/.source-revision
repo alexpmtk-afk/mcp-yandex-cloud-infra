@@ -1,4 +1,5 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@d375c8b1582efafbb0c7f2b61c3add7db7bda097
-Purpose: production TEST rollout of Google Drive as the canonical marketplace archive while retaining Yandex Object Storage for durable queue/staging and backup.
-Architecture contract: annual dataset CSV files and reports registry are authoritative on Google Drive; Yandex Object Storage stores job state/staging and a byte-for-byte backup; Drive OAuth refresh credentials remain in Yandex Lockbox.
-Synced: 2026-09-13 after marketplaces-mcp-ru PR #30 full CI/security/dependency/supply-chain PASS.
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@1d9c5db866ab3c26d0de1c02028e4ef64259c0d2
+Purpose: production TEST rollout of Google Drive as the canonical marketplace archive through the owner-operated Apps Script bridge, retaining Yandex Object Storage for durable queue/staging and backup.
+Architecture contract: annual dataset CSV files and reports registry are authoritative on Google Drive; Yandex Object Storage stores job state/staging and a byte-for-byte backup; the Apps Script bridge secret is stored in Yandex Lockbox; Google Cloud OAuth is not a runtime dependency.
+Production overlays: preserve the multi-dataset data catalog/routing and runtime hardening already present in this vendored snapshot.
+Synced: 2026-09-14 after marketplaces-mcp-ru PR #31 full CI/security/dependency/supply-chain PASS.
