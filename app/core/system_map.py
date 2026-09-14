@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-14.v2"
+ARCHITECTURE_VERSION = "2026-09-14.v4"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
@@ -23,12 +23,13 @@ SYSTEM_MAP: dict[str, Any] = {
         "primary_archive_storage": "Google Drive",
         "canonical_archive_data": "annual marketplace dataset CSV files plus reports registry",
         "google_drive_root": "MCP архив базы данных",
-        "google_drive_auth": "OAuth refresh credential kept in Yandex Lockbox; access token only in runtime memory",
+        "google_drive_auth": "owner-operated Google Apps Script web-app bridge; shared bridge secret kept in Yandex Lockbox",
+        "google_drive_bridge": "Apps Script executes as the Drive owner and exposes archive read/write/status operations under the fixed archive root",
         "yandex_object_storage": "durable archive job state, staging, and byte-for-byte backup of canonical files",
         "yandex_archive_auth": "Serverless Container runtime service-account IAM token from metadata; no static archive key",
         "archive_write_order": "Google Drive canonical write first; Yandex backup second",
         "read_through_migration": "if a canonical file is absent on Drive but exists in Yandex Object Storage, copy it to Drive before use",
-        "google_cloud": "not part of the runtime architecture; only Google Drive API is used as archive storage",
+        "google_cloud": "not part of the runtime architecture; no Google Cloud OAuth runtime dependency is required",
         "client_local_files": "never authoritative for shared server state",
     },
     "archive_policy": {
@@ -112,10 +113,10 @@ SYSTEM_MAP: dict[str, Any] = {
 
 SYSTEM_INSTRUCTIONS = f"""CANONICAL MARKETPLACES MCP ARCHITECTURE — {ARCHITECTURE_VERSION}
 Treat marketplace_system_map and marketplace_data_catalog as server-side sources of truth.
-Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture; only the Google Drive API is used as the canonical archive storage surface.
+Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture and no Google Cloud OAuth runtime dependency is required.
 Canonical marketplace archive data is stored on Google Drive under the server-owned `MCP архив базы данных` root: annual dataset CSV files and the reports registry are the source of truth.
 Yandex Object Storage remains required for durable queue/job state, staging, and a secondary byte-for-byte backup of canonical Drive files. It uses the Serverless Container runtime service account and a temporary IAM token; no static archive key is required.
-Google Drive OAuth refresh credentials must remain in Yandex Lockbox; Drive access tokens exist only in runtime memory.
+Google Drive access is provided by the owner's Google Apps Script web-app bridge; its shared bridge secret must remain in Yandex Lockbox.
 The marketplace archive is MULTI-DATASET. No single report or annual CSV is the complete WB/Ozon business database.
 The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for customer orders, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
 Before answering a historical business question, interpret the requested business metric and route it through marketplace_metric_route / marketplace_data_catalog to the correct dataset. Generic 'sales/продажи' is ambiguous unless its business meaning is clear.
