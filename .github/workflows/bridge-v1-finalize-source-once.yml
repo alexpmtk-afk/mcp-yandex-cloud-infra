@@ -55,12 +55,14 @@ jobs:
             shared/google-drive-bridge/bridge.gs \
             shared/google-drive-bridge/deploy/marketplaces_config.gs \
             shared/google-drive-bridge/deploy/birzha_config.gs \
-            shared/google-drive-bridge/EXTERNAL_OWNER_GATES.md \
             .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml \
             .github/workflows/birzha-drive-bridge-v1-acceptance.yml \
             .github/workflows/marketplaces-drive-bridge-v1-cutover-gate.yml \
             .github/workflows/birzha-drive-bridge-v1-cutover-gate.yml \
             terraform/birzha_test/m25_market_mirror.tf
+          if test -f shared/google-drive-bridge/EXTERNAL_OWNER_GATES.md; then
+            git add shared/google-drive-bridge/EXTERNAL_OWNER_GATES.md
+          fi
           if git diff --cached --quiet; then
             echo 'No generated changes.'
           else
