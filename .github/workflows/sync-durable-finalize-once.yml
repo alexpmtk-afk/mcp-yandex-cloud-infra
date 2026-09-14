@@ -1,0 +1,55 @@
+name: Sync Durable Finalize Runtime Once
+
+on:
+  push:
+    branches:
+      - sync/durable-finalize-stages-20260914
+    paths:
+      - .github/workflows/sync-durable-finalize-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sync/durable-finalize-stages-20260914
+          fetch-depth: 0
+
+      - name: Sync exact app runtime snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          SOURCE_SHA='d25087637c19cf7455bd8e3074d647f5da37930c'
+          curl -fsSL --retry 5 --retry-delay 2 \
+            "https://raw.githubusercontent.com/alexpmtk-afk/marketplaces-mcp-ru/${SOURCE_SHA}/core/archive_queue.py" \
+            -o app/core/archive_queue.py
+          python - <<'PY'
+          from pathlib import Path
+          sha='d25087637c19cf7455bd8e3074d647f5da37930c'
+          p=Path('app/.source-revision')
+          lines=p.read_text(encoding='utf-8').splitlines()
+          lines[0]=f'Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@{sha}'
+          lines.append('Synced: 2026-09-14 after app PR #38; WB archive finalization is split into durable PREPARE, UPLOAD_ANNUAL, and COMMIT stages for live Laser Master acceptance.')
+          p.write_text('\n'.join(lines)+'\n', encoding='utf-8')
+          PY
+          python -m py_compile app/core/archive_queue.py
+          grep -q 'async def _finalize_step' app/core/archive_queue.py
+          grep -q '"UPLOAD_ANNUAL"' app/core/archive_queue.py
+          grep -q '"COMMIT"' app/core/archive_queue.py
+          git diff --check
+          git diff -- app/core/archive_queue.py app/.source-revision
+
+      - name: Commit synced runtime
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add app/core/archive_queue.py app/.source-revision
+          git commit -m 'sync: durable archive finalize stages'
+          git push origin HEAD:sync/durable-finalize-stages-20260914
