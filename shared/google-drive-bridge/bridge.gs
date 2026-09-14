@@ -97,16 +97,18 @@ function dispatch_(action, p, idem, cfg) {
 
 function config_() {
   const props = PropertiesService.getScriptProperties();
-  const secret = String(props.getProperty(PROP_SECRET) || '').trim();
-  const projectId = String(props.getProperty(PROP_PROJECT) || '').trim();
-  const rootId = String(props.getProperty(PROP_ROOT_ID) || '').trim();
-  const rootName = String(props.getProperty(PROP_ROOT_NAME) || '').trim();
-  if (!secret || !projectId || !rootId || !rootName) throw bridgeError_('NOT_CONFIGURED', 'bridge Script Properties are incomplete', false);
+  const injected = (typeof BRIDGE_DEPLOYMENT_CONFIG === 'object' && BRIDGE_DEPLOYMENT_CONFIG) ? BRIDGE_DEPLOYMENT_CONFIG : {};
+  const secret = String(props.getProperty(PROP_SECRET) || injected.secret || '').trim();
+  const projectId = String(props.getProperty(PROP_PROJECT) || injected.projectId || '').trim();
+  const rootId = String(props.getProperty(PROP_ROOT_ID) || injected.rootId || '').trim();
+  const rootName = String(props.getProperty(PROP_ROOT_NAME) || injected.rootName || '').trim();
+  if (!secret || !projectId || !rootId || !rootName) throw bridgeError_('NOT_CONFIGURED', 'bridge deployment configuration is incomplete', false);
   const root = DriveApp.getFolderById(rootId);
   if (root.getName() !== rootName) throw bridgeError_('WRONG_ROOT', 'configured root name does not match Drive', false);
-  const maxRaw = Number(props.getProperty(PROP_SMALL_MAX) || DEFAULT_SMALL_MAX);
+  const maxRaw = Number(props.getProperty(PROP_SMALL_MAX) || injected.smallMaxBytes || DEFAULT_SMALL_MAX);
   const maxBytes = Number.isFinite(maxRaw) && maxRaw > 0 ? Math.floor(maxRaw) : DEFAULT_SMALL_MAX;
-  const sheetsEnabled = String(props.getProperty(PROP_SHEETS) || 'false').toLowerCase() === 'true';
+  const sheetsRaw = props.getProperty(PROP_SHEETS);
+  const sheetsEnabled = sheetsRaw === null ? Boolean(injected.sheetsEnabled) : String(sheetsRaw).toLowerCase() === 'true';
   return {secret: secret, projectId: projectId, rootId: rootId, rootName: rootName, maxBytes: maxBytes, sheetsEnabled: sheetsEnabled};
 }
 
