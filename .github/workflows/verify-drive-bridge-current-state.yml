@@ -1,0 +1,130 @@
+name: Verify Drive Bridge Current State
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - control/run-drive-bridge-current-state.txt
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 18
+    steps:
+      - name: Install Yandex Cloud CLI and httpx
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=30 --tries=3 -O "$RUNNER_TEMP/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+
+      - name: Resolve live secrets and Yandex registry
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+          BUCKET: marketplaces-mcp-archive-b1gnd0dqoq3ljod88i8t
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create bridge-state || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BRIDGE="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value' "$RUNNER_TEMP/payload.json")"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BRIDGE"; test -n "$BEARER"
+          echo "::add-mask::$BRIDGE"; echo "::add-mask::$BEARER"
+          printf '%s' "$BRIDGE" > "$RUNNER_TEMP/bridge-secret"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/mcp-bearer"
+          chmod 600 "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/mcp-bearer"
+          TOKEN="$(yc iam create-token)"; echo "::add-mask::$TOKEN"
+          CODE="$(curl -sS --max-time 90 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/yandex-registry.csv" -w '%{http_code}' "https://storage.yandexcloud.net/${BUCKET}/app/registry/reports_registry.csv")"
+          test "$CODE" = 200
+          echo 'INPUTS=PASS'
+
+      - name: Read-only compare Drive and Yandex state
+        shell: bash
+        env:
+          DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+        run: |
+          set -euo pipefail
+          export BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
+          python -u - <<'PY'
+          import base64,csv,hashlib,io,json,os,time
+          from collections import Counter
+          import httpx
+
+          url=os.environ['DRIVE_BRIDGE_URL']; secret=os.environ['BRIDGE_SECRET']
+          c=httpx.Client(timeout=httpx.Timeout(120,connect=20),follow_redirects=True)
+          def post(action,**extra):
+              t=time.monotonic(); r=c.post(url,json={'secret':secret,'action':action,**extra},headers={'Accept':'application/json'}); dt=time.monotonic()-t
+              r.raise_for_status(); d=r.json();
+              if d.get('ok') is not True: raise RuntimeError((action,d))
+              print(f'BRIDGE_{action.upper()}_SECONDS={dt:.3f}',flush=True)
+              return d
+          def registry(raw,label):
+              rows=list(csv.DictReader(io.StringIO(raw.decode('utf-8-sig')),delimiter=';'))
+              sha=hashlib.sha256(raw).hexdigest(); counts=Counter(x.get('cabinet','') for x in rows if x.get('status')=='COMPLETE')
+              print(f'{label}_ROWS={len(rows)}'); print(f'{label}_BYTES={len(raw)}'); print(f'{label}_SHA256={sha}')
+              for cab in ('wb_dmitrieva','wb_novokshenov','wb_laser_master'): print(f'{label}_COMPLETE_{cab}={counts[cab]}')
+              return rows,sha
+          h=post('health'); print('ROOT_ID='+str(h.get('root_id'))); print('ROOT_NAME='+str(h.get('root_name'))); print('BRIDGE_VERSION='+str(h.get('version')))
+          d=post('read',path='app/registry',filename='reports_registry.csv'); assert d.get('found') is True
+          drive_raw=base64.b64decode(d.get('content_base64',''),validate=True)
+          yandex_raw=open(os.environ['RUNNER_TEMP']+'/yandex-registry.csv','rb').read()
+          dr,dsha=registry(drive_raw,'DRIVE_REGISTRY'); yr,ysha=registry(yandex_raw,'YANDEX_REGISTRY')
+          print('REGISTRY_EXACT_MATCH='+str(drive_raw==yandex_raw))
+          for cab in ('wb_dmitrieva','wb_novokshenov','wb_laser_master'):
+              s=post('stat',path=f'База данных/WB/{cab}/2026/finance/weekly/main',filename=f'{cab}__weekly_main__2026.csv')
+              f=s.get('file') or {}
+              print(f'FILE_{cab}_FOUND={bool(s.get("found"))} ID={f.get("id")} BYTES={f.get("size")} MODIFIED={f.get("modified_time")}',flush=True)
+          c.close()
+          PY
+
+      - name: Call live MCP archive status with 240s read timeout
+        shell: bash
+        env:
+          MCP_URL: https://d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net/mcp
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/mcp-bearer")"
+          python -u - <<'PY'
+          import json,os,time,httpx
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'): return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+          h={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          with httpx.Client(timeout=httpx.Timeout(connect=15,read=240,write=30,pool=15),follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'bridge-state-verify','version':'1'}}}); init=unpack(r); assert init and 'result' in init
+              hh=dict(h); sid=r.headers.get('mcp-session-id');
+              if sid: hh['Mcp-Session-Id']=sid
+              hh['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              c.post(os.environ['MCP_URL'],headers=hh,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              t=time.monotonic(); rr=c.post(os.environ['MCP_URL'],headers=hh,json={'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'marketplace_archive_status','arguments':{'year':2026}}}); dt=time.monotonic()-t
+              d=unpack(rr); print(f'MCP_ARCHIVE_STATUS_SECONDS={dt:.3f}'); assert d and 'result' in d
+              result=d['result']; print('MCP_IS_ERROR='+str(bool(result.get('isError')))
+              text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),''); p=json.loads(text) if text else {}
+              st=p.get('storage') or {}; can=st.get('canonical') or {}; print('MCP_ARCHIVE_OK='+str(p.get('ok'))); print('MCP_BACKEND='+str(st.get('backend'))); print('MCP_DRIVE_REACHABLE='+str(can.get('reachable'))); print('MCP_BRIDGE_VERSION='+str(can.get('bridge_version')))
+              for cab,x in (p.get('cabinets') or {}).items(): print(f'MCP_{cab}_COMPLETE={x.get("complete_report_ids")} BYTES={x.get("bytes")} ID={x.get("storage_object_key")}')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/mcp-bearer" "$RUNNER_TEMP/yandex-registry.csv"
