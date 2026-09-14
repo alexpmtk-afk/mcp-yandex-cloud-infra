@@ -1,0 +1,2 @@
+Run archive bridge latency diagnostic after Apps Script bridge deployment.
+Requested: 2026-09-14.
