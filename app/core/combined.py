@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP
 from .archive_hybrid import build_hybrid_archive_store_from_env
 from .archive_tools import register_archive_tools
 from .business_registry import resolve_business_cabinet
+from .business_router import register_business_query_tool
 from .card_monitor import register_tools as register_card_monitor_tools
 from .data_catalog import register_data_catalog_tools
 from .system_map import SYSTEM_INSTRUCTIONS, register_system_map_tool
@@ -209,7 +210,7 @@ def _register_finance_tools(combined: FastMCP, modules: dict[str, Any]) -> None:
 
 
 def build(**fastmcp_kwargs: Any) -> FastMCP:
-    """Return one FastMCP carrying seller API, advertising, archive and card-monitor tools."""
+    """Return one FastMCP carrying seller API, advertising, archive, semantic and card-monitor tools."""
     fastmcp_kwargs.setdefault("instructions", SYSTEM_INSTRUCTIONS)
     combined = FastMCP("marketplaces-mcp-ru", **fastmcp_kwargs)
     modules: dict[str, Any] = {}
@@ -232,6 +233,7 @@ def build(**fastmcp_kwargs: Any) -> FastMCP:
     register_data_catalog_tools(combined)
     _register_finance_tools(combined, modules)
     register_wb_advertising_tools(combined, modules)
+    register_business_query_tool(combined, modules)
     register_archive_tools(combined, modules, archive_store)
     register_card_monitor_tools(combined)
     return combined
