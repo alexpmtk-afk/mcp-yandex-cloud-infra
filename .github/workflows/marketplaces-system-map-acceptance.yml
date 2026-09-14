@@ -64,7 +64,7 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
 
-      - name: Verify canonical hardened map live
+      - name: Verify canonical Semantic Core map live
         shell: bash
         env:
           MCP_URL: ${{ steps.mcp.outputs.url }}
@@ -92,7 +92,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers, json={
                   'jsonrpc':'2.0','id':1,'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'system-map-acceptance','version':'16'}
+                      'clientInfo':{'name':'system-map-acceptance','version':'17'}
                   }})
               init = unpack(r)
               assert 'result' in init, init
@@ -103,6 +103,9 @@ jobs:
               assert 'non-canonical staging filename' in instructions, instructions
               assert 'size/SHA256' in instructions, instructions
               assert 'Yandex Object Storage' in instructions, instructions
+              assert 'marketplace_business_query' in instructions, instructions
+              assert 'Semantic Core' in instructions, instructions
+              assert 'FULL_COVERAGE' in instructions, instructions
               h = dict(headers)
               sid = r.headers.get('mcp-session-id')
               if sid: h['Mcp-Session-Id'] = sid
@@ -113,6 +116,7 @@ jobs:
               names = {x['name'] for x in tl['result']['tools']}
               assert 'marketplace_system_map' in names, sorted(names)
               assert 'marketplace_archive_resumable_diagnostic_step' in names, sorted(names)
+              assert 'marketplace_business_query' in names, sorted(names)
               call = unpack(c.post(os.environ['MCP_URL'], headers=h, json={
                   'jsonrpc':'2.0','id':3,'method':'tools/call','params':{
                       'name':'marketplace_system_map','arguments':{}
@@ -122,7 +126,7 @@ jobs:
               text = next(x['text'] for x in result['content'] if x.get('type')=='text')
               body = json.loads(text)
               assert body['status'] == 'CANONICAL', body
-              assert body['architecture_version'] == '2026-09-14.v16', body
+              assert body['architecture_version'] == '2026-09-14.v17', body
               assert body['runtime']['cloud'] == 'Yandex Cloud only', body
               assert body['storage_policy']['primary_archive_storage'] == 'Google Drive', body
               assert 'Apps Script' in body['storage_policy']['google_drive_auth'], body
@@ -134,7 +138,32 @@ jobs:
               assert 'sha256Checksum' in large['verification_rule'], large
               assert 'promote_verified' in large['promotion_rule'], large
               assert 'never follow redirects' in large['redirect_rule'], large
+              semantic = body['semantic_core']
+              assert semantic['status'] == 'TEST_RUNTIME_WIRED', semantic
+              assert semantic['runtime_entry'] == 'marketplace_business_query', semantic
+              assert 'FULL_COVERAGE' in semantic['execution_gate'], semantic
+              assert 'agencyVat' in semantic['schema_drift_policy'], semantic
+
+              semantic_call = unpack(c.post(os.environ['MCP_URL'], headers=h, json={
+                  'jsonrpc':'2.0','id':4,'method':'tools/call','params':{
+                      'name':'marketplace_business_query','arguments':{
+                          'marketplace':'wb',
+                          'seller':'wb_novokshenov',
+                          'date_from':'2026-09-01',
+                          'date_to':'2026-09-07',
+                          'question':'Какой актуальный коэффициент склада сейчас?'
+                      }
+                  }}))
+              semantic_result = semantic_call['result']
+              assert not semantic_result.get('isError'), semantic_result
+              semantic_text = next(x['text'] for x in semantic_result['content'] if x.get('type')=='text')
+              semantic_body = json.loads(semantic_text)
+              assert semantic_body.get('ok') is False, semantic_body
+              assert semantic_body.get('error') == 'source_not_suitable', semantic_body
+              resolution = (semantic_body.get('details') or {}).get('semantic_resolution') or {}
+              assert resolution.get('route_id') == 'current_warehouse_tariff', semantic_body
               print('MARKETPLACE_SYSTEM_MAP_LIVE=PASS')
+              print('MARKETPLACE_SEMANTIC_CORE_LIVE=PASS')
               print('architecture_version=' + body['architecture_version'])
           PY
 
