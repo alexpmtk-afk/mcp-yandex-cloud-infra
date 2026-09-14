@@ -1,1 +1,1 @@
-2026-09-14T09:49:30Z manual resume after Laser Master 2GB runtime rollout and worker read-timeout fix
+2026-09-14T10:10:20Z resume Laser Master after verified ACTIVE 2GB Card Monitor revision
