@@ -1,12 +1,12 @@
 variable "m25_market_mirror_bridge_url" {
-  description = "Deployed Google Apps Script Web App URL for the BIRZHA market-data mirror. Null keeps runtime mirror calls disabled."
+  description = "Existing shared Google Apps Script Web App URL. Null keeps BIRZHA mirror calls disabled until the Birzha addon is deployed into that project."
   type        = string
   default     = null
   nullable    = true
 }
 
 variable "m25_market_mirror_required" {
-  description = "Fail closed when verified persistent D1 history cannot be mirrored to Google Sheets. Enable only after the Apps Script bridge is deployed."
+  description = "Fail closed when verified persistent D1 history cannot be mirrored to Google Sheets. Enable only after the shared Apps Script has the Birzha addon and live E2E passes."
   type        = bool
   default     = false
 }
@@ -17,42 +17,28 @@ variable "m25_market_mirror_root_folder_id" {
   default     = "1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2"
 }
 
-resource "yandex_lockbox_secret" "market_mirror" {
-  folder_id           = yandex_resourcemanager_folder.birzha_test.id
-  name                = "birzha-market-mirror-bridge"
-  description         = "Shared secret for BIRZHA Yandex runtime -> Google Apps Script market mirror bridge"
-  deletion_protection = true
-  labels              = local.labels
-
-  password_payload_specification {
-    password_key        = "bridge_secret"
-    length              = 64
-    include_uppercase   = true
-    include_lowercase   = true
-    include_digits      = true
-    include_punctuation = false
-  }
+variable "m25_shared_drive_bridge_secret_id" {
+  description = "Existing Marketplaces Lockbox secret containing google_drive_bridge_secret. BIRZHA reuses it; Terraform never reads the payload."
+  type        = string
+  default     = "e6qb8b3u57e71731j1os"
 }
 
-resource "yandex_lockbox_secret_version" "market_mirror" {
-  secret_id = yandex_lockbox_secret.market_mirror.id
+variable "m25_shared_drive_bridge_secret_version_id" {
+  description = "Active version id of the existing shared Drive bridge secret. Supply only when enabling the Birzha bridge binding."
+  type        = string
+  default     = null
+  nullable    = true
 }
 
 resource "yandex_lockbox_secret_iam_member" "runtime_market_mirror" {
-  secret_id   = yandex_lockbox_secret.market_mirror.id
+  count       = var.m25_market_mirror_bridge_url == null ? 0 : 1
+  secret_id   = var.m25_shared_drive_bridge_secret_id
   role        = "lockbox.payloadViewer"
   member      = "serviceAccount:${yandex_iam_service_account.runtime.id}"
   sleep_after = 10
 }
 
-resource "yandex_lockbox_secret_iam_member" "deployer_market_mirror" {
-  secret_id   = yandex_lockbox_secret.market_mirror.id
-  role        = "lockbox.payloadViewer"
-  member      = "serviceAccount:${var.terraform_deployer_service_account_id}"
-  sleep_after = 10
-}
-
-output "m25_market_mirror_secret_id" {
-  description = "Lockbox secret id whose bridge_secret value must also be set as Apps Script property BIRZHA_MARKET_MIRROR_SECRET."
-  value       = yandex_lockbox_secret.market_mirror.id
+output "m25_shared_drive_bridge_secret_id" {
+  description = "Existing shared Lockbox secret reused by BIRZHA. No second bridge secret is created."
+  value       = var.m25_shared_drive_bridge_secret_id
 }
