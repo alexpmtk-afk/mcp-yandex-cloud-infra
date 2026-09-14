@@ -55,19 +55,29 @@ class FakeYandex:
 
 
 class FakeDrive:
+    def __init__(self, candidate: bytes):
+        self.candidate = candidate
+        self.promotions = []
     async def ensure_folder_path(self, parts): return "/".join(parts)
     async def start_resumable_session(self, **kwargs):
         return {"session_uri": "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=laser-test", "file_id": "drive-file-1"}
-    async def file_metadata(self, file_id): return {"id": file_id, "size": "0", "md5Checksum": ""}
+    async def file_metadata(self, file_id):
+        return {"id": file_id, "size": str(len(self.candidate)), "sha256Checksum": hashlib.sha256(self.candidate).hexdigest()}
     async def find_child(self, parent_id, name, **kwargs):
         del parent_id, name, kwargs
-        return SimpleNamespace(id="drive-file-1", name="annual.csv", size=0, md5_checksum="", mime_type="text/csv", modified_time=None)
+        return None
+    async def promote_verified_file(self, *, parent_id, file_id, staging_name, canonical_name, expected_bytes, expected_sha256, previous_file_id=None):
+        del parent_id, staging_name, previous_file_id
+        assert expected_bytes == len(self.candidate)
+        assert expected_sha256 == hashlib.sha256(self.candidate).hexdigest()
+        self.promotions.append(file_id)
+        return SimpleNamespace(id=file_id, name=canonical_name, size=expected_bytes, sha256_checksum=expected_sha256)
 
 
 class FakeStore:
     def __init__(self, candidate: bytes):
         self.yandex = FakeYandex(candidate)
-        self.drive = FakeDrive()
+        self.drive = FakeDrive(candidate)
 
 
 class FakeQueue:
@@ -94,23 +104,26 @@ class FakeUploader:
         self.offset = 0
         self.file_id = "drive-file-1"
         self.session_uri = "https://www.googleapis.com/upload/drive/v3/files?uploadType=resumable&upload_id=laser-test"
-        self.md5 = hashlib.md5(candidate, usedforsecurity=False).hexdigest()
+        self.sha256 = hashlib.sha256(candidate).hexdigest()
     async def start_session(self, **kwargs):
         self.started += 1
         return UploadSession(self.session_uri, self.file_id, 0)
     async def query_status(self, session_uri, total_bytes):
+        del session_uri
         if self.offset >= total_bytes:
-            return UploadProgress("complete", total_bytes, {"id": self.file_id, "size": str(total_bytes), "md5Checksum": self.md5})
+            return UploadProgress("complete", total_bytes, {"id": self.file_id, "size": str(total_bytes), "sha256Checksum": self.sha256})
         return UploadProgress("incomplete", self.offset, None)
     async def upload_chunk(self, *, session_uri, offset, total_bytes, data):
+        del session_uri
         self.offset = offset + len(data)
         if self.offset >= total_bytes:
-            return UploadProgress("complete", total_bytes, {"id": self.file_id, "size": str(total_bytes), "md5Checksum": self.md5})
+            return UploadProgress("complete", total_bytes, {"id": self.file_id, "size": str(total_bytes), "sha256Checksum": self.sha256})
         return UploadProgress("incomplete", self.offset, None)
     async def file_metadata(self, file_id):
-        return {"id": file_id, "size": str(len(self.candidate)), "md5Checksum": self.md5}
+        return {"id": file_id, "size": str(len(self.candidate)), "sha256Checksum": self.sha256}
     async def find_named_file(self, parent_id, name):
-        return {"id": self.file_id}
+        del parent_id, name
+        return None
 
 
 def _laser_state(candidate: bytes):
@@ -140,6 +153,7 @@ def test_existing_laser_23_of_38_continues_upload_without_wb_or_prepare(monkeypa
     worker = archive_resumable_worker.WBFinanceResumableWorker(queue, FakeStore(candidate), uploader)
     result = asyncio.run(worker.worker_step(state["job_id"]))
     assert result["action"] == "drive_resumable_session_started"
+    assert result["canonical_untouched"] is True
     assert uploader.started == 1
     assert queue.delegate_calls == []
     assert queue.state["completed_count"] == 23
@@ -163,6 +177,8 @@ def test_resumable_upload_advances_to_commit_only_after_drive_and_backup_verific
     assert final["action"] == "report_annual_uploaded_resumable"
     assert final["drive_verified"] is True
     assert final["backup_verified"] is True
+    assert final["canonical_promoted"] is True
+    assert store.drive.promotions == ["drive-file-1"]
     assert queue.state["finalize"]["phase"] == "COMMIT"
     assert queue.state["completed_count"] == 23
     assert queue.delegate_calls == []
