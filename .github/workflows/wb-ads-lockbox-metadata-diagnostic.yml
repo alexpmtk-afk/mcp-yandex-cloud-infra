@@ -1,0 +1,120 @@
+name: WB Ads Lockbox Metadata Diagnostic
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/wb-ads-lockbox-metadata-diagnostic.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-test-runtime-write
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget --quiet --timeout=30 --tries=3 --output-document="$ARCHIVE" "$URL"
+          tar -tzf "$ARCHIVE" >/dev/null
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and inspect non-secret Lockbox metadata
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$DEPLOYER_ID"
+          yc config profile create wb-ads-lockbox-metadata || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+
+          timeout 45s yc lockbox secret get --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/secret.json"
+          timeout 45s yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/access.json"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          root = Path(os.environ['RUNNER_TEMP'])
+          secret = json.loads((root/'secret.json').read_text())
+          access = json.loads((root/'access.json').read_text())
+          versions = json.loads((root/'versions.json').read_text())
+          deployer = json.loads((root/'yc-service-account-key.json').read_text()).get('service_account_id') or json.loads((root/'yc-service-account-key.json').read_text()).get('serviceAccountId')
+
+          kms = secret.get('kms_key_id') or secret.get('kmsKeyId') or ''
+          print('LOCKBOX_SECRET_STATUS=' + str(secret.get('status') or ''))
+          print('LOCKBOX_SECRET_DELETION_PROTECTION=' + str(bool(secret.get('deletion_protection') if 'deletion_protection' in secret else secret.get('deletionProtection'))))
+          print('LOCKBOX_CUSTOM_KMS=' + ('YES' if kms else 'NO'))
+          if kms:
+              print('LOCKBOX_KMS_KEY_PRESENT=YES')
+          bindings = access.get('access_bindings') or access.get('accessBindings') or access if isinstance(access, list) else []
+          roles = []
+          for b in bindings:
+              subj = b.get('subject') or {}
+              if subj.get('id') == deployer:
+                  roles.append(b.get('role_id') or b.get('roleId'))
+          print('DEPLOYER_DIRECT_SECRET_ROLES=' + ','.join(sorted(x for x in roles if x)))
+          active = [v for v in versions if v.get('status') == 'ACTIVE'] if isinstance(versions, list) else []
+          print('LOCKBOX_ACTIVE_VERSION_COUNT=' + str(len(active)))
+          if active:
+              latest = sorted(active, key=lambda x: x.get('created_at') or x.get('createdAt') or '')[-1]
+              keys = latest.get('payload_entry_keys') or latest.get('payloadEntryKeys') or []
+              print('LOCKBOX_ACTIVE_ENTRY_KEYS=' + ','.join(sorted(keys)))
+          PY
+
+          if [[ -n "$(jq -r '.kms_key_id // .kmsKeyId // empty' "$RUNNER_TEMP/secret.json")" ]]; then
+            KMS_ID="$(jq -r '.kms_key_id // .kmsKeyId // empty' "$RUNNER_TEMP/secret.json")"
+            timeout 45s yc kms symmetric-key get --id "$KMS_ID" --format json --no-user-output > "$RUNNER_TEMP/kms.json" || true
+            if [[ -s "$RUNNER_TEMP/kms.json" ]]; then
+              echo 'KMS_KEY_METADATA_REACHABLE=YES'
+              timeout 45s yc kms symmetric-key list-access-bindings --id "$KMS_ID" --format json --no-user-output > "$RUNNER_TEMP/kms-access.json" || true
+              if [[ -s "$RUNNER_TEMP/kms-access.json" ]]; then
+                DEPLOYER_ID="$DEPLOYER_ID" python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'kms-access.json').read_text())
+          bindings=d.get('access_bindings') or d.get('accessBindings') or (d if isinstance(d,list) else [])
+          roles=[]
+          for b in bindings:
+              if (b.get('subject') or {}).get('id') == os.environ['DEPLOYER_ID']:
+                  roles.append(b.get('role_id') or b.get('roleId'))
+          print('DEPLOYER_DIRECT_KMS_ROLES=' + ','.join(sorted(x for x in roles if x)))
+          PY
+              fi
+            fi
+          fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/secret.json" "$RUNNER_TEMP/access.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/kms.json" "$RUNNER_TEMP/kms-access.json"
