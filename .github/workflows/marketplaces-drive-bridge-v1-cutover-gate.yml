@@ -1,0 +1,75 @@
+name: Marketplaces Google Drive Bridge v1 Cutover Gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+env:
+  PROJECT_ID: marketplaces
+  EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Validate common standard identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'protocol_version.*1' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'project_id.*marketplaces' shared/google-drive-bridge/clients/marketplaces.md
+          grep -q '"project_id": "marketplaces"' shared/google-drive-bridge/config/marketplaces.example.json
+          grep -q "rootId: '$EXPECTED_ROOT_ID'" shared/google-drive-bridge/deploy/marketplaces_config.gs
+          echo 'MARKETPLACES_SHARED_STANDARD=PASS'
+
+      - name: Validate readiness workflows are isolated and manual-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml \
+            .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml; do
+            test -f "$file"
+            grep -q 'workflow_dispatch:' "$file"
+          done
+          grep -q 'LOCKBOX_NAME: marketplaces-google-drive-bridge-v1' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -q 'LOCKBOX_NAME: marketplaces-google-drive-bridge-v1' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -q 'PROJECT_ID: marketplaces' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -q 'PROJECT_ID: marketplaces' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          echo 'READINESS_WORKFLOW_ISOLATION=PASS'
+
+      - name: Prove current production deployment still uses legacy route
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL' .github/workflows/deploy-mcp-test.yml
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' .github/workflows/deploy-mcp-test.yml
+          grep -q 'google_drive_bridge_secret' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_URL' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_PROTOCOL=v1' .github/workflows/deploy-mcp-test.yml
+          echo 'PRODUCTION_ROUTE=LEGACY'
+          echo 'PRODUCTION_CUTOVER_PERFORMED=NO'
+
+      - name: Verify full shared acceptance is a hard prerequisite
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'large_download' shared/google-drive-bridge/ACCEPTANCE.md
+          grep -Eqi 'concurr|parallel' shared/google-drive-bridge/ACCEPTANCE.md
+          grep -q 'foreign' shared/google-drive-bridge/scripts/acceptance.py
+          grep -q 'idempot' shared/google-drive-bridge/scripts/acceptance.py
+          echo 'CUTOVER_PRECONDITIONS_DOCUMENTED=PASS'
+
+      - name: Cutover is deliberately not executed by this workflow
+        shell: bash
+        run: |
+          echo 'This is a read-only readiness gate. It never deploys or changes Lockbox/runtime bindings.'
+          echo 'CUTOVER_ACTION=NONE'
