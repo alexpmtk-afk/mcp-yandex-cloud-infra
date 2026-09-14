@@ -7,7 +7,8 @@ on:
       - main
     paths:
       - app/**
-      - terraform/**
+      - terraform/*.tf
+      - terraform/*.tftpl
       - .github/workflows/deploy-mcp-test.yml
 
 permissions:
@@ -30,6 +31,8 @@ jobs:
     steps:
       - name: Checkout infrastructure
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
 
       - name: Prove vendored runtime snapshot
         shell: bash
@@ -42,6 +45,27 @@ jobs:
           git diff --check
           echo "source_revision=$(head -1 app/.source-revision)"
           echo 'snapshot_gate=PASS'
+
+      - name: Detect Marketplace Terraform changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          changed=false
+          if [[ "${GITHUB_EVENT_NAME}" == "push" ]]; then
+            BEFORE="${{ github.event.before }}"
+            if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+              BEFORE="$(git rev-parse HEAD^)"
+            fi
+            git fetch --no-tags --depth=1 origin "$BEFORE" >/dev/null 2>&1 || true
+            if ! git diff --quiet "$BEFORE" "$GITHUB_SHA" -- \
+              ':(glob)terraform/*.tf' \
+              ':(glob)terraform/*.tftpl'; then
+              changed=true
+            fi
+          fi
+          echo "marketplace_terraform=$changed" >> "$GITHUB_OUTPUT"
+          echo "marketplace_terraform_changes=$changed"
 
       - name: Install Yandex Cloud CLI with bounded resumable retries
         shell: bash
@@ -87,11 +111,13 @@ jobs:
           yc config set service-account-key "$KEY_FILE"
 
       - name: Set up Terraform
+        if: steps.changes.outputs.marketplace_terraform == 'true'
         uses: hashicorp/setup-terraform@v3
         with:
           terraform_version: "1.9.8"
 
       - name: Reconcile TEST foundation and archive storage
+        if: steps.changes.outputs.marketplace_terraform == 'true'
         shell: bash
         env:
           YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
@@ -115,7 +141,7 @@ jobs:
             -target=yandex_lockbox_secret.marketplace_credentials \
             -target=yandex_storage_bucket.marketplace_archive
 
-      - name: Resolve existing TEST runtime resources
+      - name: Resolve and verify existing TEST runtime resources
         id: resources
         shell: bash
         run: |
@@ -136,7 +162,9 @@ jobs:
           CLUSTER_ID="$(timeout 45s yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
           REDIS_HOST="$(timeout 45s yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
           DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
-          ARCHIVE_BUCKET="$(terraform -chdir=terraform output -raw marketplace_archive_bucket_name)"
+          ARCHIVE_BUCKET="marketplaces-mcp-archive-${FOLDER_ID}"
+          timeout 45s yc storage bucket list --format json --no-user-output > "$RUNNER_TEMP/archive-buckets.json"
+          jq -e --arg n "$ARCHIVE_BUCKET" '.[]|select(.name==$n)' "$RUNNER_TEMP/archive-buckets.json" >/dev/null
           for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN ARCHIVE_BUCKET; do
             test -n "${!v}"
           done
@@ -152,6 +180,7 @@ jobs:
           echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
           echo "archive_bucket=$ARCHIVE_BUCKET" >> "$GITHUB_OUTPUT"
+          echo 'existing_foundation_verification=PASS'
           echo 'google_drive_bridge_lockbox=RESOLVED'
           echo 'test_resources=RESOLVED'
 
@@ -445,4 +474,4 @@ jobs:
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/secret-keys.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/unauth" "$RUNNER_TEMP/auth"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/secret-keys.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/archive-buckets.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/unauth" "$RUNNER_TEMP/auth"
