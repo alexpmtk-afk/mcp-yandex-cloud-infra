@@ -1,0 +1,164 @@
+name: Apply Marketplaces Image Publisher WIF
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "terraform/marketplaces_publisher/**"
+      - ".github/workflows/marketplaces-image-publisher-wif-apply.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-test-image-publisher-bootstrap
+  cancel-in-progress: false
+
+jobs:
+  apply:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+
+    steps:
+      - name: Checkout exact main commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Set up Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.9.8"
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/bin/yc" version
+
+      - name: Authenticate infrastructure deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$CI_SA_ID"
+          echo "::add-mask::$CI_SA_ID"
+          echo "CI_SA_ID=$CI_SA_ID" >> "$GITHUB_ENV"
+          echo "TF_VAR_deployer_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve existing isolated Marketplaces TEST foundation
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          test -n "$REGISTRY_ID"
+          echo "TF_VAR_folder_id=$FOLDER_ID" >> "$GITHUB_ENV"
+          echo "TEST_FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          echo "REGISTRY_ID=$REGISTRY_ID" >> "$GITHUB_ENV"
+          echo 'existing_marketplaces_registry=PASS'
+
+      - name: Grant temporary TEST-folder bootstrap admin
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 90s yc resource-manager folder add-access-binding "$TEST_FOLDER_ID" \
+            --role admin --service-account-id "$CI_SA_ID"
+          echo 'temporary_test_folder_admin=GRANTED'
+          sleep 25
+
+      - name: Initialize isolated publisher state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/marketplaces_publisher init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform/marketplaces_publisher fmt -check
+          terraform -chdir=terraform/marketplaces_publisher validate
+
+      - name: Plan isolated publisher resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/marketplaces_publisher plan \
+            -input=false -no-color -out="$RUNNER_TEMP/publisher.tfplan" \
+            | tee "$RUNNER_TEMP/publisher-plan.txt"
+          terraform -chdir=terraform/marketplaces_publisher show -json "$RUNNER_TEMP/publisher.tfplan" > "$RUNNER_TEMP/publisher-plan.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'publisher-plan.json'
+          d=json.loads(p.read_text())
+          allowed={
+            'yandex_iam_service_account.publisher',
+            'yandex_resourcemanager_folder_iam_member.publisher_registry_image_pusher',
+            'yandex_iam_workload_identity_oidc_federation.github_image_publisher',
+            'yandex_iam_workload_identity_federated_credential.github_image_publisher',
+          }
+          changed=[]
+          for rc in d.get('resource_changes', []):
+              actions=rc.get('change',{}).get('actions',[])
+              if actions == ['no-op']:
+                  continue
+              addr=rc['address']
+              changed.append((addr,actions))
+              assert addr in allowed, (addr,actions)
+              assert 'delete' not in actions, (addr,actions)
+          assert changed, 'publisher plan unexpectedly empty on bootstrap'
+          print('PUBLISHER_PLAN_BOUNDARY_PASS', changed)
+          PY
+
+      - name: Apply isolated publisher plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=terraform/marketplaces_publisher apply -input=false -no-color "$RUNNER_TEMP/publisher.tfplan"
+
+      - name: Capture publisher identity and verify pusher binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUB_SA="$(terraform -chdir=terraform/marketplaces_publisher output -raw publisher_service_account_id)"
+          FED_ID="$(terraform -chdir=terraform/marketplaces_publisher output -raw publisher_oidc_federation_id)"
+          CRED_ID="$(terraform -chdir=terraform/marketplaces_publisher output -raw publisher_federated_credential_id)"
+          test -n "$PUB_SA"; test -n "$FED_ID"; test -n "$CRED_ID"
+          echo "publisher_service_account_id=$PUB_SA"
+          echo "publisher_oidc_federation_id=$FED_ID"
+          echo "publisher_federated_credential_id=$CRED_ID"
+          timeout 45s yc resource-manager folder list-access-bindings "$TEST_FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/folder-bindings.json"
+          jq -e --arg id "$PUB_SA" '.[] | select(.role_id=="container-registry.images.pusher" and .subject.id==$id and .subject.type=="serviceAccount")' "$RUNNER_TEMP/folder-bindings.json" >/dev/null
+          echo 'marketplaces_publisher_pusher_binding=PASS'
+
+      - name: Remove temporary TEST-folder bootstrap admin
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ -n "${TEST_FOLDER_ID:-}" && -n "${CI_SA_ID:-}" ]]; then
+            yc resource-manager folder remove-access-binding "$TEST_FOLDER_ID" \
+              --role admin --service-account-id "$CI_SA_ID" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/publisher.tfplan" "$RUNNER_TEMP/publisher-plan.json"
+          echo 'temporary_test_folder_admin=CLEANUP_ATTEMPTED'
