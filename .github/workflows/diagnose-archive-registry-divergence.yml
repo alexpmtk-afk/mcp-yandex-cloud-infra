@@ -1,0 +1,74 @@
+name: Diagnose Archive Registry Divergence
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - control/run-archive-registry-divergence-diag.txt
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=30 --tries=3 -O "$RUNNER_TEMP/yc.tgz" \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate Yandex CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create registry-diag || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Compare Yandex backup registry with canonical Drive facts
+        shell: bash
+        env:
+          BUCKET: marketplaces-mcp-archive-b1gnd0dqoq3ljod88i8t
+        run: |
+          set -euo pipefail
+          TOKEN="$(yc iam create-token)"
+          echo "::add-mask::$TOKEN"
+          URL="https://storage.yandexcloud.net/${BUCKET}/app/registry/reports_registry.csv"
+          CODE="$(curl -sS --max-time 90 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/registry.csv" -w '%{http_code}' "$URL")"
+          echo "YANDEX_REGISTRY_HTTP=$CODE"
+          test "$CODE" = 200
+          python - <<'PY'
+          import csv, hashlib, os
+          from collections import Counter
+          p=os.environ['RUNNER_TEMP']+'/registry.csv'
+          raw=open(p,'rb').read()
+          print('YANDEX_REGISTRY_BYTES='+str(len(raw)))
+          print('YANDEX_REGISTRY_SHA256='+hashlib.sha256(raw).hexdigest())
+          text=raw.decode('utf-8-sig')
+          rows=list(csv.DictReader(text.splitlines(), delimiter=';'))
+          print('YANDEX_REGISTRY_ROWS='+str(len(rows)))
+          by_cab=Counter(r.get('cabinet','') for r in rows if r.get('status')=='COMPLETE')
+          for c in ('wb_dmitrieva','wb_novokshenov','wb_laser_master'):
+              print(f'YANDEX_COMPLETE_{c}={by_cab[c]}')
+          years=Counter(r.get('year','') for r in rows if r.get('status')=='COMPLETE')
+          print('YANDEX_COMPLETE_YEARS='+','.join(f'{k}:{v}' for k,v in sorted(years.items())))
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/registry.csv"
