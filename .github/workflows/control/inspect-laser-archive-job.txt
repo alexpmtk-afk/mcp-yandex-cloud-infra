@@ -1,1 +1,1 @@
-2026-09-14T10:12:00Z read-only durable Laser state during verified 2GB worker run
+2026-09-14T10:14:30Z second read-only durable Laser state during verified 2GB worker run
