@@ -53,8 +53,31 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$DEPLOYER_ID"
+          printf '%s' "$DEPLOYER_ID" > "$RUNNER_TEMP/deployer-id"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
+
+      - name: Grant temporary admin only on the two TEST folders
+        id: grant
+        shell: bash
+        env:
+          CLOUD_ID: b1gi4pr9msenirafh2c7
+        run: |
+          set -euo pipefail
+          DEPLOYER_ID="$(cat "$RUNNER_TEMP/deployer-id")"
+          for folder_name in marketplaces-mcp-test birzha-mcp-forecast-test; do
+            FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$folder_name" '.[]|select(.name==$n)|.id' | head -1)"
+            test -n "$FOLDER_ID"
+            printf '%s' "$FOLDER_ID" > "$RUNNER_TEMP/folder-$folder_name-id"
+            timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" \
+              --role admin \
+              --service-account-id "$DEPLOYER_ID"
+            echo "TEMP_TEST_FOLDER_ADMIN=GRANTED folder=$folder_name"
+          done
+          echo 'granted=true' >> "$GITHUB_OUTPUT"
+          sleep 20
 
       - name: Provision isolated Lockboxes and runtime access
         shell: bash
@@ -69,7 +92,7 @@ jobs:
             local runtime_sa_name="$3"
 
             local folder_id
-            folder_id="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$folder_name" '.[]|select(.name==$n)|.id' | head -1)"
+            folder_id="$(cat "$RUNNER_TEMP/folder-$folder_name-id")"
             test -n "$folder_id"
 
             local secret_id
@@ -88,13 +111,13 @@ jobs:
             runtime_sa_id="$(timeout 45s yc iam service-account list --folder-id "$folder_id" --format json | jq -r --arg n "$runtime_sa_name" '.[]|select(.name==$n)|.id' | head -1)"
             test -n "$runtime_sa_id"
 
-            ACCESS_JSON="$RUNNER_TEMP/access-$secret_id.json"
-            timeout 45s yc lockbox secret list-access-bindings --id "$secret_id" --format json > "$ACCESS_JSON"
+            local access_json="$RUNNER_TEMP/access-$secret_id.json"
+            timeout 45s yc lockbox secret list-access-bindings --id "$secret_id" --format json > "$access_json"
             if ! jq -e --arg sid "$runtime_sa_id" '
               ((.access_bindings // .)[]?)
               | select(.role_id=="lockbox.payloadViewer")
               | select((.subject.id // "") == $sid)
-            ' "$ACCESS_JSON" >/dev/null 2>&1; then
+            ' "$access_json" >/dev/null 2>&1; then
               timeout 60s yc lockbox secret add-access-binding \
                 --id "$secret_id" \
                 --role lockbox.payloadViewer \
@@ -119,8 +142,25 @@ jobs:
           echo 'SECRET_PAYLOAD_CREATED=NO'
           echo 'PRODUCTION_BINDINGS_CHANGED=NO'
 
+      - name: Revoke temporary TEST-folder admin
+        if: always() && steps.grant.outputs.granted == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          DEPLOYER_ID="$(cat "$RUNNER_TEMP/deployer-id")"
+          for folder_name in marketplaces-mcp-test birzha-mcp-forecast-test; do
+            FOLDER_FILE="$RUNNER_TEMP/folder-$folder_name-id"
+            if [[ -s "$FOLDER_FILE" ]]; then
+              FOLDER_ID="$(cat "$FOLDER_FILE")"
+              timeout 90s yc resource-manager folder remove-access-binding "$FOLDER_ID" \
+                --role admin \
+                --service-account-id "$DEPLOYER_ID"
+              echo "TEMP_TEST_FOLDER_ADMIN=REVOKED folder=$folder_name"
+            fi
+          done
+
       - name: Cleanup credentials
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP"/access-*.json
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/deployer-id" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP"/folder-*-id "$RUNNER_TEMP"/access-*.json
