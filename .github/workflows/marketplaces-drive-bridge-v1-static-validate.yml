@@ -1,0 +1,69 @@
+name: Validate Marketplaces Google Drive Bridge v1 Readiness
+
+on:
+  pull_request:
+    paths:
+      - shared/google-drive-bridge/**
+      - .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+      - .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+      - .github/workflows/marketplaces-drive-bridge-v1-cutover-gate.yml
+      - .github/workflows/marketplaces-drive-bridge-v1-static-validate.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Validate central Protocol v1 contract tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install 'pytest>=8,<9'
+          python -m pytest shared/google-drive-bridge/tests -q
+          python -m compileall -q shared/google-drive-bridge/python_client shared/google-drive-bridge/scripts
+          echo 'SHARED_PROTOCOL_V1_TESTS=PASS'
+
+      - name: Validate Marketplaces readiness contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in \
+            .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml \
+            .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml \
+            .github/workflows/marketplaces-drive-bridge-v1-cutover-gate.yml; do
+            test -f "$file"
+            grep -q 'workflow_dispatch:' "$file"
+          done
+          grep -q 'PROJECT_ID: marketplaces' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -q 'PROJECT_ID: marketplaces' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -q 'EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -q 'EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -q 'marketplaces-google-drive-bridge-v1' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -q 'marketplaces-google-drive-bridge-v1' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -q 'MARKETPLACES_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -q 'large_download' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -Eqi 'concurr|parallel' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          echo 'MARKETPLACES_V1_READINESS_CONTRACT=PASS'
+
+      - name: Prove production deployment remains legacy
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL' .github/workflows/deploy-mcp-test.yml
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_URL' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_PROTOCOL=v1' .github/workflows/deploy-mcp-test.yml
+          echo 'PRODUCTION_CUTOVER_PERFORMED=NO'
