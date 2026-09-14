@@ -1,0 +1,2 @@
+Run the one-time strict Drive registry reconciliation after verifying Yandex registry is a strict superset of canonical Drive rows.
+Requested: 2026-09-14.
