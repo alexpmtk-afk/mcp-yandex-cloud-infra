@@ -9,6 +9,7 @@ from core.system_map import ARCHITECTURE_VERSION, SYSTEM_INSTRUCTIONS, SYSTEM_MA
 
 
 def test_canonical_map_fixes_storage_boundaries():
+    assert ARCHITECTURE_VERSION == "2026-09-14.v16"
     assert SYSTEM_MAP["status"] == "CANONICAL"
     assert SYSTEM_MAP["runtime"]["cloud"] == "Yandex Cloud only"
     storage = SYSTEM_MAP["storage_policy"]
@@ -17,26 +18,38 @@ def test_canonical_map_fixes_storage_boundaries():
     assert "Apps Script" in storage["google_drive_auth"]
     assert "Yandex Lockbox" in storage["google_drive_auth"]
     assert "no Google OAuth refresh token" in storage["google_drive_auth"]
-    assert "Google Drive API" in storage["google_drive_large_upload"]
-    assert "bounded chunks" in storage["google_drive_large_upload"]
-    assert "job state" in storage["yandex_object_storage"]
+    assert "staging filename" in storage["google_drive_large_upload"]
+    assert "SHA256" in storage["google_drive_large_upload"]
+    assert "promotion" in storage["google_drive_large_upload"]
+    assert "immutable candidate" in storage["yandex_object_storage"]
     assert "backup" in storage["yandex_object_storage"]
     assert "runtime service-account IAM token" in storage["yandex_archive_auth"]
     assert "no Google Cloud OAuth runtime dependency" in storage["google_cloud"]
+    assert "verified Apps Script promotion" in storage["archive_write_order"]
     assert SYSTEM_MAP["archive_policy"]["canonical_source_of_truth"] == "Google Drive annual dataset CSV files plus reports registry"
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["row_deduplication"] == "(reportId, rrdId)"
 
 
-def test_large_file_policy_uses_apps_script_session_broker_without_refresh_token():
+def test_large_file_policy_is_staged_sha256_guarded_and_resumable():
     policy = SYSTEM_MAP["archive_policy"]["large_file_upload"]
     assert policy["transport"] == "Google Drive API resumable upload"
     assert policy["session_broker"] == "Google Apps Script bridge"
     assert policy["yandex_google_oauth_refresh_token"] == "forbidden/not required"
     assert policy["apps_script_large_base64_upload"] == "forbidden"
     assert "one bounded chunk" in policy["worker_model"]
-    assert "confirmed byte offset" in policy["resume_state"]
+    assert "Drive-confirmed byte offset" in policy["resume_state"]
     assert "256 KiB" in policy["chunk_rule"]
+    assert "4 MiB" in policy["chunk_rule"]
+    assert "32 MiB" in policy["chunk_rule"]
+    assert "non-canonical" in policy["canonical_protection"]
+    assert "untouched" in policy["canonical_protection"]
+    assert "sha256Checksum" in policy["verification_rule"]
+    assert "before canonical promotion" in policy["backup_rule"]
+    assert "promote_verified" in policy["promotion_rule"]
+    assert "retry-safe" in policy["promotion_rule"]
+    assert "immutable Yandex candidate" in policy["restart_rule"]
+    assert "never follow redirects" in policy["redirect_rule"]
     assert "COMMIT" in policy["commit_rule"]
 
 
@@ -53,7 +66,7 @@ def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
     assert "orders are customer order events" in SYSTEM_MAP["data_routing_policy"]["orders_vs_realization"]
 
 
-def test_wb_advertising_m0_boundaries_are_explicit():
+def test_wb_advertising_m0_boundaries_are_preserved():
     policy = SYSTEM_MAP["advertising_policy"]
     assert policy["current_scope"].startswith("Wildberries only")
     assert policy["phase"] == "WB Advertising M0 read-only"
@@ -71,12 +84,16 @@ def test_wb_advertising_m0_boundaries_are_explicit():
 
 
 def test_server_instructions_contain_hard_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-14.v15"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
     assert "Google Drive" in SYSTEM_INSTRUCTIONS
     assert "Apps Script" in SYSTEM_INSTRUCTIONS
     assert "resumable-session" in SYSTEM_INSTRUCTIONS
     assert "No Google OAuth refresh token" in SYSTEM_INSTRUCTIONS
+    assert "non-canonical staging filename" in SYSTEM_INSTRUCTIONS
+    assert "size/SHA256" in SYSTEM_INSTRUCTIONS
+    assert "byte-for-byte Yandex backup" in SYSTEM_INSTRUCTIONS
+    assert "never blindly resends" in SYSTEM_INSTRUCTIONS
+    assert "never logs the bearer-like session URI" in SYSTEM_INSTRUCTIONS
     assert "Yandex Object Storage" in SYSTEM_INSTRUCTIONS
     assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
     assert "Yandex Lockbox" in SYSTEM_INSTRUCTIONS
