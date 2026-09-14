@@ -123,7 +123,10 @@ Creates/initializes staged update state for a target spreadsheet.
 Mutating, idempotent. Writes one bounded range/chunk.
 
 ### `sheet_verify`
-Returns parity metadata such as row count, digest, first/last date and caller-requested verification fields.
+Returns parity metadata for a staged sheet: row count, digest, first/last date and caller-requested verification fields.
+
+### `sheet_inspect`
+Read-only post-commit inspection of a canonical sheet. Payload: `spreadsheet_id`, `sheet_title`, optional 1-based `date_column`. Returns `found`, row/column count, `sheet_digest_v1`, and optional first/last date. Clients use this after commit for independent read-back parity.
 
 ### `sheet_commit`
 Mutating, idempotent. Commits a verified staged state.

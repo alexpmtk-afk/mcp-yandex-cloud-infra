@@ -17,3 +17,28 @@ def test_confirmed_offset():
 
 def test_sha256_fixture():
     assert hashlib.sha256(b"bridge-v1").hexdigest() == "83a3608e5baeb253b1670222090007d078fc84ef96fc6ce51e49de40986a332c"
+
+
+def test_final_release_has_no_stub_and_stage_replay_is_non_destructive() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bridge = (root / 'bridge.gs').read_text(encoding='utf-8')
+    version = (root / 'VERSION').read_text(encoding='utf-8')
+    assert 'bridge_release=1.0.0' in version
+    assert "BRIDGE_RELEASE = '1.0.0'" in bridge
+    assert 'NOT_IMPLEMENTED' not in bridge
+    stage = bridge.split('function sheetStageBegin_', 1)[1].split('function sheetWriteChunk_', 1)[0]
+    assert 'stage.clear(' not in stage
+    assert "BRIDGE_TARGET_SHEET" in stage
+    assert 'replayed: true' in stage
+
+
+def test_final_sheets_contract_has_post_commit_inspection() -> None:
+    root = Path(__file__).resolve().parents[1]
+    bridge = (root / 'bridge.gs').read_text(encoding='utf-8')
+    client = (root / 'python_client' / 'bridge_client.py').read_text(encoding='utf-8')
+    protocol = (root / 'PROTOCOL.md').read_text(encoding='utf-8')
+    assert "action === 'sheet_inspect'" in bridge
+    assert 'function sheetInspect_' in bridge
+    assert 'google_sheets_inspect' in bridge
+    assert 'async def sheet_inspect(' in client
+    assert '### `sheet_inspect`' in protocol

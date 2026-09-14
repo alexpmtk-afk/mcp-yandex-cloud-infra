@@ -10,6 +10,7 @@ permissions:
 env:
   PROJECT_ID: marketplaces
   EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+  EXPECTED_BRIDGE_RELEASE: 1.0.0
   LOCKBOX_NAME: marketplaces-mcp-api-credentials
   LOCKBOX_KEY: gdrive_bridge_v1_secret
 
@@ -21,11 +22,14 @@ jobs:
       - name: Checkout infrastructure
         uses: actions/checkout@v4
 
-      - name: Validate common standard identity
+      - name: Validate stable common standard identity
         shell: bash
         run: |
           set -euo pipefail
           grep -q 'protocol_version.*1' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
+          grep -q "BRIDGE_RELEASE = '1.0.0'" shared/google-drive-bridge/bridge.gs
+          ! grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge
           grep -q 'project_id.*marketplaces' shared/google-drive-bridge/clients/marketplaces.md
           grep -q '"project_id": "marketplaces"' shared/google-drive-bridge/config/marketplaces.example.json
           grep -q "rootId: '$EXPECTED_ROOT_ID'" shared/google-drive-bridge/deploy/marketplaces_config.gs
@@ -45,9 +49,10 @@ jobs:
           done
           grep -q 'PROJECT_ID: marketplaces' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
           grep -q 'PROJECT_ID: marketplaces' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -q "EXPECTED_BRIDGE_RELEASE: $EXPECTED_BRIDGE_RELEASE" .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
           echo 'READINESS_WORKFLOW_ISOLATION=PASS'
 
-      - name: Prove current production deployment still uses rollback route
+      - name: Prove current production deployment still has rollback route
         shell: bash
         run: |
           set -euo pipefail
@@ -64,10 +69,11 @@ jobs:
           grep -Eqi 'concurr|parallel' shared/google-drive-bridge/ACCEPTANCE.md
           grep -q 'foreign' shared/google-drive-bridge/scripts/acceptance.py
           grep -q 'idempot' shared/google-drive-bridge/scripts/acceptance.py
+          grep -q 'download_large_by_id' shared/google-drive-bridge/scripts/acceptance.py
           test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
           echo 'CUTOVER_PRECONDITIONS_DOCUMENTED=PASS'
 
       - name: Gate result
         run: |
-          echo 'MARKETPLACES_V1_CUTOVER_GATE=PASS'
-          echo 'This gate validates readiness only; actual cutover is a separate rollback-capable workflow.'
+          echo 'MARKETPLACES_V1_STABLE_CUTOVER_GATE=PASS'
+          echo 'Actual cutover is rollback-capable and may run only after live stable acceptance.'

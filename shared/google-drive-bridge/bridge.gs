@@ -1,6 +1,6 @@
 /**
  * Yandex Cloud <-> Google Drive Bridge
- * Protocol v1 / release 1.0.0-alpha.2
+ * Protocol v1 / release 1.0.0
  *
  * Same source is deployed separately for every client project.
  * Required Script Properties:
@@ -14,7 +14,7 @@
  *   MCP_DRIVE_BRIDGE_SHEETS_ENABLED (true|false)
  */
 const BRIDGE_PROTOCOL_VERSION = 1;
-const BRIDGE_RELEASE = '1.0.0-alpha.2';
+const BRIDGE_RELEASE = '1.0.0';
 const PROP_SECRET = 'MCP_DRIVE_BRIDGE_SECRET';
 const PROP_PROJECT = 'MCP_DRIVE_BRIDGE_PROJECT_ID';
 const PROP_ROOT_ID = 'MCP_DRIVE_BRIDGE_ROOT_ID';
@@ -90,6 +90,7 @@ function dispatch_(action, p, idem, cfg) {
   if (action === 'sheet_stage_begin') return sheetStageBegin_(p, idem, cfg);
   if (action === 'sheet_write_chunk') return sheetWriteChunk_(p, idem, cfg);
   if (action === 'sheet_verify') return sheetVerify_(p, cfg);
+  if (action === 'sheet_inspect') return sheetInspect_(p, cfg);
   if (action === 'sheet_commit') return sheetCommit_(p, idem, cfg);
   if (action === 'sheet_abort') return sheetAbort_(p, idem, cfg);
   throw bridgeError_('UNKNOWN_ACTION', 'unknown action', false);
@@ -132,6 +133,7 @@ function health_(cfg) {
       drive_large_download: true,
       drive_large_download_transport: 'drive_files_download_lro',
       google_sheets_chunked: cfg.sheetsEnabled,
+      google_sheets_inspect: cfg.sheetsEnabled,
       fixed_root_file_id_guard: true,
       idempotent_mutations: true,
       global_script_lock: false
@@ -488,10 +490,31 @@ function sheetStageBegin_(p, idem, cfg) {
   const ss = SpreadsheetApp.openById(spreadsheetId);
   const stageTitle = stageSheetTitle_(idem);
   let stage = ss.getSheetByName(stageTitle);
-  if (!stage) stage = ss.insertSheet(stageTitle);
-  stage.clear({contentsOnly: false});
+  if (stage) {
+    const targetBinding = developerMetadataValue_(stage, 'BRIDGE_TARGET_SHEET');
+    if (targetBinding && targetBinding !== targetTitle) {
+      throw bridgeError_('IDEMPOTENCY_CONFLICT', 'existing stage is bound to a different target sheet', false);
+    }
+    if (!targetBinding) stage.addDeveloperMetadata('BRIDGE_TARGET_SHEET', targetTitle);
+    return {
+      spreadsheet_id: spreadsheetId,
+      target_sheet_title: targetTitle,
+      stage_sheet_title: stageTitle,
+      stage_sheet_id: stage.getSheetId(),
+      replayed: true
+    };
+  }
+  stage = ss.insertSheet(stageTitle);
   stage.setFrozenRows(0);
-  return {spreadsheet_id: spreadsheetId, target_sheet_title: targetTitle, stage_sheet_title: stageTitle, stage_sheet_id: stage.getSheetId()};
+  stage.addDeveloperMetadata('BRIDGE_TARGET_SHEET', targetTitle);
+  stage.addDeveloperMetadata('BRIDGE_STAGE_IDEMPOTENCY', shortHash_(idem));
+  return {
+    spreadsheet_id: spreadsheetId,
+    target_sheet_title: targetTitle,
+    stage_sheet_title: stageTitle,
+    stage_sheet_id: stage.getSheetId(),
+    replayed: false
+  };
 }
 
 function sheetWriteChunk_(p, idem, cfg) {
@@ -537,6 +560,39 @@ function sheetVerify_(p, cfg) {
     if (nonEmpty.length) { firstDate = nonEmpty[0]; lastDate = nonEmpty[nonEmpty.length - 1]; }
   }
   return {spreadsheet_id: spreadsheetId, stage_sheet_title: stageTitle, row_count: lastRow, column_count: lastCol, digest_algorithm: 'sheet_digest_v1', digest: digest, first_date: firstDate, last_date: lastDate};
+}
+
+function sheetInspect_(p, cfg) {
+  requireSheets_(cfg);
+  const spreadsheetId = cleanId_(p.spreadsheet_id, 'spreadsheet_id');
+  assertFileInsideRoot_(spreadsheetId, cfg);
+  const sheetTitle = validateSheetTitle_(p.sheet_title);
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = ss.getSheetByName(sheetTitle);
+  if (!sheet) return {found: false, spreadsheet_id: spreadsheetId, sheet_title: sheetTitle};
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const digest = sheetDigestV1_(sheet, lastRow, lastCol);
+  const dateCol = Number(p.date_column || 0);
+  let firstDate = null;
+  let lastDate = null;
+  if (dateCol > 0 && lastRow > 0 && lastCol >= dateCol) {
+    const vals = sheet.getRange(1, dateCol, lastRow, 1).getDisplayValues().map(function(r){return r[0];});
+    const nonEmpty = vals.filter(function(v){return String(v).trim() !== '';});
+    if (nonEmpty.length) { firstDate = nonEmpty[0]; lastDate = nonEmpty[nonEmpty.length - 1]; }
+  }
+  return {
+    found: true,
+    spreadsheet_id: spreadsheetId,
+    sheet_title: sheetTitle,
+    sheet_id: sheet.getSheetId(),
+    row_count: lastRow,
+    column_count: lastCol,
+    digest_algorithm: 'sheet_digest_v1',
+    digest: digest,
+    first_date: firstDate,
+    last_date: lastDate
+  };
 }
 
 function sheetCommit_(p, idem, cfg) {
@@ -677,6 +733,14 @@ function findSingleByName_(folder, name) {
 
 function requireSheets_(cfg) {
   if (!cfg.sheetsEnabled) throw bridgeError_('CAPABILITY_DISABLED', 'Google Sheets extension is disabled for this deployment', false);
+}
+
+function developerMetadataValue_(sheet, key) {
+  const items = sheet.getDeveloperMetadata();
+  for (let i = 0; i < items.length; i++) {
+    if (items[i].getKey() === key) return String(items[i].getValue() || '');
+  }
+  return '';
 }
 
 function ensureSheetSize_(sheet, rows, cols) {

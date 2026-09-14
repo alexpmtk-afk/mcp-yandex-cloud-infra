@@ -18,7 +18,7 @@ permissions:
 env:
   PROJECT_ID: marketplaces
   EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
-  EXPECTED_BRIDGE_RELEASE: 1.0.0-alpha.2
+  EXPECTED_BRIDGE_RELEASE: 1.0.0
   LOCKBOX_NAME: marketplaces-mcp-api-credentials
   LOCKBOX_KEY: gdrive_bridge_v1_secret
 
@@ -35,11 +35,12 @@ jobs:
       - name: Checkout infrastructure
         uses: actions/checkout@v4
 
-      - name: Require alpha.2 large-read and concurrency acceptance matrix
+      - name: Require stable full acceptance matrix
         shell: bash
         run: |
           set -euo pipefail
-          grep -q 'bridge_release=1.0.0-alpha.2' shared/google-drive-bridge/VERSION
+          grep -q 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
+          ! grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge
           grep -q 'large_download_start' shared/google-drive-bridge/scripts/acceptance.py
           grep -q 'download_large_by_id' shared/google-drive-bridge/scripts/acceptance.py
           grep -Eqi 'concurr|parallel' shared/google-drive-bridge/scripts/acceptance.py
@@ -47,7 +48,7 @@ jobs:
           grep -Eqi 'concurr|gather' shared/google-drive-bridge/scripts/cross_project_acceptance.py
           grep -q 'large_download_start' shared/google-drive-bridge/PROTOCOL.md
           grep -q 'large_download_poll' shared/google-drive-bridge/PROTOCOL.md
-          echo 'COMMON_ALPHA2_ACCEPTANCE_MATRIX_IMPLEMENTED=PASS'
+          echo 'COMMON_STABLE_ACCEPTANCE_MATRIX_IMPLEMENTED=PASS'
 
       - name: Install Python dependencies
         shell: bash
@@ -112,7 +113,7 @@ jobs:
           echo "MARKETPLACES_BRIDGE_V1_SECRET_VERSION_ID=$VERSION_ID"
           echo 'MARKETPLACES_PROJECT_BRIDGE_V1_CREDENTIAL=RESOLVED'
 
-      - name: Authenticated deep health and alpha.2 capability gate
+      - name: Authenticated deep health and stable capability gate
         shell: bash
         env:
           GDRIVE_BRIDGE_URL: ${{ inputs.bridge_url }}
@@ -140,7 +141,7 @@ jobs:
                   assert caps.get(key) is True, (key, health)
               assert caps.get('drive_large_download_transport') == 'drive_files_download_lro', health
               assert caps.get('global_script_lock') is False, health
-              print('MARKETPLACES_V1_ALPHA2_DEEP_HEALTH=PASS')
+              print('MARKETPLACES_V1_STABLE_DEEP_HEALTH=PASS')
           asyncio.run(main())
           PY
 
@@ -156,9 +157,9 @@ jobs:
           set -euo pipefail
           export GDRIVE_BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
           python shared/google-drive-bridge/scripts/acceptance.py
-          echo 'MARKETPLACES_COMMON_BRIDGE_V1_ALPHA2_ACCEPTANCE=PASS'
+          echo 'MARKETPLACES_COMMON_BRIDGE_V1_STABLE_ACCEPTANCE=PASS'
 
-      - name: Confirm production remains untouched
+      - name: Confirm production remains untouched before explicit cutover
         shell: bash
         run: |
           set -euo pipefail
