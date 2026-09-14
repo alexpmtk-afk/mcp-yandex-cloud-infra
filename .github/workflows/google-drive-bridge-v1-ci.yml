@@ -31,6 +31,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Validate Apps Script syntax
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp shared/google-drive-bridge/bridge.gs "$RUNNER_TEMP/bridge.js"
+          node --check "$RUNNER_TEMP/bridge.js"
       - name: Validate required bridge invariants
         shell: bash
         run: |
