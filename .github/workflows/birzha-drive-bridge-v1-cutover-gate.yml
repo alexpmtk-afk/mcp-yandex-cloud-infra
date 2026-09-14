@@ -9,6 +9,8 @@ permissions:
 env:
   PROJECT_ID: birzha
   EXPECTED_ROOT_ID: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
+  LOCKBOX_NAME: birzha-mcp-forecast-test-auth
+  LOCKBOX_KEY: gdrive_bridge_v1_secret
 
 jobs:
   gate:
@@ -27,7 +29,7 @@ jobs:
           grep -q 'sheetsEnabled: true' shared/google-drive-bridge/deploy/birzha_config.gs
           echo 'BIRZHA_SHARED_STANDARD=PASS'
 
-      - name: Validate isolated manual readiness workflows
+      - name: Validate isolated readiness workflows
         shell: bash
         run: |
           set -euo pipefail
@@ -36,18 +38,19 @@ jobs:
             .github/workflows/birzha-drive-bridge-v1-acceptance.yml; do
             test -f "$f"
             grep -q 'workflow_dispatch:' "$f"
+            grep -q "LOCKBOX_NAME: $LOCKBOX_NAME" "$f"
+            grep -q "LOCKBOX_KEY: $LOCKBOX_KEY" "$f"
           done
-          grep -q 'LOCKBOX_NAME: birzha-google-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
-          grep -q 'LOCKBOX_NAME: birzha-google-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           echo 'BIRZHA_READINESS_WORKFLOW_ISOLATION=PASS'
 
-      - name: Prove legacy Marketplaces dependency is not removed by this gate
+      - name: Validate Birzha runtime binding
         shell: bash
         run: |
           set -euo pipefail
-          test -f terraform/birzha_test/m25_market_mirror.tf
-          echo 'LEGACY_DEPENDENCY_REMOVAL=NO'
-          echo 'PRODUCTION_CUTOVER_PERFORMED=NO'
+          grep -q 'gdrive_bridge_v1_secret' terraform/birzha_test/m24_autonomous_worker.tf
+          grep -q 'm25_birzha_bridge_v1_url' terraform/birzha_test/m24_autonomous_worker.tf
+          grep -q 'project Lockbox' terraform/birzha_test/m25_market_mirror.tf
+          echo 'BIRZHA_V1_RUNTIME_BINDING=PASS'
 
       - name: Verify Birzha acceptance prerequisites
         shell: bash
@@ -59,9 +62,10 @@ jobs:
           grep -q 'sheet_commit' shared/google-drive-bridge/PROTOCOL.md
           grep -q 'sheet_abort' shared/google-drive-bridge/PROTOCOL.md
           test -f shared/google-drive-bridge/scripts/cross_project_acceptance.py
+          test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
           echo 'BIRZHA_CUTOVER_PRECONDITIONS_DOCUMENTED=PASS'
 
-      - name: Cutover deliberately not executed
+      - name: Gate result
         run: |
-          echo 'This gate is read-only. Live BR E2E parity and cross-project acceptance must PASS before a separate cutover change.'
-          echo 'CUTOVER_ACTION=NONE'
+          echo 'BIRZHA_V1_CUTOVER_GATE=PASS'
+          echo 'Actual M25 activation remains rollback-capable and follows live Sheets/cross-project acceptance.'
