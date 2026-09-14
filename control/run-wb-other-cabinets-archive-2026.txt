@@ -1,3 +1,3 @@
-triggered_at_utc=2026-09-14T08:30:15Z
-reason=resume Laser Master durable archive after bounded WB finance detail-page deploy
-source_runtime=marketplaces-mcp-ru@c746d93e0a14746e2e97cc99cca364c73f3e79f5
+triggered_at_utc=2026-09-14T08:53:10Z
+reason=resume Laser Master durable archive after 5000-row WB finance detail-page deploy
+source_runtime=marketplaces-mcp-ru@aaed0268c3b7e2cd3c778285c1e9c3834d50b862
