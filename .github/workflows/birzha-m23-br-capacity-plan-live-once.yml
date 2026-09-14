@@ -1,0 +1,174 @@
+name: BIRZHA M23 BR capacity plan live once
+
+on:
+  push:
+    branches: [birzha-m23-br-capacity-plan-20260914]
+    paths:
+      - ".github/workflows/birzha-m23-br-capacity-plan-live-once.yml"
+
+permissions:
+  contents: read
+
+env:
+  APP_SHA: 03999b4118793cdf92381007ae56b3d2d45b33db
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout infrastructure source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: infra
+          persist-credentials: false
+
+      - name: Checkout exact Birzha source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: alexpmtk-afk/birzha-mcp-forecast
+          ref: ${{ env.APP_SHA }}
+          path: app
+          fetch-depth: 1
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Mint ephemeral Yandex IAM token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600}, key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens', data=json.dumps({'jwt':signed}).encode(), headers={'Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(req, timeout=30) as response:
+              token=json.loads(response.read())['iamToken']
+          assert token and len(token)>100
+          print(f'::add-mask::{token}')
+          p=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'
+          p.write_text(token); p.chmod(0o600)
+          print('YANDEX_IAM_TOKEN=PASS')
+          PY
+
+      - name: Read YDB coordinate from remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=infra/terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json').read_text())
+          value=d['ydb_connection_string']['value']
+          assert value
+          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
+              f.write('YDB_CONNECTION_STRING='+value+'\n')
+          print('YDB_COORDINATE=PASS')
+          PY
+
+      - name: Install exact application source
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(git -C app rev-parse HEAD)" = "$APP_SHA"
+          python -m pip install --disable-pip-version-check -e ./app
+
+      - name: Read-only BR capacity plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          export PYTHONPATH="$GITHUB_WORKSPACE/app/src"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import ydb
+          from birzha.application.historical_data import HistoricalDataService
+          from birzha.application.market_data import MarketDataService
+          from birzha.application.validation_capacity_plan import plan_contiguous_equal_windows
+          from birzha.storage.ydb_runtime_storage import YdbRuntimeHistoricalCandleStore
+
+          token=(Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token').read_text().strip()
+          driver=ydb.Driver(connection_string=os.environ['YDB_CONNECTION_STRING'], credentials=ydb.AccessTokenCredentials(token))
+          driver.wait(timeout=20, fail_fast=True)
+          pool=ydb.QuerySessionPool(driver)
+          try:
+              history=HistoricalDataService(
+                  market_data=MarketDataService.default(),
+                  store=YdbRuntimeHistoricalCandleStore(pool),
+              )
+              checks={}
+              for start in ('2013-01-01','2012-01-01','2011-01-01','2010-01-01','2009-01-01'):
+                  checks[start]=history.is_range_verified('BR', timeframe='D1', from_date=start, till_date='2024-12-31')
+
+              plan_2013=None
+              if checks['2013-01-01']:
+                  plan_2013=plan_contiguous_equal_windows(
+                      history, 'BR', available_from='2013-01-01', holdout_end='2024-12-31',
+                      minimum_observations=20, minimum_window_years=2, maximum_window_years=6,
+                      step_sessions=5, max_points=400,
+                  ).to_dict()
+
+              plan_2011=None
+              if checks['2011-01-01']:
+                  plan_2011=plan_contiguous_equal_windows(
+                      history, 'BR', available_from='2011-01-01', holdout_end='2024-12-31',
+                      minimum_observations=20, minimum_window_years=7, maximum_window_years=7,
+                      step_sessions=5, max_points=400,
+                  ).to_dict()
+
+              payload={
+                  'schema':'BIRZHA_M23_BR_CAPACITY_PLAN_LIVE_V1',
+                  'mode':'CAPACITY_ONLY_READ_ONLY',
+                  'app_sha':os.environ['APP_SHA'],
+                  'verified_through_2024':checks,
+                  'current_stored_plan':plan_2013,
+                  'next_7y_plan_if_already_stored':plan_2011,
+                  'next_backfill_candidate':None if checks['2011-01-01'] else {'from_date':'2011-01-01','till_date':'2012-12-31','reason':'shortest next equal-window candidate is 7y+7y ending 2024-12-31'},
+                  'model_status':'NOT_EVALUATED',
+                  'holdout_evaluated':False,
+                  'holdout_sealed':True,
+              }
+              out=Path(os.environ['RUNNER_TEMP'])/'br-capacity-plan.json'
+              out.write_text(json.dumps(payload,ensure_ascii=False,indent=2,sort_keys=True)+'\n')
+              print('BR_CAPACITY_PLAN='+json.dumps(payload,ensure_ascii=False,sort_keys=True), flush=True)
+          finally:
+              pool.stop(); driver.stop()
+          PY
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-m23-br-capacity-plan-live
+          path: ${{ runner.temp }}/br-capacity-plan.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yandex-iam-token" "$RUNNER_TEMP/birzha-outputs.json"
+          echo 'EPHEMERAL_CREDENTIAL_CLEANUP=PASS'
