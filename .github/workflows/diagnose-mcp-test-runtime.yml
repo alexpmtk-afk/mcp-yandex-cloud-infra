@@ -57,43 +57,67 @@ jobs:
           echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
           echo 'test_container=RESOLVED'
 
-      - name: Read and classify startup evidence
+      - name: Read and classify latest startup evidence
         shell: bash
         env:
           CONTAINER_ID: ${{ steps.resources.outputs.container }}
         run: |
           set -euo pipefail
           timeout 45s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json" || printf '[]' > "$RUNNER_TEMP/revisions.json"
-          timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '30m ago' --limit 300 --format json > "$RUNNER_TEMP/logs.json"
+          timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '12m ago' --limit 1000 --format json > "$RUNNER_TEMP/logs.json"
           python - <<'PY'
           import json, re
           from pathlib import Path
 
           revisions = json.loads(Path("/home/runner/work/_temp/revisions.json").read_text() or "[]")
           logs = json.loads(Path("/home/runner/work/_temp/logs.json").read_text() or "[]")
-          print(f"revision_count={len(revisions)}")
-          print(f"runtime_log_count={len(logs)}")
-
-          needles = (
-              "traceback", "exception", "error", "failed", "fatal", "module", "import",
-              "typeerror", "valueerror", "keyerror", "validation", "redis", "startup",
-              "application startup", "cannot", "refused", "timeout", "credential", "cabinet",
-          )
-          candidates = []
-          for item in logs:
-              raw = json.dumps(item, ensure_ascii=False, sort_keys=True)
-              if any(word in raw.lower() for word in needles):
-                  candidates.append(raw)
 
           def sanitize(text: str) -> str:
               text = re.sub(r"https?://[^\s\"']+", "<url>", text)
               text = re.sub(r"(?i)(authorization|bearer|token|secret|password)(\s*[:=]\s*)[^,}\s]+", r"\1\2<redacted>", text)
               text = re.sub(r"eyJ[A-Za-z0-9_\-.]{20,}", "<redacted-jwt>", text)
               text = re.sub(r"[A-Za-z0-9_\-]{48,}", "<redacted-long-value>", text)
-              return text[:1200]
+              return text[:1400]
 
+          def created_at(item):
+              return str(item.get("created_at") or item.get("createdAt") or "")
+
+          latest = sorted((x for x in revisions if isinstance(x, dict)), key=created_at, reverse=True)[:8]
+          latest_ids = {str(x.get("id") or "") for x in latest if x.get("id")}
+          print(f"revision_count={len(revisions)}")
+          print(f"runtime_log_count={len(logs)}")
+          for i, rev in enumerate(latest, 1):
+              meta = {
+                  "id": rev.get("id"),
+                  "created_at": rev.get("created_at") or rev.get("createdAt"),
+                  "status": rev.get("status"),
+                  "image_url": rev.get("image_url") or rev.get("imageUrl"),
+                  "execution_timeout": rev.get("execution_timeout") or rev.get("executionTimeout"),
+              }
+              print(f"LATEST_REVISION_{i}={sanitize(json.dumps(meta, ensure_ascii=False, sort_keys=True))}")
+
+          needles = (
+              "traceback", "exception", "error", "failed", "fatal", "module", "import",
+              "typeerror", "valueerror", "keyerror", "validation", "redis", "startup",
+              "application startup", "cannot", "refused", "timeout", "credential", "cabinet",
+              "container", "panic", "killed", "memory",
+          )
+          candidates = []
+          latest_candidates = []
+          for item in logs:
+              raw = json.dumps(item, ensure_ascii=False, sort_keys=True)
+              low = raw.lower()
+              if any(word in low for word in needles):
+                  candidates.append(raw)
+                  payload = item.get("json_payload") or item.get("jsonPayload") or {}
+                  rid = str(payload.get("revision_id") or payload.get("revisionId") or "") if isinstance(payload, dict) else ""
+                  if rid and rid in latest_ids:
+                      latest_candidates.append(raw)
+
+          selected = latest_candidates if latest_candidates else candidates[-40:]
           print(f"startup_error_candidate_count={len(candidates)}")
-          for i, text in enumerate(candidates[-20:], 1):
+          print(f"latest_revision_candidate_count={len(latest_candidates)}")
+          for i, text in enumerate(selected[-40:], 1):
               print(f"STARTUP_EVIDENCE_{i}={sanitize(text)}")
           PY
 
