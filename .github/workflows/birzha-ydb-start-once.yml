@@ -1,0 +1,119 @@
+name: BIRZHA TEST YDB start once
+
+on:
+  push:
+    branches: [birzha-m23-br-capacity-plan-20260914]
+    paths:
+      - ".github/workflows/birzha-ydb-start-once.yml"
+
+permissions:
+  contents: read
+
+env:
+  YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+  BIRZHA_FOLDER_NAME: birzha-mcp-forecast-test
+  BIRZHA_YDB_NAME: birzha-mcp-forecast-state
+  BIRZHA_YDB_ID: etnes7omhgut11oulsd5
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Mint ephemeral Yandex IAM token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads((Path(os.environ['RUNNER_TEMP'])/'yc-key.json').read_text())
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600}, key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens', data=json.dumps({'jwt':signed}).encode(), headers={'Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(req, timeout=30) as response:
+              token=json.loads(response.read())['iamToken']
+          assert token and len(token)>100
+          print(f'::add-mask::{token}')
+          p=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'
+          p.write_text(token); p.chmod(0o600)
+          print('YANDEX_IAM_TOKEN=PASS')
+          PY
+
+      - name: Verify identity and start exact TEST YDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time, urllib.parse, urllib.request, urllib.error
+          from pathlib import Path
+
+          token=(Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token').read_text().strip()
+          headers={'Authorization':'Bearer '+token, 'Content-Type':'application/json'}
+          cloud_id=os.environ['YC_CLOUD_ID']
+          folder_name=os.environ['BIRZHA_FOLDER_NAME']
+          db_name=os.environ['BIRZHA_YDB_NAME']
+          expected_id=os.environ['BIRZHA_YDB_ID']
+
+          folders_url='https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders?'+urllib.parse.urlencode({'cloudId':cloud_id,'pageSize':1000})
+          with urllib.request.urlopen(urllib.request.Request(folders_url,headers=headers),timeout=30) as response:
+              folders=json.loads(response.read()).get('folders',[])
+          fs=[x for x in folders if x.get('name')==folder_name and x.get('status')=='ACTIVE']
+          if len(fs)!=1:
+              raise RuntimeError(f'expected one ACTIVE Birzha TEST folder, got {len(fs)}')
+          folder_id=fs[0]['id']
+
+          list_url='https://ydb.api.cloud.yandex.net/ydb/v1/databases?'+urllib.parse.urlencode({'folderId':folder_id,'pageSize':1000})
+          with urllib.request.urlopen(urllib.request.Request(list_url,headers=headers),timeout=30) as response:
+              databases=json.loads(response.read()).get('databases',[])
+          ds=[x for x in databases if x.get('name')==db_name and x.get('id')==expected_id]
+          if len(ds)!=1:
+              raise RuntimeError(f'expected exact Birzha YDB {expected_id}, got {len(ds)}')
+          current=ds[0]
+          status=current.get('status')
+          print(f'YDB_PRECHECK=PASS id={expected_id} name={db_name} status={status}')
+
+          if status == 'RUNNING':
+              print('YDB_START=ALREADY_RUNNING')
+          elif status == 'STOPPED':
+              url=f'https://ydb.api.cloud.yandex.net/ydb/v1/databases/{expected_id}:start'
+              req=urllib.request.Request(url, data=b'{}', headers=headers, method='POST')
+              with urllib.request.urlopen(req, timeout=30) as response:
+                  op=json.loads(response.read() or b'{}')
+              print('YDB_START_REQUEST=ACCEPTED operation_id='+str(op.get('id','')))
+          else:
+              raise RuntimeError(f'unsafe YDB status for start: {status}')
+
+          get_url=f'https://ydb.api.cloud.yandex.net/ydb/v1/databases/{expected_id}'
+          final=None
+          for _ in range(60):
+              with urllib.request.urlopen(urllib.request.Request(get_url,headers=headers),timeout=30) as response:
+                  db=json.loads(response.read())
+              final=db.get('status')
+              if final == 'RUNNING':
+                  endpoint=str(db.get('endpoint') or '')
+                  if not endpoint.startswith('grpcs://') or 'database=' not in endpoint:
+                      raise RuntimeError('RUNNING YDB returned malformed endpoint')
+                  print('YDB_START=PASS status=RUNNING')
+                  break
+              if final not in ('STARTING','STOPPED'):
+                  raise RuntimeError(f'unexpected YDB status while starting: {final}')
+              time.sleep(5)
+          else:
+              raise RuntimeError(f'YDB did not reach RUNNING; final={final}')
+          PY
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yandex-iam-token"
+          echo 'EPHEMERAL_CREDENTIAL_CLEANUP=PASS'
