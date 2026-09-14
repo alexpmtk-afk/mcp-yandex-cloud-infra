@@ -11,6 +11,7 @@ permissions:
 
 env:
   APP_SHA: 926d9060eac6b8efb77924c77aa4cfee41bc26d3
+  YDB_CONNECTION_STRING: grpcs://ydb.serverless.yandexcloud.net:2135/?database=/ru-central1/b1gi4pr9msenirafh2c7/etnes7omhgut11oulsd5
 
 jobs:
   audit:
@@ -32,12 +33,6 @@ jobs:
           path: app
           fetch-depth: 1
           persist-credentials: false
-
-      - name: Setup Terraform
-        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
-        with:
-          terraform_version: "1.9.8"
-          terraform_wrapper: false
 
       - name: Mint ephemeral Yandex IAM token
         shell: bash
@@ -64,28 +59,6 @@ jobs:
           p=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'
           p.write_text(token); p.chmod(0o600)
           print('YANDEX_IAM_TOKEN=PASS')
-          PY
-
-      - name: Read YDB coordinate from remote state
-        shell: bash
-        env:
-          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
-          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
-        run: |
-          set -euo pipefail
-          terraform -chdir=infra/terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
-            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
-            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
-          terraform -chdir=infra/terraform/birzha_test output -json > "$RUNNER_TEMP/birzha-outputs.json"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-outputs.json').read_text())
-          value=d['ydb_connection_string']['value']
-          assert value
-          with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f:
-              f.write('YDB_CONNECTION_STRING='+value+'\n')
-          print('YDB_COORDINATE=PASS')
           PY
 
       - name: Install exact application source
@@ -170,5 +143,5 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yandex-iam-token" "$RUNNER_TEMP/birzha-outputs.json"
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yandex-iam-token"
           echo 'EPHEMERAL_CREDENTIAL_CLEANUP=PASS'
