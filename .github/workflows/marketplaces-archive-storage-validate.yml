@@ -117,7 +117,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          BODY="$(curl -fsSL --max-time 30 "$DRIVE_BRIDGE_URL")"
+          BODY=''
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            if BODY="$(curl -fsSL --connect-timeout 10 --max-time 30 "$DRIVE_BRIDGE_URL")"; then
+              ok=1
+              break
+            fi
+            echo "Apps Script probe transient failure; retry $attempt/5"
+            [[ "$attempt" -lt 5 ]]
+            sleep $((attempt * 3))
+          done
+          test "$ok" = 1
           printf '%s' "$BODY" > "$RUNNER_TEMP/bridge-health.json"
           python - <<'PY'
           import json, os
