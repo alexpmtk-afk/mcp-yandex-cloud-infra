@@ -20,7 +20,7 @@ jobs:
   configure:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 10
+    timeout-minutes: 12
     steps:
       - name: Checkout infrastructure
         uses: actions/checkout@v4
@@ -155,6 +155,9 @@ jobs:
             --no-user-output >/dev/null
           echo 'granted=true' >> "$GITHUB_OUTPUT"
           echo 'TEMP_LOCKBOX_EDITOR=GRANTED'
+          # Secret-level IAM is eventually consistent. Give the binding time to
+          # propagate before the first version-write attempt.
+          sleep 12
 
       - name: Create new Lockbox version from current version
         if: steps.transform.outputs.change_required == 'true'
@@ -165,12 +168,22 @@ jobs:
           BASE_VERSION_ID: ${{ steps.secret.outputs.base_version_id }}
         run: |
           set -euo pipefail
-          cat "$RUNNER_TEMP/lockbox-change.json" | timeout 60s yc lockbox secret add-version \
-            --id "$SECRET_ID" \
-            --base-version-id "$BASE_VERSION_ID" \
-            --description 'Add logical wb_ads service using existing Promotion-enabled WB personal tokens' \
-            --payload - \
-            --format json --no-user-output > "$RUNNER_TEMP/new-version.json"
+          ok=0
+          for attempt in $(seq 1 6); do
+            rm -f "$RUNNER_TEMP/new-version.json"
+            if cat "$RUNNER_TEMP/lockbox-change.json" | timeout 60s yc lockbox secret add-version \
+              --id "$SECRET_ID" \
+              --base-version-id "$BASE_VERSION_ID" \
+              --description 'Add logical wb_ads service using existing Promotion-enabled WB personal tokens' \
+              --payload - \
+              --format json --no-user-output > "$RUNNER_TEMP/new-version.json"; then
+              ok=1
+              break
+            fi
+            echo "lockbox add-version propagation retry $attempt/6"
+            sleep 6
+          done
+          test "$ok" = 1
           NEW_VERSION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/new-version.json")"
           test -n "$NEW_VERSION_ID"
           STATUS="$(jq -r '.status//empty' "$RUNNER_TEMP/new-version.json")"
