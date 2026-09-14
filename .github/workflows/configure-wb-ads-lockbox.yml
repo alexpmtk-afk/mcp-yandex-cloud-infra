@@ -140,7 +140,7 @@ jobs:
             echo 'change_required=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Grant temporary TEST-folder Lockbox admin to deployer
+      - name: Grant temporary TEST-folder admin to deployer
         if: steps.transform.outputs.change_required == 'true'
         id: grant
         shell: bash
@@ -150,10 +150,10 @@ jobs:
         run: |
           set -euo pipefail
           timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" \
-            --role lockbox.admin \
+            --role admin \
             --service-account-id "$DEPLOYER_ID"
           echo 'granted=true' >> "$GITHUB_OUTPUT"
-          echo 'TEMP_TEST_FOLDER_LOCKBOX_ADMIN=GRANTED'
+          echo 'TEMP_TEST_FOLDER_ADMIN=GRANTED'
           sleep 20
 
       - name: Create new Lockbox version from current version
@@ -226,7 +226,7 @@ jobs:
           print('CRITICAL_LOCKBOX_KEYS_PRESERVED=PASS')
           PY
 
-      - name: Revoke temporary TEST-folder Lockbox admin
+      - name: Revoke temporary TEST-folder admin
         if: always() && steps.grant.outputs.granted == 'true'
         shell: bash
         env:
@@ -235,9 +235,9 @@ jobs:
         run: |
           set -euo pipefail
           timeout 90s yc resource-manager folder remove-access-binding "$FOLDER_ID" \
-            --role lockbox.admin \
+            --role admin \
             --service-account-id "$DEPLOYER_ID"
-          echo 'TEMP_TEST_FOLDER_LOCKBOX_ADMIN=REVOKED'
+          echo 'TEMP_TEST_FOLDER_ADMIN=REVOKED'
 
       - name: Cleanup ephemeral credentials
         if: always()
