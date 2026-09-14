@@ -11,6 +11,7 @@ on:
 permissions:
   contents: read
 
+# Serialized with all Marketplaces TEST runtime writes to avoid observing a secret during another mutation.
 concurrency:
   group: marketplaces-test-runtime-write
   cancel-in-progress: false
@@ -69,7 +70,8 @@ jobs:
           secret = json.loads((root/'secret.json').read_text())
           access = json.loads((root/'access.json').read_text())
           versions = json.loads((root/'versions.json').read_text())
-          deployer = json.loads((root/'yc-service-account-key.json').read_text()).get('service_account_id') or json.loads((root/'yc-service-account-key.json').read_text()).get('serviceAccountId')
+          key_data = json.loads((root/'yc-service-account-key.json').read_text())
+          deployer = key_data.get('service_account_id') or key_data.get('serviceAccountId')
 
           kms = secret.get('kms_key_id') or secret.get('kmsKeyId') or ''
           print('LOCKBOX_SECRET_STATUS=' + str(secret.get('status') or ''))
@@ -77,7 +79,7 @@ jobs:
           print('LOCKBOX_CUSTOM_KMS=' + ('YES' if kms else 'NO'))
           if kms:
               print('LOCKBOX_KMS_KEY_PRESENT=YES')
-          bindings = access.get('access_bindings') or access.get('accessBindings') or access if isinstance(access, list) else []
+          bindings = access.get('access_bindings') or access.get('accessBindings') or (access if isinstance(access, list) else [])
           roles = []
           for b in bindings:
               subj = b.get('subject') or {}
