@@ -1,0 +1,136 @@
+name: BIRZHA YDB Self-Heal
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '17 * * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-ydb-self-heal
+  cancel-in-progress: false
+
+jobs:
+  self-heal:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    env:
+      CLOUD_ID: b1gi4pr9msenirafh2c7
+      FOLDER_ID: b1g00gqb66tbnfoumnkv
+      YDB_ID: etnes7omhgut11oulsd5
+      RUNTIME_ID: ajegcsoflha6k57q640h
+      EXPECTED_DEPLOYER_ID: ajecdjjrkdo1t3itpl9k
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/yc.tgz" \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate exact infra deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test "$DEPLOYER_ID" = "$EXPECTED_DEPLOYER_ID"
+          yc config profile create birzha-ydb-self-heal || true
+          yc config set service-account-key "$KEY_FILE"
+          IAM_TOKEN="$(yc iam create-token)"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          printf '%s' "$IAM_TOKEN" > "$RUNNER_TEMP/iam-token"
+          chmod 600 "$RUNNER_TEMP/iam-token"
+          echo 'SELF_HEAL_AUTH=PASS'
+
+      - name: Verify immutable coordinates and runtime binding
+        shell: bash
+        run: |
+          set -euo pipefail
+          DB="$(yc ydb database get --id "$YDB_ID" --format json)"
+          test "$(jq -r '.name' <<< "$DB")" = 'birzha-mcp-forecast-state'
+          test "$(jq -r '.folder_id // .folderId' <<< "$DB")" = "$FOLDER_ID"
+          SA_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-runtime")|.id' | head -1)"
+          test "$SA_ID" = "$RUNTIME_ID"
+          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/ydb-access.json"
+          jq -e --arg sid "$RUNTIME_ID" '.[]? | select(.role_id=="ydb.editor" and (.subject.id // "")==$sid)' "$RUNNER_TEMP/ydb-access.json" >/dev/null
+          echo "SELF_HEAL_PRECHECK=PASS status=$(jq -r '.status' <<< "$DB")"
+
+      - name: Detect active billing cloud block
+        id: billing
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 4 \
+            -H "Authorization: Bearer $TOKEN" \
+            "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds/${CLOUD_ID}/operations?pageSize=100" \
+            -o "$RUNNER_TEMP/cloud-operations.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'cloud-operations.json'
+          ops=json.loads(p.read_text()).get('operations',[])
+          relevant=[o for o in ops if o.get('description') in {'Block clouds','Unblock clouds'}]
+          relevant.sort(key=lambda x:x.get('createdAt',''), reverse=True)
+          latest=relevant[0] if relevant else None
+          blocked=bool(latest and latest.get('description')=='Block clouds')
+          if latest:
+              print(f"BILLING_CLOUD_EVENT={latest.get('description')} at={latest.get('createdAt')} by={latest.get('createdBy')}")
+          else:
+              print('BILLING_CLOUD_EVENT=NONE_FOUND')
+          with open(os.environ['GITHUB_OUTPUT'],'a',encoding='utf-8') as f:
+              f.write('blocked=' + ('true' if blocked else 'false') + '\n')
+          PY
+
+      - name: Record external billing block without destructive retries
+        if: steps.billing.outputs.blocked == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
+          echo "BIRZHA_YDB_SELF_HEAL=BILLING_BLOCK_ACTIVE ydb_status=$STATUS action=DEFER_UNTIL_UNBLOCK"
+          echo 'No IAM mutation attempted.'
+
+      - name: Start stopped YDB through existing runtime identity
+        if: steps.billing.outputs.blocked != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
+          if [[ "$STATUS" == 'STOPPED' ]]; then
+            yc ydb database start --id "$YDB_ID" --impersonate-service-account-id "$RUNTIME_ID"
+          elif [[ "$STATUS" != 'RUNNING' && "$STATUS" != 'STARTING' ]]; then
+            echo "BIRZHA_YDB_SELF_HEAL=UNEXPECTED_STATUS status=$STATUS" >&2
+            exit 1
+          fi
+          for attempt in $(seq 1 36); do
+            FINAL="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
+            echo "SELF_HEAL_STATUS attempt=$attempt status=$FINAL"
+            if [[ "$FINAL" == 'RUNNING' ]]; then
+              echo 'BIRZHA_YDB_SELF_HEAL=PASS status=RUNNING'
+              exit 0
+            fi
+            [[ "$FINAL" == 'STARTING' || "$FINAL" == 'STOPPED' ]]
+            sleep 5
+          done
+          echo 'BIRZHA_YDB_SELF_HEAL=FAIL did_not_reach_RUNNING' >&2
+          exit 1
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/ydb-access.json" "$RUNNER_TEMP/cloud-operations.json"
