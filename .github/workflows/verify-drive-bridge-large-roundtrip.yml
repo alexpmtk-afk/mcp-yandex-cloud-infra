@@ -1,0 +1,124 @@
+name: Verify Drive Bridge Large Roundtrip
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - control/run-drive-bridge-large-roundtrip.txt
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install Yandex Cloud CLI and httpx
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=30 --tries=3 -O "$RUNNER_TEMP/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+
+      - name: Resolve live bridge secret
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create bridge-large-roundtrip || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BRIDGE="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BRIDGE"
+          echo "::add-mask::$BRIDGE"
+          printf '%s' "$BRIDGE" > "$RUNNER_TEMP/bridge-secret"
+          chmod 600 "$RUNNER_TEMP/bridge-secret"
+          echo 'SECRET=PASS'
+
+      - name: Large Drive read-write-read exact SHA256 roundtrip
+        shell: bash
+        env:
+          DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+        run: |
+          set -euo pipefail
+          export BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
+          python -u - <<'PY'
+          import base64,hashlib,json,os,time
+          import httpx
+
+          url=os.environ['DRIVE_BRIDGE_URL']
+          secret=os.environ['BRIDGE_SECRET']
+          source_path='База данных/WB/wb_novokshenov/2026/finance/weekly/main'
+          source_name='wb_novokshenov__weekly_main__2026.csv'
+          test_path='app/diagnostics/bridge-roundtrip'
+          test_name='wb_novokshenov__weekly_main__2026__roundtrip_test.csv'
+          expected_size=16159972
+          expected_sha='ff006ba6114dc28149fb2d5432844cae0bdfac0af1f7ec95166256cba8ae9688'
+
+          timeout=httpx.Timeout(connect=20,read=300,write=300,pool=20)
+          with httpx.Client(timeout=timeout,follow_redirects=True) as c:
+              def post(action,**extra):
+                  t=time.monotonic()
+                  r=c.post(url,json={'secret':secret,'action':action,**extra},headers={'Accept':'application/json'})
+                  dt=time.monotonic()-t
+                  r.raise_for_status()
+                  d=r.json()
+                  if d.get('ok') is not True:
+                      raise RuntimeError((action,d))
+                  print(f'{action.upper()}_SECONDS={dt:.3f}',flush=True)
+                  return d
+
+              src=post('read',path=source_path,filename=source_name)
+              assert src.get('found') is True
+              raw=base64.b64decode(src.get('content_base64',''),validate=True)
+              source_sha=hashlib.sha256(raw).hexdigest()
+              print(f'SOURCE_BYTES={len(raw)}')
+              print(f'SOURCE_SHA256={source_sha}')
+              assert len(raw)==expected_size, (len(raw),expected_size)
+              assert source_sha==expected_sha, (source_sha,expected_sha)
+
+              written=post(
+                  'write',
+                  path=test_path,
+                  filename=test_name,
+                  mime_type='text/csv',
+                  content_base64=base64.b64encode(raw).decode('ascii'),
+                  sha256=source_sha,
+              )
+              wf=written.get('file') or {}
+              print('TEST_FILE_ID='+str(wf.get('id')))
+              print('TEST_FILE_SIZE='+str(wf.get('size')))
+              print('WRITE_SHA256='+str(written.get('sha256')))
+
+              back=post('read',path=test_path,filename=test_name)
+              assert back.get('found') is True
+              returned=base64.b64decode(back.get('content_base64',''),validate=True)
+              returned_sha=hashlib.sha256(returned).hexdigest()
+              print(f'RETURN_BYTES={len(returned)}')
+              print(f'RETURN_SHA256={returned_sha}')
+              print('BYTE_EXACT_MATCH='+str(returned==raw))
+              assert len(returned)==expected_size
+              assert returned_sha==source_sha
+              assert returned==raw
+              print('LARGE_ROUNDTRIP=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bridge-secret"
