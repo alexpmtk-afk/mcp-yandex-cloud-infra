@@ -47,7 +47,7 @@ jobs:
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Grant repository-scoped pusher and prove data-plane push
+      - name: Open TEST registry IP policy and prove data-plane push
         shell: bash
         run: |
           set -euo pipefail
@@ -59,6 +59,12 @@ jobs:
           test -n "$REGISTRY_ID"
           TARGET_REPO_ID="$(timeout 45s yc container repository list --registry-id "$REGISTRY_ID" --format json | jq -r --arg n "$REGISTRY_ID/marketplaces-mcp" '.[]|select(.name==$n)|.id'|head -1)"
           test -n "$TARGET_REPO_ID"
+
+          timeout 90s yc container registry set-ip-permissions "$REGISTRY_ID" \
+            --pull 0.0.0.0/0 \
+            --push 0.0.0.0/0 \
+            --yes
+          echo 'test_registry_ip_policy=ALLOW_ALL_IPS_WITH_IAM'
 
           timeout 90s yc container repository add-access-binding "$TARGET_REPO_ID" \
             --role container-registry.images.pusher \
@@ -72,13 +78,13 @@ jobs:
           printf '%s' "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
           unset IAM_TOKEN
 
-          PROBE_TAG="repo-scope-probe-${GITHUB_SHA}"
+          PROBE_TAG="ip-policy-probe-${GITHUB_SHA}"
           IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:${PROBE_TAG}"
           mkdir -p "$RUNNER_TEMP/registry-probe"
-          printf 'FROM scratch\nLABEL purpose="marketplaces-test-repository-pusher-probe"\n' > "$RUNNER_TEMP/registry-probe/Dockerfile"
+          printf 'FROM scratch\nLABEL purpose="marketplaces-test-registry-ip-policy-probe"\n' > "$RUNNER_TEMP/registry-probe/Dockerfile"
           docker build --tag "$IMAGE" "$RUNNER_TEMP/registry-probe"
           docker push "$IMAGE"
-          echo 'repository_scoped_pusher_docker_push=PASS'
+          echo 'test_registry_data_plane_push=PASS'
 
       - name: Dispatch existing TEST deploy
         shell: bash
