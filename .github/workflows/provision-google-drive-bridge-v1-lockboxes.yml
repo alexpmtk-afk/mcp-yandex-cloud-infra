@@ -88,8 +88,13 @@ jobs:
             runtime_sa_id="$(timeout 45s yc iam service-account list --folder-id "$folder_id" --format json | jq -r --arg n "$runtime_sa_name" '.[]|select(.name==$n)|.id' | head -1)"
             test -n "$runtime_sa_id"
 
-            if ! timeout 45s yc lockbox secret list-access-bindings --id "$secret_id" --format json \
-              | jq -e --arg member "serviceAccount:$runtime_sa_id" '.[]? | select(.role_id=="lockbox.payloadViewer") | .subjects[]? | select(.id==$member or ("serviceAccount:" + .id)==$member)' >/dev/null 2>&1; then
+            ACCESS_JSON="$RUNNER_TEMP/access-$secret_id.json"
+            timeout 45s yc lockbox secret list-access-bindings --id "$secret_id" --format json > "$ACCESS_JSON"
+            if ! jq -e --arg sid "$runtime_sa_id" '
+              ((.access_bindings // .)[]?)
+              | select(.role_id=="lockbox.payloadViewer")
+              | select((.subject.id // "") == $sid)
+            ' "$ACCESS_JSON" >/dev/null 2>&1; then
               timeout 60s yc lockbox secret add-access-binding \
                 --id "$secret_id" \
                 --role lockbox.payloadViewer \
@@ -118,4 +123,4 @@ jobs:
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz"
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP"/access-*.json
