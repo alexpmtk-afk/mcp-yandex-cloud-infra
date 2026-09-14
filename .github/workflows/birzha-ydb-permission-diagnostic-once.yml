@@ -1,4 +1,4 @@
-name: BIRZHA YDB Billing Suspension Diagnostic
+name: BIRZHA YDB Root Cause Diagnostic
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate diagnostic identity
+      - name: Authenticate diagnostic identity and mint IAM token
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -35,8 +35,13 @@ jobs:
           chmod 600 "$KEY_FILE"
           DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
           test "$DEPLOYER_ID" = 'ajecdjjrkdo1t3itpl9k'
-          yc config profile create birzha-ydb-billing-diag || true
+          yc config profile create birzha-ydb-root-cause || true
           yc config set service-account-key "$KEY_FILE"
+          IAM_TOKEN="$(yc iam create-token)"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          printf '%s' "$IAM_TOKEN" > "$RUNNER_TEMP/iam-token"
+          chmod 600 "$RUNNER_TEMP/iam-token"
           echo 'YC_AUTH=PASS'
 
       - name: Inspect exact cloud folder and YDB state
@@ -50,53 +55,65 @@ jobs:
           yc resource-manager cloud get "$CLOUD_ID" --format json > "$RUNNER_TEMP/cloud.json"
           yc resource-manager folder get "$FOLDER_ID" --format json > "$RUNNER_TEMP/folder.json"
           yc ydb database get --id "$YDB_ID" --format json > "$RUNNER_TEMP/db.json"
-          echo "CLOUD_STATUS=$(jq -r '.status // "UNSET"' "$RUNNER_TEMP/cloud.json")"
           echo "FOLDER_STATUS=$(jq -r '.status // "UNSET"' "$RUNNER_TEMP/folder.json")"
           echo "YDB_STATUS=$(jq -r '.status // "UNSET"' "$RUNNER_TEMP/db.json")"
           echo "YDB_TYPE=$(jq -r 'if .serverless_database then "SERVERLESS" elif .dedicated_database then "DEDICATED" else "UNKNOWN" end' "$RUNNER_TEMP/db.json")"
-          echo "YDB_DELETION_PROTECTION=$(jq -r '.deletion_protection // .deletionProtection // "UNSET"' "$RUNNER_TEMP/db.json")"
-          jq -c '{id,name,status,folder_id,created_at,serverless_database,labels}' "$RUNNER_TEMP/db.json" || true
+          echo "YDB_CREATED_AT=$(jq -r '.created_at // .createdAt // "UNSET"' "$RUNNER_TEMP/db.json")"
 
-      - name: Inspect billing visibility and status
+      - name: Query Billing REST API directly
         shell: bash
         run: |
           set -euo pipefail
-          set +e
-          yc billing account list --format json > "$RUNNER_TEMP/billing.json" 2> "$RUNNER_TEMP/billing.err"
-          RC=$?
-          set -e
-          echo "BILLING_LIST_RC=$RC"
-          if [[ "$RC" -eq 0 ]]; then
-            jq -c '.[]? | {id,name,status,country_code,currency}' "$RUNNER_TEMP/billing.json" || true
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          CODE="$(curl --proto '=https' --tlsv1.2 --silent --show-error --connect-timeout 15 --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -o "$RUNNER_TEMP/billing-rest.json" -w '%{http_code}' \
+            'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts' || true)"
+          echo "BILLING_REST_HTTP=$CODE"
+          if [[ "$CODE" == '200' ]]; then
+            jq -c '.billingAccounts[]? | {id,name,active,balance,currency,countryCode}' "$RUNNER_TEMP/billing-rest.json" || true
           else
-            sed -n '1,8p' "$RUNNER_TEMP/billing.err"
+            jq -c '.' "$RUNNER_TEMP/billing-rest.json" 2>/dev/null || head -c 1000 "$RUNNER_TEMP/billing-rest.json" || true
           fi
 
-      - name: Recheck access policy visibility
+      - name: Query YDB database operation history
+        shell: bash
+        env:
+          YDB_ID: etnes7omhgut11oulsd5
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          CODE="$(curl --proto '=https' --tlsv1.2 --silent --show-error --connect-timeout 15 --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -o "$RUNNER_TEMP/ydb-ops.json" -w '%{http_code}' \
+            "https://ydb.api.cloud.yandex.net/ydb/v1/databases/${YDB_ID}/operations?pageSize=100" || true)"
+          echo "YDB_OPERATIONS_HTTP=$CODE"
+          if [[ "$CODE" == '200' ]]; then
+            jq -c '.operations[]? | {id,description,createdAt,createdBy,modifiedAt,done,error,metadata}' "$RUNNER_TEMP/ydb-ops.json" | head -100 || true
+          else
+            jq -c '.' "$RUNNER_TEMP/ydb-ops.json" 2>/dev/null || head -c 1000 "$RUNNER_TEMP/ydb-ops.json" || true
+          fi
+
+      - name: Query recent cloud operations
         shell: bash
         env:
           CLOUD_ID: b1gi4pr9msenirafh2c7
-          FOLDER_ID: b1g00gqb66tbnfoumnkv
         run: |
           set -euo pipefail
-          ORG_ID="$(jq -r '.organization_id // .organizationId // empty' "$RUNNER_TEMP/cloud.json")"
-          echo "ORG_ID=$ORG_ID"
-          for scope in cloud folder org; do
-            case "$scope" in
-              cloud) CMD=(yc resource-manager cloud list-access-policy-bindings "$CLOUD_ID" --format json) ;;
-              folder) CMD=(yc resource-manager folder list-access-policy-bindings "$FOLDER_ID" --format json) ;;
-              org) CMD=(yc organization-manager organization list-access-policy-bindings --id "$ORG_ID" --format json) ;;
-            esac
-            set +e
-            "${CMD[@]}" > "$RUNNER_TEMP/${scope}-policies.json" 2> "$RUNNER_TEMP/${scope}-policies.err"
-            RC=$?
-            set -e
-            echo "${scope^^}_POLICY_RC=$RC"
-            if [[ "$RC" -eq 0 ]]; then jq -c '.[]?' "$RUNNER_TEMP/${scope}-policies.json" || true; else sed -n '1,5p' "$RUNNER_TEMP/${scope}-policies.err"; fi
-          done
-          echo 'DIAGNOSTIC_ONLY=PASS'
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          CODE="$(curl --proto '=https' --tlsv1.2 --silent --show-error --connect-timeout 15 --max-time 30 \
+            -H "Authorization: Bearer $TOKEN" \
+            -o "$RUNNER_TEMP/cloud-ops.json" -w '%{http_code}' \
+            "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds/${CLOUD_ID}/operations?pageSize=100" || true)"
+          echo "CLOUD_OPERATIONS_HTTP=$CODE"
+          if [[ "$CODE" == '200' ]]; then
+            jq -c '.operations[]? | {description,createdAt,createdBy,done,error,metadata}' "$RUNNER_TEMP/cloud-ops.json" | head -100 || true
+          else
+            jq -c '.' "$RUNNER_TEMP/cloud-ops.json" 2>/dev/null || true
+          fi
+          echo 'ROOT_CAUSE_DIAGNOSTIC=PASS'
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP"/*.json "$RUNNER_TEMP"/*.err
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP"/*.json
