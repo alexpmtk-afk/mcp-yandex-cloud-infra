@@ -5,7 +5,6 @@ on:
     paths:
       - 'shared/google-drive-bridge/**'
       - 'tools/bootstrap_bridge_v1_apps_script.py'
-      - 'scripts/patch_bridge_v1_*'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
       - '.github/workflows/*drive-bridge-v1*'
@@ -18,7 +17,6 @@ on:
     paths:
       - 'shared/google-drive-bridge/**'
       - 'tools/bootstrap_bridge_v1_apps_script.py'
-      - 'scripts/patch_bridge_v1_*'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
       - '.github/workflows/*drive-bridge-v1*'
@@ -43,9 +41,7 @@ jobs:
             shared/google-drive-bridge/scripts/acceptance.py \
             shared/google-drive-bridge/scripts/sheets_acceptance.py \
             shared/google-drive-bridge/scripts/cross_project_acceptance.py \
-            tools/bootstrap_bridge_v1_apps_script.py \
-            scripts/patch_bridge_v1_source_once.py \
-            scripts/patch_bridge_v1_workflows_once.py
+            tools/bootstrap_bridge_v1_apps_script.py
       - run: pytest -q shared/google-drive-bridge/tests
 
   static-contract:
@@ -70,31 +66,34 @@ jobs:
         run: |
           set -euo pipefail
           f='shared/google-drive-bridge/bridge.gs'
-          grep -Fq "MCP_DRIVE_BRIDGE_PROJECT_ID" "$f"
-          grep -Fq "MCP_DRIVE_BRIDGE_ROOT_ID" "$f"
-          grep -Fq "PROJECT_MISMATCH" "$f"
-          grep -Fq "SHORTCUT_FORBIDDEN" "$f"
-          grep -Fq "idempotency_key" "$f"
-          grep -Fq "resumable_start" "$f"
-          grep -Fq "large_download_start" "$f"
-          grep -Fq "large_download_poll" "$f"
-          grep -Fq "drive_files_download_lro" "$f"
-          grep -Fq "sheet_write_chunk" "$f"
-          grep -Fq "injected.secret" "$f"
-          if grep -Fq "getScriptLock(); lock.waitLock" "$f"; then
+          grep -Fq 'MCP_DRIVE_BRIDGE_PROJECT_ID' "$f"
+          grep -Fq 'MCP_DRIVE_BRIDGE_ROOT_ID' "$f"
+          grep -Fq 'PROJECT_MISMATCH' "$f"
+          grep -Fq 'SHORTCUT_FORBIDDEN' "$f"
+          grep -Fq 'idempotency_key' "$f"
+          grep -Fq 'resumable_start' "$f"
+          grep -Fq 'large_download_start' "$f"
+          grep -Fq 'large_download_poll' "$f"
+          grep -Fq 'drive_files_download_lro' "$f"
+          grep -Fq 'sheet_write_chunk' "$f"
+          grep -Fq 'injected.secret' "$f"
+          if grep -Fq 'getScriptLock(); lock.waitLock' "$f"; then
             echo 'Global whole-request ScriptLock pattern is forbidden'
             exit 1
           fi
           echo 'BRIDGE_STATIC_CONTRACT=PASS'
 
-      - name: Prove secrets are not committed
+      - name: Prove secret values are not committed
         shell: bash
         run: |
           set -euo pipefail
           for f in shared/google-drive-bridge/deploy/*_config.gs; do
             grep -Fq "secret: ''" "$f"
           done
-          ! grep -R --line-number -E "gdrive_bridge_v1_secret['\"]?[[:space:]]*[:=][[:space:]]*['\"][A-Za-z0-9_-]{20,}" shared tools scripts .github terraform || false
+          if grep -R --line-number -E "gdrive_bridge_v1_secret['\"]?[[:space:]]*[:=][[:space:]]*['\"][A-Za-z0-9_-]{20,}" shared tools .github terraform; then
+            echo 'Potential committed Bridge v1 secret value detected' >&2
+            exit 1
+          fi
           echo 'BRIDGE_COMMITTED_SECRET_VALUES=NONE'
 
       - name: Validate project Lockbox isolation and joint acceptance
