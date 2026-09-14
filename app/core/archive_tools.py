@@ -11,6 +11,7 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .archive_queue import WBFinanceArchiveJobQueue
+from .archive_resumable_diagnostic import WBFinanceResumableDiagnostic
 from .archive_resumable_worker import WBFinanceResumableWorker
 from .wb_finance_archive import ARCHIVE_CABINETS, WBFinanceArchiveManager
 
@@ -136,12 +137,7 @@ def register_archive_tools(mcp: FastMCP, modules: dict[str, Any], store: Any | N
         annotations={"title": "Process one durable archive queue step", "readOnlyHint": False, "openWorldHint": True},
     )
     async def marketplace_archive_worker_step(job_id: str = "") -> str:
-        """Run one bounded durable archive step.
-
-        Provider download stages perform at most one WB API request. Large
-        annual-file writes use one Google Drive resumable-upload chunk per step,
-        so an interrupted connection never requires resending the full annual CSV.
-        """
+        """Run one bounded durable archive step."""
         if store is None:
             return _not_configured()
         queue = WBFinanceArchiveJobQueue(wb, store)
@@ -149,10 +145,33 @@ def register_archive_tools(mcp: FastMCP, modules: dict[str, Any], store: Any | N
         return _j(await worker.worker_step(job_id))
 
     @mcp.tool(
+        name="marketplace_archive_resumable_diagnostic_step",
+        annotations={
+            "title": "Verify existing archive candidate through temporary Drive resumable copy",
+            "readOnlyHint": False,
+            "destructiveHint": False,
+            "openWorldHint": True,
+        },
+    )
+    async def marketplace_archive_resumable_diagnostic_step(job_id: str) -> str:
+        """Upload only a temporary copy of an existing PREPARE candidate.
+
+        This diagnostic never advances completed_count, never calls WB, never
+        repeats PREPARE, and never overwrites the canonical annual filename.
+        After exact Drive size/SHA256 verification the temporary copy is trashed.
+        """
+        if store is None:
+            return _not_configured()
+        queue = WBFinanceArchiveJobQueue(wb, store)
+        diagnostic = WBFinanceResumableDiagnostic(queue, store)
+        return _j(await diagnostic.step(job_id))
+
+    @mcp.tool(
         name="marketplace_archive_job_status",
         annotations={"title": "Durable archive job status", "readOnlyHint": True, "openWorldHint": False},
     )
     async def marketplace_archive_job_status(job_id: str) -> str:
+        """Show persisted progress for an archive queue job."""
         if store is None:
             return _not_configured()
         queue = WBFinanceArchiveJobQueue(wb, store)
@@ -163,6 +182,7 @@ def register_archive_tools(mcp: FastMCP, modules: dict[str, Any], store: Any | N
         annotations={"title": "Marketplace archive status", "readOnlyHint": True, "openWorldHint": False},
     )
     async def marketplace_archive_status(year: int = date.today().year) -> str:
+        """Show central WB archive coverage and canonical annual-file state."""
         if store is None:
             return _not_configured()
         manager = WBFinanceArchiveManager(wb, store)
@@ -173,6 +193,7 @@ def register_archive_tools(mcp: FastMCP, modules: dict[str, Any], store: Any | N
         annotations={"title": "Query WB annual archive", "readOnlyHint": True, "openWorldHint": False},
     )
     async def marketplace_archive_query(year: int, sql: str) -> str:
+        """Run safe read-only SQL over canonical annual WB CSV files on Drive."""
         if store is None:
             return _not_configured()
         return _j(await _query_year(store, int(year), sql))
