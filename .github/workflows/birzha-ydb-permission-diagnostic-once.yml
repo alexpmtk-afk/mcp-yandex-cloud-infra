@@ -1,4 +1,4 @@
-name: BIRZHA YDB Permission Diagnostic Once
+name: BIRZHA YDB Billing Suspension Diagnostic
 
 on:
   push:
@@ -24,7 +24,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate read-only diagnostic identity
+      - name: Authenticate diagnostic identity
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -34,95 +34,67 @@ jobs:
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
           DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
-          test -n "$DEPLOYER_ID"
-          echo "DEPLOYER_ID=$DEPLOYER_ID" >> "$GITHUB_ENV"
-          yc config profile create birzha-ydb-permission-diag || true
+          test "$DEPLOYER_ID" = 'ajecdjjrkdo1t3itpl9k'
+          yc config profile create birzha-ydb-billing-diag || true
           yc config set service-account-key "$KEY_FILE"
           echo 'YC_AUTH=PASS'
 
-      - name: Resolve exact live identities
+      - name: Inspect exact cloud folder and YDB state
         shell: bash
         env:
           CLOUD_ID: b1gi4pr9msenirafh2c7
-          FOLDER_NAME: birzha-mcp-forecast-test
-          EXPECTED_FOLDER_ID: b1g00gqb66tbnfoumnkv
+          FOLDER_ID: b1g00gqb66tbnfoumnkv
           YDB_ID: etnes7omhgut11oulsd5
         run: |
           set -euo pipefail
           yc resource-manager cloud get "$CLOUD_ID" --format json > "$RUNNER_TEMP/cloud.json"
-          ORG_ID="$(jq -r '.organization_id // .organizationId // empty' "$RUNNER_TEMP/cloud.json")"
-          test -n "$ORG_ID"
-          echo "ORG_ID=$ORG_ID" >> "$GITHUB_ENV"
-          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$FOLDER_NAME" '.[]|select(.name==$n and .status=="ACTIVE")|.id' | head -1)"
-          test "$FOLDER_ID" = "$EXPECTED_FOLDER_ID"
-          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
-          yc iam service-account list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/service-accounts.json"
-          PREPARER_ID="$(jq -r '.[]|select(.name=="birzha-mcp-forecast-historical-preparer")|.id' "$RUNNER_TEMP/service-accounts.json" | head -1)"
-          RUNTIME_ID="$(jq -r '.[]|select(.name=="birzha-mcp-forecast-runtime")|.id' "$RUNNER_TEMP/service-accounts.json" | head -1)"
-          test -n "$PREPARER_ID"
-          test -n "$RUNTIME_ID"
-          echo "PREPARER_ID=$PREPARER_ID" >> "$GITHUB_ENV"
-          echo "RUNTIME_ID=$RUNTIME_ID" >> "$GITHUB_ENV"
+          yc resource-manager folder get "$FOLDER_ID" --format json > "$RUNNER_TEMP/folder.json"
           yc ydb database get --id "$YDB_ID" --format json > "$RUNNER_TEMP/db.json"
-          test "$(jq -r '.name' "$RUNNER_TEMP/db.json")" = 'birzha-mcp-forecast-state'
-          echo "COORDINATES=PASS org=$ORG_ID folder=$FOLDER_ID preparer=$PREPARER_ID runtime=$RUNTIME_ID deployer=$DEPLOYER_ID status=$(jq -r '.status' "$RUNNER_TEMP/db.json")"
+          echo "CLOUD_STATUS=$(jq -r '.status // "UNSET"' "$RUNNER_TEMP/cloud.json")"
+          echo "FOLDER_STATUS=$(jq -r '.status // "UNSET"' "$RUNNER_TEMP/folder.json")"
+          echo "YDB_STATUS=$(jq -r '.status // "UNSET"' "$RUNNER_TEMP/db.json")"
+          echo "YDB_TYPE=$(jq -r 'if .serverless_database then "SERVERLESS" elif .dedicated_database then "DEDICATED" else "UNKNOWN" end' "$RUNNER_TEMP/db.json")"
+          echo "YDB_DELETION_PROTECTION=$(jq -r '.deletion_protection // .deletionProtection // "UNSET"' "$RUNNER_TEMP/db.json")"
+          jq -c '{id,name,status,folder_id,created_at,serverless_database,labels}' "$RUNNER_TEMP/db.json" || true
 
-      - name: Map existing role bindings and service accounts
+      - name: Inspect billing visibility and status
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          yc billing account list --format json > "$RUNNER_TEMP/billing.json" 2> "$RUNNER_TEMP/billing.err"
+          RC=$?
+          set -e
+          echo "BILLING_LIST_RC=$RC"
+          if [[ "$RC" -eq 0 ]]; then
+            jq -c '.[]? | {id,name,status,country_code,currency}' "$RUNNER_TEMP/billing.json" || true
+          else
+            sed -n '1,8p' "$RUNNER_TEMP/billing.err"
+          fi
+
+      - name: Recheck access policy visibility
         shell: bash
         env:
           CLOUD_ID: b1gi4pr9msenirafh2c7
-          YDB_ID: etnes7omhgut11oulsd5
+          FOLDER_ID: b1g00gqb66tbnfoumnkv
         run: |
           set -euo pipefail
-          yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json > "$RUNNER_TEMP/folder-access.json"
-          yc resource-manager cloud list-access-bindings "$CLOUD_ID" --format json > "$RUNNER_TEMP/cloud-access.json"
-          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/db-access.json"
-
-          for pair in "PREPARER:$PREPARER_ID" "RUNTIME:$RUNTIME_ID" "DEPLOYER:$DEPLOYER_ID"; do
-            LABEL="${pair%%:*}"; SID="${pair#*:}"
-            echo "${LABEL}_FOLDER_ROLES:"
-            jq -r --arg sid "$SID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/folder-access.json" | sort -u
-            echo "${LABEL}_CLOUD_ROLES:"
-            jq -r --arg sid "$SID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/cloud-access.json" | sort -u
-            echo "${LABEL}_DATABASE_ROLES:"
-            jq -r --arg sid "$SID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/db-access.json" | sort -u
-          done
-
-          echo 'FOLDER_MANAGEMENT_BINDINGS:'
-          jq -r '.[]? | select(.role_id=="editor" or .role_id=="admin" or .role_id=="ydb.editor" or .role_id=="ydb.admin") | [.role_id,.subject.type,.subject.id] | @tsv' "$RUNNER_TEMP/folder-access.json" | sort -u
-          echo 'CLOUD_MANAGEMENT_BINDINGS:'
-          jq -r '.[]? | select(.role_id=="editor" or .role_id=="admin" or .role_id=="ydb.editor" or .role_id=="ydb.admin") | [.role_id,.subject.type,.subject.id] | @tsv' "$RUNNER_TEMP/cloud-access.json" | sort -u
-          echo 'DATABASE_MANAGEMENT_BINDINGS:'
-          jq -r '.[]? | select(.role_id=="editor" or .role_id=="admin" or .role_id=="ydb.editor" or .role_id=="ydb.admin") | [.role_id,.subject.type,.subject.id] | @tsv' "$RUNNER_TEMP/db-access.json" | sort -u
-
-          echo 'BIRZHA_SERVICE_ACCOUNTS:'
-          jq -r '.[]? | [.name,.id] | @tsv' "$RUNNER_TEMP/service-accounts.json" | sort
-
-      - name: Recheck access-policy layers
-        shell: bash
-        env:
-          CLOUD_ID: b1gi4pr9msenirafh2c7
-        run: |
-          set -euo pipefail
-          for scope in org cloud folder; do
+          ORG_ID="$(jq -r '.organization_id // .organizationId // empty' "$RUNNER_TEMP/cloud.json")"
+          echo "ORG_ID=$ORG_ID"
+          for scope in cloud folder org; do
             case "$scope" in
-              org) CMD=(yc organization-manager organization list-access-policy-bindings --id "$ORG_ID" --format json) ;;
               cloud) CMD=(yc resource-manager cloud list-access-policy-bindings "$CLOUD_ID" --format json) ;;
               folder) CMD=(yc resource-manager folder list-access-policy-bindings "$FOLDER_ID" --format json) ;;
+              org) CMD=(yc organization-manager organization list-access-policy-bindings --id "$ORG_ID" --format json) ;;
             esac
             set +e
             "${CMD[@]}" > "$RUNNER_TEMP/${scope}-policies.json" 2> "$RUNNER_TEMP/${scope}-policies.err"
             RC=$?
             set -e
-            echo "${scope^^}_POLICY_QUERY_RC=$RC"
-            if [[ "$RC" -eq 0 ]]; then
-              jq -c '.[]? | {template_id:(.access_policy_template_id // .accessPolicyTemplateId),parameters}' "$RUNNER_TEMP/${scope}-policies.json" || true
-            else
-              sed -n '1,5p' "$RUNNER_TEMP/${scope}-policies.err"
-            fi
+            echo "${scope^^}_POLICY_RC=$RC"
+            if [[ "$RC" -eq 0 ]]; then jq -c '.[]?' "$RUNNER_TEMP/${scope}-policies.json" || true; else sed -n '1,5p' "$RUNNER_TEMP/${scope}-policies.err"; fi
           done
           echo 'DIAGNOSTIC_ONLY=PASS'
-          echo 'RESOURCE_MUTATIONS=NONE'
 
       - name: Cleanup
         if: always()
