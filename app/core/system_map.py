@@ -83,7 +83,7 @@ SYSTEM_MAP: dict[str, Any] = {
         "metric_class": "advertising_attribution_operational",
         "profitability_boundary": "advertising attribution metrics are not actual business profit; real profitability requires approved joins to sales/buyouts, returns, finance and unit economics",
         "archive_domain": "База данных/WB/<cabinet>/<year>/advertising",
-        "archive_status": "Drive folder scaffold exists; ingestion/coverage/registry integration is not yet implemented or accepted",
+        "archive_status": "2026 Drive category scaffold (stats/state/finance/config/audit) exists for wb_dmitrieva, wb_novokshenov and wb_laser_master; ingestion/coverage/registry integration is not yet implemented or accepted",
         "planned_datasets": [
             "ads_campaign_daily",
             "ads_product_daily",
