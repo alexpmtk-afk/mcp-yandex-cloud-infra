@@ -1,4 +1,5 @@
 name: Publish Semantic Core TEST via Existing Central Pusher
+# Trigger direct central pusher comparison.
 
 on:
   push:
