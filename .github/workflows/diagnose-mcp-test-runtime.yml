@@ -73,9 +73,9 @@ jobs:
           IAM_TOKEN="$(timeout 45s yc iam create-token)"
           test -n "$IAM_TOKEN"
           echo "::add-mask::$IAM_TOKEN"
-          DIRECT_CODE="$(curl -sS --max-time 45 -o "$RUNNER_TEMP/direct-health" -w '%{http_code}' \
+          DIRECT_CODE="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/direct-health" -w '%{http_code}' \
             -H "Authorization: Bearer $IAM_TOKEN" "${CONTAINER_URL%/}/healthz" || true)"
-          GATEWAY_CODE="$(curl -sS --max-time 45 -o "$RUNNER_TEMP/gateway-health" -w '%{http_code}' \
+          GATEWAY_CODE="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/gateway-health" -w '%{http_code}' \
             "${GATEWAY_URL%/}/healthz" || true)"
           echo "direct_container_health_status=$DIRECT_CODE"
           echo "api_gateway_health_status=$GATEWAY_CODE"
@@ -95,8 +95,8 @@ jobs:
           CONTAINER_ID: ${{ steps.resources.outputs.container }}
         run: |
           set -euo pipefail
-          timeout 45s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json" || printf '[]' > "$RUNNER_TEMP/revisions.json"
-          if timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '20m ago' --limit 1000 --format json > "$RUNNER_TEMP/logs.json"; then
+          timeout 30s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json" || printf '[]' > "$RUNNER_TEMP/revisions.json"
+          if timeout 5s yc logging read --resource-ids="$CONTAINER_ID" --since '20m ago' --limit 300 --format json > "$RUNNER_TEMP/logs.json"; then
             echo 'runtime_log_read=PASS'
           else
             printf '[]' > "$RUNNER_TEMP/logs.json"
