@@ -1,13 +1,11 @@
 import hashlib
-import importlib.util
+import sys
 from pathlib import Path
 
-MODULE = Path(__file__).resolve().parents[1] / "python_client" / "bridge_client.py"
-spec = importlib.util.spec_from_file_location("bridge_client", MODULE)
-assert spec and spec.loader
-bridge_client = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(bridge_client)
-_confirmed_offset = bridge_client._confirmed_offset
+PYTHON_CLIENT = Path(__file__).resolve().parents[1] / "python_client"
+sys.path.insert(0, str(PYTHON_CLIENT))
+
+from bridge_client import _confirmed_offset  # noqa: E402
 
 
 def test_confirmed_offset():
