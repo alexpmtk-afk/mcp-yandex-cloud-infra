@@ -1,4 +1,4 @@
-name: Diagnose TEST Registry Access
+name: Probe TEST Registry IAM Docker Login
 
 on:
   workflow_dispatch:
@@ -16,7 +16,7 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
-  diagnose:
+  probe:
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 20
@@ -40,13 +40,10 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          CI_SA_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
-          test -n "$CI_SA_ID"
-          echo "CI_SA_ID=$CI_SA_ID" >> "$GITHUB_ENV"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Diagnose TEST registry IAM and IP policy
+      - name: Push disposable probe using explicit IAM token
         shell: bash
         run: |
           set -euo pipefail
@@ -57,21 +54,30 @@ jobs:
           REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
           test -n "$REGISTRY_ID"
 
-          timeout 45s yc container registry list-access-bindings "$REGISTRY_ID" --format json > "$RUNNER_TEMP/registry-access.json"
-          timeout 45s yc container registry list-ip-permissions "$REGISTRY_ID" --format json > "$RUNNER_TEMP/registry-ip.json"
-          RUNNER_IP="$(curl -fsS --max-time 15 https://api.ipify.org)"
-          test -n "$RUNNER_IP"
+          IAM_TOKEN="$(yc iam create-token)"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          printf '%s' "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
+          unset IAM_TOKEN
 
-          echo "ci_service_account=$CI_SA_ID"
-          echo "registry_id=$REGISTRY_ID"
-          echo "runner_public_ip=$RUNNER_IP"
-          echo 'registry_access_bindings:'
-          jq -c '.' "$RUNNER_TEMP/registry-access.json"
-          echo 'registry_ip_permissions:'
-          jq -c '.' "$RUNNER_TEMP/registry-ip.json"
-          echo 'registry_access_diagnostic=PASS'
+          PROBE_TAG="auth-probe-${GITHUB_SHA}"
+          IMAGE="cr.yandex/${REGISTRY_ID}/auth-probe:${PROBE_TAG}"
+          mkdir -p "$RUNNER_TEMP/registry-probe"
+          printf 'FROM scratch\nLABEL purpose="marketplaces-test-registry-auth-probe"\n' > "$RUNNER_TEMP/registry-probe/Dockerfile"
+          docker build --tag "$IMAGE" "$RUNNER_TEMP/registry-probe"
+          docker push "$IMAGE"
+          echo 'explicit_iam_docker_push=PASS'
 
-      - name: Cleanup diagnostic files and credential
+          REPO_NAME="${REGISTRY_ID}/auth-probe"
+          IMAGE_ID="$(yc container image list --registry-id "$REGISTRY_ID" --repository-name "$REPO_NAME" --format json | jq -r --arg tag "$PROBE_TAG" '[.[] | select((.tags // []) | index($tag) != null)][0].id // empty')"
+          if [[ -n "$IMAGE_ID" ]]; then
+            yc container image delete "$IMAGE_ID" || true
+            echo 'probe_cleanup=PASS'
+          else
+            echo 'probe_cleanup=IMAGE_NOT_RESOLVED'
+          fi
+
+      - name: Cleanup ephemeral credential
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/registry-access.json" "$RUNNER_TEMP/registry-ip.json"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
