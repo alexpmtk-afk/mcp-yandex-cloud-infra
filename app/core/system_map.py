@@ -6,12 +6,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-14.v16"
+ARCHITECTURE_VERSION = "2026-09-14.v17"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
     "status": "CANONICAL",
-    "scope": "Marketplaces MCP runtime and multi-dataset marketplace archive",
+    "scope": "Marketplaces MCP runtime, multi-dataset marketplace archive, and fail-closed Semantic Core routing",
     "runtime": {
         "cloud": "Yandex Cloud only",
         "entry": "ChatGPT/Codex -> marketplaces-yandex -> Yandex API Gateway -> Yandex Serverless Container",
@@ -102,11 +102,48 @@ SYSTEM_MAP: dict[str, Any] = {
         "write_control_status": "not accepted in M0; dedicated start/pause/stop/bid/budget/product/cluster control tools require a later safety-reviewed phase",
         "safety_override": "provider GET endpoints that mutate campaign state (start/pause/stop/delete) are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb",
     },
+    "semantic_core": {
+        "status": "TEST_RUNTIME_WIRED",
+        "runtime_entry": "marketplace_business_query",
+        "registry": "core/semantic_registry.yaml",
+        "intent_catalog": "core/semantic_intents.yaml",
+        "execution_registry": "core/semantic_execution.yaml",
+        "archive_executor": "core/semantic_archive.py",
+        "current_archive_dataset": "wb_weekly_finance_main",
+        "current_archive_schema": "92 official-help-audited physical columns",
+        "source_revision": "alexpmtk-afk/marketplaces-mcp-ru@920f3f1458a1700ad350d43cf35178256e8e858f",
+        "approved_archive_executors": [
+            "penalties",
+            "storage_charge",
+            "acceptance_charge",
+            "sale_and_return_operations",
+            "logistics",
+            "deductions_and_adjustments",
+            "commission_and_wb_reward",
+            "acquiring_and_payment_processing",
+            "observed_fulfillment_method",
+            "warehouse_tariff_context",
+        ],
+        "execution_gate": "FULL_COVERAGE from COMPLETE reports_registry.csv fragments plus canonical annual-file presence",
+        "question_policy": "preserve the original natural-language question; execute only an explicitly registered capability; do not substitute a similar legacy metric",
+        "fail_closed_for": [
+            "complete marketplace order flow from weekly-finance orderDt/orderUid",
+            "current stock from historical finance rows",
+            "current fulfillment configuration from historical deliveryMethod",
+            "current live warehouse tariff from historical dlvPrc/warehouseLogisticsCoeff",
+            "Ozon semantics until a dedicated approved source binding exists",
+            "unknown provider fields such as agencyVat until explicitly audited and bound",
+        ],
+        "money_policy": "never combine different currencies and never silently net unrelated financial components",
+        "dlvPrc_policy": "historical coefficient fixed when the supply was planned; not proof of the coefficient actually charged after fixation expiry and never current tariff truth",
+        "schema_drift_policy": "provider fields outside the audited 92-column archive, including agencyVat, are not executable merely because the live API exposes them",
+    },
     "data_routing_policy": {
         "canonical_catalog_tool": "marketplace_data_catalog",
         "canonical_metric_router_tool": "marketplace_metric_route",
-        "required_flow": "request -> business metric -> data catalog -> dataset/source -> coverage -> query -> calculation",
-        "generic_sales_is_ambiguous": "'sales/продажи' must be resolved to business meaning such as orders or financial realization before reading data",
+        "canonical_business_query_tool": "marketplace_business_query",
+        "required_flow": "original question -> Semantic Core -> approved business meaning/source -> data catalog/coverage -> query -> calculation -> provenance",
+        "generic_sales_is_ambiguous": "generic sales wording must be resolved to an explicit business meaning before reading data; an approved Semantic Core route may resolve it to weekly financial realization, but must never silently reinterpret it as customer orders",
         "orders_vs_realization": "orders are customer order events and must never be silently calculated from the weekly financial realization dataset",
         "missing_dataset": "surface the gap or use the matching official provider API; never substitute a different archived dataset",
         "dataset_contract_required": ["marketplace", "business metrics", "provider source", "grain", "time semantics", "schema/fields policy", "storage dataset path", "coverage/status"],
@@ -114,15 +151,20 @@ SYSTEM_MAP: dict[str, Any] = {
     },
     "routing_policy": {
         "update_database": "route to the server archive update workflow for the selected dataset; compare canonical Drive registry and fetch only missing provider data",
-        "historical_queries": "first route the business metric; use only the matching canonical Google Drive archive dataset when its period is covered",
-        "current_or_uncovered": "use the matching official provider API or explicit gap/backfill workflow",
+        "natural_business_question": "preserve the user's original wording and resolve it through Semantic Core before selecting or executing a source",
+        "historical_queries": "execute an approved Semantic Core archive capability only after matching source semantics and FULL_COVERAGE are proven",
+        "current_or_uncovered": "use an explicitly suitable live/provider source or return a controlled source/coverage gap; never fall back to a similar historical field",
+        "complete_orders": "never use weekly-finance orderDt/orderUid as the complete customer-order flow",
+        "current_tariffs": "never use historical dlvPrc or warehouseLogisticsCoeff as current live tariff truth",
         "advertising_live_vs_archive": "campaign state/current control is live; closed advertising analytics becomes archive-first only after the ad dataset binding and coverage are implemented and proven",
-        "multi_client": "all clients must see the same remote canonical Drive state and data catalog; no chat-local architecture decisions",
+        "multi_client": "all clients must see the same remote canonical Drive state, data catalog and Semantic Core rules; no chat-local architecture decisions",
     },
     "change_control": {
         "new_cloud_provider": "FORBIDDEN without explicit architecture change",
         "new_primary_storage": "FORBIDDEN without explicit architecture change",
         "bypass_registry_or_idempotency": "FORBIDDEN",
+        "bypass_semantic_guardrails": "FORBIDDEN",
+        "bypass_full_coverage_gate": "FORBIDDEN",
         "new_dataset_requires": [
             "add/update canonical data catalog entry and metric routes",
             "define source, grain, time semantics, schema policy and storage path",
@@ -131,7 +173,7 @@ SYSTEM_MAP: dict[str, Any] = {
         ],
         "architecture_change_requires": [
             "update SYSTEM_MAP and server instructions",
-            "update canonical data catalog",
+            "update canonical data catalog or explicitly document why no catalog contract changes",
             "update architecture documentation",
             "update guardrail tests",
             "pass CI/security/deployment acceptance",
@@ -140,7 +182,7 @@ SYSTEM_MAP: dict[str, Any] = {
 }
 
 SYSTEM_INSTRUCTIONS = f"""CANONICAL MARKETPLACES MCP ARCHITECTURE — {ARCHITECTURE_VERSION}
-Treat marketplace_system_map and marketplace_data_catalog as server-side sources of truth.
+Treat marketplace_system_map, marketplace_data_catalog and the server-side Semantic Core as sources of truth for business routing.
 Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture and no Google Cloud OAuth runtime dependency is required.
 Canonical marketplace archive data is stored on Google Drive under the server-owned `MCP архив базы данных` root: annual dataset CSV files and the reports registry are the source of truth.
 Yandex Object Storage remains required for durable queue/job state, immutable candidates, staging, resumable-upload state, and a secondary byte-for-byte backup of canonical Drive files. It uses the Serverless Container runtime service account and a temporary IAM token; no static archive key is required.
@@ -149,15 +191,21 @@ Large annual CSV files must NOT be transported through Apps Script/base64. Apps 
 Large writes must target a non-canonical staging filename first. The existing canonical file remains untouched until Drive size/SHA256 verification and the byte-for-byte Yandex backup pass; then Apps Script promotes the verified staging file and only afterward may COMMIT advance registry/job progress.
 The large-file worker trusts Drive-confirmed offsets, never blindly resends after ambiguous interruption, restarts unusable sessions from the immutable candidate, applies bounded backoff to throttling/transient errors, and never logs the bearer-like session URI.
 The marketplace archive is MULTI-DATASET. No single report or annual CSV is the complete WB/Ozon business database.
-The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for customer orders, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
-Before answering a historical business question, interpret the requested business metric and route it through marketplace_metric_route / marketplace_data_catalog to the correct dataset. Generic 'sales/продажи' is ambiguous unless its business meaning is clear.
+For natural-language business questions, preserve the user's original wording and route it through marketplace_business_query / Semantic Core before archive execution. Only explicitly approved capabilities may execute.
+The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for the complete customer-order flow, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
+Weekly-finance orderDt/orderUid are context attached to reported financial operations and must never be used as the complete customer-order funnel.
+Archive calculations require FULL_COVERAGE from COMPLETE registry fragments plus the canonical annual file. Different currencies are never combined and unrelated financial components are never silently netted.
+Historical deliveryMethod may describe observed fulfillment only. Historical dlvPrc is the coefficient fixed when the supply was planned; after fixation expiry it is not proof of the coefficient actually charged and it is never current tariff truth. warehouseLogisticsCoeff is also historical context, not a current tariff source.
+Current-state questions, complete-order-flow questions, unsupported Ozon semantics and unknown fields fail closed rather than falling back to similar weekly-finance data.
+The current provider API may expose agencyVat, but it is not part of the audited 92-column canonical archive and has no approved Semantic Core binding; do not execute it until it is explicitly audited and registered.
+Before answering other historical business questions, use marketplace_metric_route / marketplace_data_catalog to identify the correct dataset. Generic 'sales/продажи' must have an explicit business meaning and must never be silently reinterpreted as customer orders.
 Never silently substitute the weekly finance dataset for orders, stocks, advertising, funnels, or any other missing dataset. Surface the gap or use the matching official provider API/backfill path.
 Initial historical backfill is 2026; planned archive depth is through 2024 where provider history allows it. The same multi-dataset principle applies to both Wildberries and Ozon.
 For database/archive tasks, use server-owned shared state, canonical Drive files, registry/idempotent update logic, and official WB/Ozon APIs. Do not invent chat-local storage, bypass Drive with another source of truth, or introduce a new architecture path.
 WB Advertising M0 is Wildberries-only and read-only: use dedicated server-side wb_ads Promotion credentials; current campaign state is live from WB Promotion API; M0 advertising-attribution metrics must never be presented as actual business profit.
 The advertising Drive folder scaffold is not proof that Advertising Archive V1 ingestion or historical coverage exists. Do not route historical ad analytics to the archive until dataset bindings, registry coverage and validation are implemented and accepted.
 Provider GET endpoints that change advertising state are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb.
-If a requested implementation conflicts with the canonical map or data catalog, fail closed and surface the conflict instead of silently changing architecture.
+If a requested implementation conflicts with the canonical map, data catalog or Semantic Core guardrails, fail closed and surface the conflict instead of silently changing architecture.
 """
 
 
