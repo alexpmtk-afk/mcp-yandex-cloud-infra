@@ -1,0 +1,111 @@
+name: Finalize Bridge v1 source once
+
+on:
+  push:
+    branches:
+      - bridge-v1-finalization-20260914
+    paths:
+      - .github/workflows/bridge-v1-finalize-source-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  finalize:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: bridge-v1-finalization-20260914
+
+      - name: Add deployment-config fallback to canonical Bridge source
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('shared/google-drive-bridge/bridge.gs')
+          s=p.read_text(encoding='utf-8')
+          old="""function config_() {
+  const props = PropertiesService.getScriptProperties();
+  const secret = String(props.getProperty(PROP_SECRET) || '').trim();
+  const projectId = String(props.getProperty(PROP_PROJECT) || '').trim();
+  const rootId = String(props.getProperty(PROP_ROOT_ID) || '').trim();
+  const rootName = String(props.getProperty(PROP_ROOT_NAME) || '').trim();
+  if (!secret || !projectId || !rootId || !rootName) throw bridgeError_('NOT_CONFIGURED', 'bridge Script Properties are incomplete', false);
+  const root = DriveApp.getFolderById(rootId);
+  if (root.getName() !== rootName) throw bridgeError_('WRONG_ROOT', 'configured root name does not match Drive', false);
+  const maxRaw = Number(props.getProperty(PROP_SMALL_MAX) || DEFAULT_SMALL_MAX);
+  const maxBytes = Number.isFinite(maxRaw) && maxRaw > 0 ? Math.floor(maxRaw) : DEFAULT_SMALL_MAX;
+  const sheetsEnabled = String(props.getProperty(PROP_SHEETS) || 'false').toLowerCase() === 'true';
+  return {secret: secret, projectId: projectId, rootId: rootId, rootName: rootName, maxBytes: maxBytes, sheetsEnabled: sheetsEnabled};
+}
+"""
+          new="""function config_() {
+  const props = PropertiesService.getScriptProperties();
+  const injected = (typeof BRIDGE_DEPLOYMENT_CONFIG === 'object' && BRIDGE_DEPLOYMENT_CONFIG) ? BRIDGE_DEPLOYMENT_CONFIG : {};
+  const secret = String(props.getProperty(PROP_SECRET) || injected.secret || '').trim();
+  const projectId = String(props.getProperty(PROP_PROJECT) || injected.projectId || '').trim();
+  const rootId = String(props.getProperty(PROP_ROOT_ID) || injected.rootId || '').trim();
+  const rootName = String(props.getProperty(PROP_ROOT_NAME) || injected.rootName || '').trim();
+  if (!secret || !projectId || !rootId || !rootName) throw bridgeError_('NOT_CONFIGURED', 'bridge deployment configuration is incomplete', false);
+  const root = DriveApp.getFolderById(rootId);
+  if (root.getName() !== rootName) throw bridgeError_('WRONG_ROOT', 'configured root name does not match Drive', false);
+  const maxRaw = Number(props.getProperty(PROP_SMALL_MAX) || injected.smallMaxBytes || DEFAULT_SMALL_MAX);
+  const maxBytes = Number.isFinite(maxRaw) && maxRaw > 0 ? Math.floor(maxRaw) : DEFAULT_SMALL_MAX;
+  const sheetsRaw = props.getProperty(PROP_SHEETS);
+  const sheetsEnabled = sheetsRaw === null ? Boolean(injected.sheetsEnabled) : String(sheetsRaw).toLowerCase() === 'true';
+  return {secret: secret, projectId: projectId, rootId: rootId, rootName: rootName, maxBytes: maxBytes, sheetsEnabled: sheetsEnabled};
+}
+"""
+          if new in s:
+              print('CONFIG_FALLBACK=ALREADY_PRESENT')
+          else:
+              if old not in s:
+                  raise SystemExit('canonical config_ block not found; refusing fuzzy patch')
+              s=s.replace(old,new,1)
+              p.write_text(s,encoding='utf-8')
+              print('CONFIG_FALLBACK=PATCHED')
+          PY
+
+      - name: Add non-secret template fields
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          for name in ('marketplaces_config.gs','birzha_config.gs'):
+              p=Path('shared/google-drive-bridge/deploy')/name
+              s=p.read_text(encoding='utf-8')
+              if 'secret:' not in s:
+                  s=s.replace('  projectId:', "  // secret is injected only into the private Apps Script project at deploy time; never commit a value here.\n  secret: '',\n  projectId:",1)
+                  p.write_text(s,encoding='utf-8')
+          PY
+
+      - name: Validate syntax and security invariant
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp shared/google-drive-bridge/bridge.gs "$RUNNER_TEMP/bridge.js"
+          node --check "$RUNNER_TEMP/bridge.js"
+          for f in shared/google-drive-bridge/deploy/*_config.gs; do
+            cp "$f" "$RUNNER_TEMP/config.js"
+            node --check "$RUNNER_TEMP/config.js"
+            grep -Fq "secret: ''" "$f"
+          done
+          grep -Fq "injected.secret" shared/google-drive-bridge/bridge.gs
+          echo 'BRIDGE_DEPLOYMENT_CONFIG_FALLBACK=PASS'
+
+      - name: Commit generated source change
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add shared/google-drive-bridge/bridge.gs shared/google-drive-bridge/deploy/marketplaces_config.gs shared/google-drive-bridge/deploy/birzha_config.gs
+          if git diff --cached --quiet; then
+            echo 'No source changes.'
+          else
+            git commit -m 'bridge v1: support private deployment config fallback'
+            git push origin HEAD:bridge-v1-finalization-20260914
+          fi
