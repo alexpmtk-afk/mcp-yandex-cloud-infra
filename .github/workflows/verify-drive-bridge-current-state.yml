@@ -118,7 +118,7 @@ jobs:
               c.post(os.environ['MCP_URL'],headers=hh,json={'jsonrpc':'2.0','method':'notifications/initialized'})
               t=time.monotonic(); rr=c.post(os.environ['MCP_URL'],headers=hh,json={'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'marketplace_archive_status','arguments':{'year':2026}}}); dt=time.monotonic()-t
               d=unpack(rr); print(f'MCP_ARCHIVE_STATUS_SECONDS={dt:.3f}'); assert d and 'result' in d
-              result=d['result']; print('MCP_IS_ERROR='+str(bool(result.get('isError')))
+              result=d['result']; print('MCP_IS_ERROR='+str(bool(result.get('isError'))))
               text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),''); p=json.loads(text) if text else {}
               st=p.get('storage') or {}; can=st.get('canonical') or {}; print('MCP_ARCHIVE_OK='+str(p.get('ok'))); print('MCP_BACKEND='+str(st.get('backend'))); print('MCP_DRIVE_REACHABLE='+str(can.get('reachable'))); print('MCP_BRIDGE_VERSION='+str(can.get('bridge_version')))
               for cab,x in (p.get('cabinets') or {}).items(): print(f'MCP_{cab}_COMPLETE={x.get("complete_report_ids")} BYTES={x.get("bytes")} ID={x.get("storage_object_key")}')
