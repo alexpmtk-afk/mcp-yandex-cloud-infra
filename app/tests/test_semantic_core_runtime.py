@@ -69,4 +69,4 @@ def test_business_query_never_falls_back_from_current_state_to_archive():
         )
     )
     assert result["ok"] is False
-    assert result["error"]["type"] == "source_not_suitable"
+    assert result["error"] == "source_not_suitable"
