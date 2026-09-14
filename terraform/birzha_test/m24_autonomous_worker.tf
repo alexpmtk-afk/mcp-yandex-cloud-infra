@@ -47,9 +47,9 @@ resource "yandex_serverless_container" "orchestrator_worker" {
   dynamic "secrets" {
     for_each = var.m25_market_mirror_bridge_url == null ? [] : [1]
     content {
-      id                   = yandex_lockbox_secret.market_mirror.id
-      version_id           = yandex_lockbox_secret_version.market_mirror.id
-      key                  = "bridge_secret"
+      id                   = var.m25_shared_drive_bridge_secret_id
+      version_id           = var.m25_shared_drive_bridge_secret_version_id
+      key                  = "google_drive_bridge_secret"
       environment_variable = "BIRZHA_MARKET_MIRROR_BRIDGE_SECRET"
     }
   }
@@ -77,6 +77,13 @@ resource "yandex_serverless_container" "orchestrator_worker" {
     precondition {
       condition     = !var.m25_market_mirror_required || var.m25_market_mirror_bridge_url != null
       error_message = "m25_market_mirror_bridge_url must be set before mandatory market mirror is enabled."
+    }
+    precondition {
+      condition = (
+        var.m25_market_mirror_bridge_url == null ||
+        var.m25_shared_drive_bridge_secret_version_id != null
+      )
+      error_message = "m25_shared_drive_bridge_secret_version_id is required when the shared Drive bridge is enabled."
     }
   }
 
