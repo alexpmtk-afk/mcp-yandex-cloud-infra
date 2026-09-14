@@ -16,8 +16,9 @@ permissions:
   contents: read
 
 concurrency:
-  group: marketplaces-gateway-timeout
+  group: marketplaces-test-runtime-write
   cancel-in-progress: false
+  queue: max
 
 jobs:
   ensure:
