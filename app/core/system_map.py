@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-14.v5"
+ARCHITECTURE_VERSION = "2026-09-14.v15"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
@@ -23,11 +23,12 @@ SYSTEM_MAP: dict[str, Any] = {
         "primary_archive_storage": "Google Drive",
         "canonical_archive_data": "annual marketplace dataset CSV files plus reports registry",
         "google_drive_root": "MCP архив базы данных",
-        "google_drive_auth": "owner-operated Google Apps Script web-app bridge; shared bridge secret kept in Yandex Lockbox",
-        "google_drive_bridge": "Apps Script executes as the Drive owner and exposes archive read/write/status operations under the fixed archive root",
-        "yandex_object_storage": "durable archive job state, staging, and byte-for-byte backup of canonical files",
+        "google_drive_auth": "owner-operated Google Apps Script web-app bridge; shared bridge secret kept in Yandex Lockbox; no Google OAuth refresh token is stored in Yandex",
+        "google_drive_bridge": "Apps Script executes as the Drive owner, handles small archive operations, and brokers official Google Drive API resumable-session creation for large annual files",
+        "google_drive_large_upload": "Apps Script starts the official Google Drive API resumable session using its effective-user token; Yandex uploads bounded chunks directly to the returned session URI and persists confirmed offsets",
+        "yandex_object_storage": "durable archive job state, staging, resumable-upload state, and byte-for-byte backup of canonical files",
         "yandex_archive_auth": "Serverless Container runtime service-account IAM token from metadata; no static archive key",
-        "archive_write_order": "Google Drive canonical write first; Yandex backup second",
+        "archive_write_order": "PREPARE immutable candidate in Yandex Object Storage -> resumable Drive upload -> verify Drive -> Yandex backup -> COMMIT registry/job progress",
         "read_through_migration": "if a canonical file is absent on Drive but exists in Yandex Object Storage, copy it to Drive before use",
         "google_cloud": "not part of the runtime architecture; no Google Cloud OAuth runtime dependency is required",
         "client_local_files": "never authoritative for shared server state",
@@ -44,6 +45,16 @@ SYSTEM_MAP: dict[str, Any] = {
         "planned_history_floor": 2024,
         "annual_partitioning": "one logical annual dataset per marketplace/cabinet/dataset/year",
         "annual_csv_pattern": "<cabinet>__<dataset>__<year>.csv",
+        "large_file_upload": {
+            "transport": "Google Drive API resumable upload",
+            "session_broker": "Google Apps Script bridge",
+            "yandex_google_oauth_refresh_token": "forbidden/not required",
+            "apps_script_large_base64_upload": "forbidden",
+            "worker_model": "one bounded chunk per worker step",
+            "resume_state": "resumable session URI plus confirmed byte offset persisted in durable Yandex job state",
+            "chunk_rule": "non-final chunks are multiples of 256 KiB; v1 default is 4 MiB",
+            "commit_rule": "COMMIT only after Drive verification and Yandex byte-for-byte backup",
+        },
         "wb_weekly_finance_main": {
             "status": "FIRST DATASET ONLY; not the complete WB business database",
             "period": "weekly",
@@ -73,30 +84,14 @@ SYSTEM_MAP: dict[str, Any] = {
         "credentials": "Promotion-scoped WB credentials are server-side only and must be injected from Yandex Lockbox; never stored on Drive/GitHub",
         "live_state_source": "Wildberries Promotion API",
         "active_campaign_status": 9,
-        "m0_tools": [
-            "wb_ads_list_active_campaigns",
-            "wb_ads_get_campaign_stats",
-            "wb_ads_audit_active",
-        ],
+        "m0_tools": ["wb_ads_list_active_campaigns", "wb_ads_get_campaign_stats", "wb_ads_audit_active"],
         "m0_default_audit_period": "last 7 full Europe/Moscow calendar days ending yesterday",
         "m0_batch_limit": "at most 50 campaign IDs in one /adv/v3/fullstats request; fail closed instead of returning a partial audit",
         "metric_class": "advertising_attribution_operational",
         "profitability_boundary": "advertising attribution metrics are not actual business profit; real profitability requires approved joins to sales/buyouts, returns, finance and unit economics",
         "archive_domain": "База данных/WB/<cabinet>/<year>/advertising",
         "archive_status": "2026 Drive category scaffold (stats/state/finance/config/audit) exists for wb_dmitrieva, wb_novokshenov and wb_laser_master; ingestion/coverage/registry integration is not yet implemented or accepted",
-        "planned_datasets": [
-            "ads_campaign_daily",
-            "ads_product_daily",
-            "ads_search_cluster_daily",
-            "ads_campaign_snapshots",
-            "ads_expenses",
-            "ads_payments",
-            "ads_bid_history",
-            "ads_product_membership_history",
-            "ads_placement_history",
-            "ads_minus_phrase_history",
-            "ads_mcp_actions",
-        ],
+        "planned_datasets": ["ads_campaign_daily", "ads_product_daily", "ads_search_cluster_daily", "ads_campaign_snapshots", "ads_expenses", "ads_payments", "ads_bid_history", "ads_product_membership_history", "ads_placement_history", "ads_minus_phrase_history", "ads_mcp_actions"],
         "historical_routing": "when Advertising Archive V1 is implemented and coverage is proven, closed historical periods must be archive-first; current state/control stays live",
         "write_control_status": "not accepted in M0; dedicated start/pause/stop/bid/budget/product/cluster control tools require a later safety-reviewed phase",
         "safety_override": "provider GET endpoints that mutate campaign state (start/pause/stop/delete) are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb",
@@ -108,16 +103,7 @@ SYSTEM_MAP: dict[str, Any] = {
         "generic_sales_is_ambiguous": "'sales/продажи' must be resolved to business meaning such as orders or financial realization before reading data",
         "orders_vs_realization": "orders are customer order events and must never be silently calculated from the weekly financial realization dataset",
         "missing_dataset": "surface the gap or use the matching official provider API; never substitute a different archived dataset",
-        "dataset_contract_required": [
-            "marketplace",
-            "business metrics",
-            "provider source",
-            "grain",
-            "time semantics",
-            "schema/fields policy",
-            "storage dataset path",
-            "coverage/status",
-        ],
+        "dataset_contract_required": ["marketplace", "business metrics", "provider source", "grain", "time semantics", "schema/fields policy", "storage dataset path", "coverage/status"],
         "provenance_required": "answers from archive analytics must identify the dataset/source used",
     },
     "routing_policy": {
@@ -151,8 +137,10 @@ SYSTEM_INSTRUCTIONS = f"""CANONICAL MARKETPLACES MCP ARCHITECTURE — {ARCHITECT
 Treat marketplace_system_map and marketplace_data_catalog as server-side sources of truth.
 Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture and no Google Cloud OAuth runtime dependency is required.
 Canonical marketplace archive data is stored on Google Drive under the server-owned `MCP архив базы данных` root: annual dataset CSV files and the reports registry are the source of truth.
-Yandex Object Storage remains required for durable queue/job state, staging, and a secondary byte-for-byte backup of canonical Drive files. It uses the Serverless Container runtime service account and a temporary IAM token; no static archive key is required.
-Google Drive access is provided by the owner's Google Apps Script web-app bridge; its shared bridge secret must remain in Yandex Lockbox.
+Yandex Object Storage remains required for durable queue/job state, staging, resumable-upload state, and a secondary byte-for-byte backup of canonical Drive files. It uses the Serverless Container runtime service account and a temporary IAM token; no static archive key is required.
+Google Drive access uses the owner's Google Apps Script web-app bridge; its shared bridge secret remains in Yandex Lockbox. No Google OAuth refresh token is stored in Yandex.
+Large annual CSV files must NOT be transported through Apps Script/base64. Apps Script only brokers the official Google Drive API resumable-session start; Yandex then uploads bounded chunks directly to the returned Google session URI.
+The large-file worker persists confirmed byte offsets, resumes after interruption, verifies Drive, writes the Yandex backup, and only then COMMITs registry/job progress.
 The marketplace archive is MULTI-DATASET. No single report or annual CSV is the complete WB/Ozon business database.
 The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for customer orders, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
 Before answering a historical business question, interpret the requested business metric and route it through marketplace_metric_route / marketplace_data_catalog to the correct dataset. Generic 'sales/продажи' is ambiguous unless its business meaning is clear.
@@ -169,17 +157,8 @@ If a requested implementation conflicts with the canonical map or data catalog, 
 def register_system_map_tool(mcp: FastMCP) -> None:
     @mcp.tool(
         name="marketplace_system_map",
-        annotations={
-            "title": "Canonical Marketplaces MCP architecture map",
-            "readOnlyHint": True,
-            "openWorldHint": False,
-        },
+        annotations={"title": "Canonical Marketplaces MCP architecture map", "readOnlyHint": True, "openWorldHint": False},
     )
     async def marketplace_system_map() -> str:
-        """Return the canonical server-side architecture and routing rules.
-
-        Agents should consult this tool before architecture, storage, deployment,
-        archive, routing, or cross-client state changes. The returned map is the
-        MCP source of truth and overrides chat-local assumptions.
-        """
+        """Return the canonical server-side architecture and routing rules."""
         return json.dumps(SYSTEM_MAP, ensure_ascii=False, indent=2)
