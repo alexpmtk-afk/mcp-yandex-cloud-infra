@@ -1,5 +1,6 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@a5f2193c2975c6e2b9e053807d67e609585db3f5
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@d25087637c19cf7455bd8e3074d647f5da37930c
 Purpose: production TEST rollout of Google Drive as the canonical marketplace archive through the owner-operated Apps Script bridge, retaining Yandex Object Storage for durable queue/staging and backup.
 Architecture contract: annual dataset CSV files and reports registry are authoritative on Google Drive; Yandex Object Storage stores job state/staging and a byte-for-byte backup; the Apps Script bridge secret is stored in Yandex Lockbox; Google Cloud OAuth is not a runtime dependency.
 Production overlays: preserve the multi-dataset data catalog/routing and runtime hardening already present in this vendored snapshot.
 Synced: 2026-09-14 after marketplaces-mcp-ru PR #36 full CI/security/dependency PASS; WB weekly finance detail pages use the official/original 100,000-row limit with rrdId continuation. Laser Master finalization diagnostics proved the blocking failure is runtime memory pressure, not provider pagination.
+Synced: 2026-09-14 after app PR #38; WB archive finalization is split into durable PREPARE, UPLOAD_ANNUAL, and COMMIT stages for live Laser Master acceptance.
