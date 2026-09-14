@@ -317,12 +317,13 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'10'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'11'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
               assert 'Google Drive' in instructions, instructions
               assert 'Apps Script' in instructions, instructions
+              assert 'resumable' in instructions.lower(), instructions
               assert 'Yandex Object Storage' in instructions, instructions
               assert 'MULTI-DATASET' in instructions, instructions
               assert 'marketplace_metric_route' in instructions, instructions
@@ -353,15 +354,23 @@ jobs:
               need = {
                   'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status',
                   'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query',
+                  'marketplace_archive_resumable_diagnostic_step',
                   'marketplace_system_map','marketplace_data_catalog','marketplace_metric_route'
               }
               assert need <= names, sorted(need-names)
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-14.v4', system_map
+              assert system_map.get('architecture_version') == '2026-09-14.v16', system_map
               assert system_map['storage_policy']['primary_archive_storage'] == 'Google Drive', system_map
               assert 'Apps Script' in system_map['storage_policy']['google_drive_auth'], system_map
+              assert 'no Google OAuth refresh token' in system_map['storage_policy']['google_drive_auth'], system_map
+              large = system_map['archive_policy']['large_file_upload']
+              assert large['session_broker'] == 'Google Apps Script bridge', system_map
+              assert 'non-canonical' in large['canonical_protection'], system_map
+              assert 'sha256Checksum' in large['verification_rule'], system_map
+              assert 'promote_verified' in large['promotion_rule'], system_map
+              assert 'never follow redirects' in large['redirect_rule'], system_map
               assert system_map['archive_policy']['multi_dataset'] is True, system_map
               assert system_map['archive_policy']['no_single_report_is_complete_database'] is True, system_map
               print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
@@ -393,7 +402,7 @@ jobs:
               assert storage.get('root_name') == 'MCP архив базы данных', archive
               canonical = storage.get('canonical') or {}
               assert canonical.get('backend') == 'google_drive_apps_script_bridge', archive
-              assert int(canonical.get('bridge_version') or 0) >= 2, archive
+              assert int(canonical.get('bridge_version') or 0) >= 3, archive
               queue_storage = storage.get('queue_and_staging') or {}
               assert queue_storage.get('backend') == 'yandex_object_storage', archive
               assert queue_storage.get('reachable') is True, archive

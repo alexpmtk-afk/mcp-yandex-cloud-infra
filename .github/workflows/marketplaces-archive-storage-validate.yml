@@ -5,6 +5,7 @@ on:
     paths:
       - app/**
       - terraform/**
+      - docs/apps_script/**
       - .github/workflows/deploy-mcp-test.yml
       - .github/workflows/configure-card-monitor.yml
       - .github/workflows/marketplaces-system-map-acceptance.yml
@@ -14,6 +15,9 @@ on:
 
 permissions:
   contents: read
+
+env:
+  DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
 
 jobs:
   validate:
@@ -53,8 +57,25 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python -m pytest app/tests/test_archive_yandex.py app/tests/test_archive_hybrid.py app/tests/test_system_map.py -q
+          python -m pytest \
+            app/tests/test_archive_yandex.py \
+            app/tests/test_archive_hybrid.py \
+            app/tests/test_archive_drive_resumable.py \
+            app/tests/test_archive_drive_resumable_v16.py \
+            app/tests/test_archive_resumable_worker.py \
+            app/tests/test_archive_resumable_diagnostic.py \
+            app/tests/test_system_map.py -q
           python -m compileall -q app/core
+          grep -q 'marketplace_archive_resumable_diagnostic_step' app/core/archive_tools.py
+          grep -q 'promote_verified_file' app/core/archive_google.py
+          grep -q 'promotion_attempted' app/core/archive_resumable_worker.py
+          grep -q 'canonical_untouched' app/core/archive_resumable_worker.py
+          grep -q 'sha256Checksum' app/core/archive_resumable_worker.py
+          grep -q 'trash_by_id' docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -q 'promote_verified' docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -q 'archive_root_id_guard:true' docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -q 'drive_api_preflight:true' docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -q 'sha256Checksum' docs/apps_script/marketplaces_drive_bridge_v3.gs
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL' .github/workflows/deploy-mcp-test.yml
@@ -62,7 +83,10 @@ jobs:
           grep -q 'google_drive_bridge_secret' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'google_drive_oauth_json' .github/workflows/deploy-mcp-test.yml
+          grep -q '2026-09-14.v16' .github/workflows/deploy-mcp-test.yml
+          grep -q 'bridge_version.*>= 3' .github/workflows/deploy-mcp-test.yml
           grep -q 'ARCHIVE_GOOGLE_DRIVE_BRIDGE=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'marketplace_archive_resumable_diagnostic_step' .github/workflows/deploy-mcp-test.yml
           grep -q 'yandex_storage_bucket.marketplace_archive' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/configure-card-monitor.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/configure-card-monitor.yml
@@ -92,4 +116,41 @@ jobs:
           grep -q 'ARCHIVE_TEMP_ADMIN_GRANTED=1' .github/workflows/marketplaces-archive-versioning.yml
           grep -q 'ARCHIVE_TEMP_ADMIN_REVOKED=PASS' .github/workflows/marketplaces-archive-versioning.yml
           ! grep -R -E 'resource "yandex_iam_service_account_(static_)?access_key"|aws_access_key_id|aws_secret_access_key' terraform/mcp_test.tf .github/workflows/deploy-mcp-test.yml .github/workflows/configure-card-monitor.yml .github/workflows/marketplaces-archive-versioning.yml
+          test -f docs/apps_script/marketplaces_drive_bridge_v3.gs
+          test -f docs/apps_script/appsscript.json
+          grep -q "BRIDGE_VERSION=3" docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -q 'script.external_request' docs/apps_script/appsscript.json
+          grep -q '9137a621a41c00276a07949d5265cfea6175e616' app/.source-revision
           echo 'ARCHIVE_RUNTIME_VALIDATE=PASS'
+
+      - name: Probe live Apps Script bridge version and hardened capabilities (read only)
+        shell: bash
+        run: |
+          set -euo pipefail
+          BODY=''
+          ok=0
+          for attempt in 1 2 3 4 5; do
+            if BODY="$(curl -fsSL --connect-timeout 10 --max-time 30 "$DRIVE_BRIDGE_URL")"; then
+              ok=1
+              break
+            fi
+            echo "Apps Script probe transient failure; retry $attempt/5"
+            [[ "$attempt" -lt 5 ]]
+            sleep $((attempt * 3))
+          done
+          test "$ok" = 1
+          printf '%s' "$BODY" > "$RUNNER_TEMP/bridge-health.json"
+          python - <<'PY'
+          import json, os
+          p=os.path.join(os.environ['RUNNER_TEMP'],'bridge-health.json')
+          data=json.load(open(p,encoding='utf-8'))
+          assert data.get('ok') is True, data
+          assert int(data.get('version') or 0) >= 3, data
+          assert data.get('root_id') == '1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ', data
+          caps=data.get('capabilities') or {}
+          for key in ('resumable_start','sha256_metadata','staged_promotion','diagnostic_cleanup','archive_root_id_guard','drive_api_preflight'):
+              assert caps.get(key) is True, (key,data)
+          print(f"LIVE_DRIVE_BRIDGE_VERSION={data.get('version')}")
+          print(f"LIVE_DRIVE_BRIDGE_ROOT={data.get('root_name')}")
+          print('LIVE_DRIVE_BRIDGE_HARDENED_CAPABILITIES=PASS')
+          PY
