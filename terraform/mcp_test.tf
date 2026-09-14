@@ -101,9 +101,9 @@ resource "yandex_serverless_container" "mcp" {
   folder_id          = yandex_resourcemanager_folder.mcp_test.id
   name               = "marketplaces-mcp-test"
   description        = "Private Streamable HTTP MCP service"
-  memory             = 512
+  memory             = 2048
   cores              = 1
-  execution_timeout  = "60s"
+  execution_timeout  = "600s"
   service_account_id = yandex_iam_service_account.runtime.id
   image {
     url = var.mcp_image_url
