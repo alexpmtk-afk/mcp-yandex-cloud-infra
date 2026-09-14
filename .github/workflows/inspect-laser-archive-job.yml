@@ -6,6 +6,7 @@ on:
     branches: [main]
     paths:
       - .github/workflows/inspect-laser-archive-job.yml
+      - .github/workflows/control/inspect-laser-archive-job.txt
 
 permissions:
   contents: read
