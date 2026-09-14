@@ -11,13 +11,11 @@ from mcp.server.fastmcp import FastMCP
 from .archive_hybrid import build_hybrid_archive_store_from_env
 from .archive_tools import register_archive_tools
 from .business_registry import resolve_business_cabinet
-from .business_router import register_business_query_tool
 from .card_monitor import register_tools as register_card_monitor_tools
-from .order_history_tools import register_order_history_tools
+from .data_catalog import register_data_catalog_tools
 from .system_map import SYSTEM_INSTRUCTIONS, register_system_map_tool
 from .tools import resolve_named_cabinet
 from .wb_advertising import register_wb_advertising_tools
-from .ydb_order_history import build_order_history_store_from_env
 
 SERVICE_MODULES = ("wb_mcp.server", "ozon_mcp.server", "ozon_perf_mcp.server")
 
@@ -211,7 +209,7 @@ def _register_finance_tools(combined: FastMCP, modules: dict[str, Any]) -> None:
 
 
 def build(**fastmcp_kwargs: Any) -> FastMCP:
-    """Return one FastMCP carrying seller APIs and server-native business routing."""
+    """Return one FastMCP carrying seller API, advertising, archive and card-monitor tools."""
     fastmcp_kwargs.setdefault("instructions", SYSTEM_INSTRUCTIONS)
     combined = FastMCP("marketplaces-mcp-ru", **fastmcp_kwargs)
     modules: dict[str, Any] = {}
@@ -228,17 +226,12 @@ def build(**fastmcp_kwargs: Any) -> FastMCP:
                 "openWorldHint": False,
             },
         )(_rate_status_tool(mod.client))
-
-    order_history_store = build_order_history_store_from_env()
     archive_store = build_hybrid_archive_store_from_env()
-    modules["_order_history_store"] = order_history_store
     modules["_archive_store"] = archive_store
-
     register_system_map_tool(combined)
+    register_data_catalog_tools(combined)
     _register_finance_tools(combined, modules)
     register_wb_advertising_tools(combined, modules)
-    register_business_query_tool(combined, modules)
-    register_order_history_tools(combined, modules, order_history_store)
     register_archive_tools(combined, modules, archive_store)
     register_card_monitor_tools(combined)
     return combined
