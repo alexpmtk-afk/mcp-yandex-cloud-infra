@@ -2,6 +2,10 @@ name: Marketplaces Archive Queue Worker
 
 on:
   workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/control/run-marketplaces-archive-queue-worker.txt
   schedule:
     - cron: '*/5 * * * *'
 
@@ -89,7 +93,11 @@ jobs:
               return response.json() if response.text.strip() else None
 
           def tool(name, arguments):
-              timeout = httpx.Timeout(connect=15.0, read=75.0, write=30.0, pool=15.0)
+              # Large Laser Master annual-file finalization legitimately exceeds
+              # the old 75-second client read budget. Keep this below the live
+              # container's 600-second execution timeout so provider/runtime
+              # failures still surface instead of hanging indefinitely.
+              timeout = httpx.Timeout(connect=15.0, read=540.0, write=30.0, pool=15.0)
               headers0 = {
                   'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
                   'Accept': 'application/json, text/event-stream',
