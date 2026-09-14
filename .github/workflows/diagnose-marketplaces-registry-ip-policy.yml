@@ -1,4 +1,5 @@
 name: Diagnose Marketplaces Registry IP Policy
+# Trigger read-only registry policy diagnostic.
 
 on:
   push:
