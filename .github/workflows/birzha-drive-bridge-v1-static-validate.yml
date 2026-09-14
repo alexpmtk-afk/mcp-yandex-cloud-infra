@@ -4,8 +4,11 @@ on:
   pull_request:
     paths:
       - 'shared/google-drive-bridge/**'
+      - 'tools/bootstrap_bridge_v1_apps_script.py'
       - '.github/workflows/birzha-drive-bridge-v1-*.yml'
-      - '.github/workflows/provision-google-drive-bridge-v1-lockboxes.yml'
+      - '.github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml'
+      - 'terraform/birzha_test/m24_autonomous_worker.tf'
+      - 'terraform/birzha_test/m25_market_mirror.tf'
   workflow_dispatch:
 
 permissions:
@@ -33,6 +36,8 @@ jobs:
           python -m pip install 'pytest>=8,<9' 'httpx>=0.27,<1'
           python -m pytest shared/google-drive-bridge/tests -q
           python -m compileall -q shared/google-drive-bridge/python_client shared/google-drive-bridge/scripts
+          python -m py_compile tools/bootstrap_bridge_v1_apps_script.py
+          test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
           echo 'BIRZHA_SHARED_PROTOCOL_ALPHA2=PASS'
 
       - name: Validate Birzha bootstrap and acceptance contract
@@ -41,27 +46,28 @@ jobs:
           set -euo pipefail
           for f in \
             .github/workflows/birzha-drive-bridge-v1-bootstrap.yml \
-            .github/workflows/birzha-drive-bridge-v1-acceptance.yml; do
+            .github/workflows/birzha-drive-bridge-v1-acceptance.yml \
+            .github/workflows/birzha-drive-bridge-v1-cutover-gate.yml; do
             test -f "$f"
             grep -q 'workflow_dispatch:' "$f"
           done
           grep -q 'PROJECT_ID: birzha' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
           grep -q 'PROJECT_ID: birzha' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
-          grep -q 'birzha-google-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
+          grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
+          grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -q 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
+          grep -q 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'BIRZHA_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
           grep -q 'sheets_acceptance.py' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'OUTSIDE_ROOT' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           echo 'BIRZHA_BRIDGE_V1_READINESS_CONTRACT=PASS'
 
-      - name: Validate isolated Lockbox provisioning contract
+      - name: Validate Birzha runtime isolation contract
         shell: bash
         run: |
           set -euo pipefail
-          f=.github/workflows/provision-google-drive-bridge-v1-lockboxes.yml
-          grep -q 'marketplaces-google-drive-bridge-v1' "$f"
-          grep -q 'birzha-google-drive-bridge-v1' "$f"
-          grep -q 'marketplaces-mcp-runtime' "$f"
-          grep -q 'birzha-mcp-forecast-runtime' "$f"
-          grep -q 'SECRET_PAYLOAD_CREATED=NO' "$f"
-          grep -q 'PRODUCTION_BINDINGS_CHANGED=NO' "$f"
-          echo 'BRIDGE_LOCKBOX_PROVISIONING_CONTRACT=PASS'
+          grep -q 'gdrive_bridge_v1_secret' terraform/birzha_test/m24_autonomous_worker.tf
+          grep -q 'BIRZHA_MARKET_MIRROR_PROJECT_ID' terraform/birzha_test/m24_autonomous_worker.tf
+          grep -q 'm25_birzha_bridge_v1_secret_id' terraform/birzha_test/m25_market_mirror.tf
+          ! grep -q 'marketplaces-google-drive-bridge-v1' terraform/birzha_test/m24_autonomous_worker.tf
+          echo 'BIRZHA_RUNTIME_PROJECT_ISOLATION=PASS'
