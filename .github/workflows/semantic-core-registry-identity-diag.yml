@@ -1,0 +1,118 @@
+name: Semantic Core Registry Identity Diagnostic
+
+on:
+  push:
+    branches:
+      - fix/semantic-core-test-iam-20260914
+    paths:
+      - .github/workflows/semantic-core-registry-identity-diag.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors \
+            -o "$RUNNER_TEMP/yc.tgz" \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create registry-identity-diag || true
+          yc config set service-account-key "$KEY_FILE"
+          echo "YC_SERVICE_ACCOUNT_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          echo "TF_VAR_yc_service_account_key_file=$KEY_FILE" >> "$GITHUB_ENV"
+
+      - name: Enumerate every TEST registry and compare historical IDs
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          echo "TEST_FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/registries.json"
+          echo 'ALL_TEST_REGISTRIES_BEGIN'
+          jq -c '.[] | {id,name,status,created_at,labels}' "$RUNNER_TEMP/registries.json"
+          echo 'ALL_TEST_REGISTRIES_END'
+          echo "registry_count=$(jq 'length' "$RUNNER_TEMP/registries.json")"
+          for id in crpnhk1hs1gsai91b164 crp6o36mbl2tqonu1qbi; do
+            echo "REGISTRY_GET_BEGIN id=$id"
+            if timeout 45s yc container registry get "$id" --format json > "$RUNNER_TEMP/get-$id.json" 2>"$RUNNER_TEMP/get-$id.err"; then
+              jq -c '{id,name,folder_id,status,created_at,labels}' "$RUNNER_TEMP/get-$id.json"
+              echo "REGISTRY_GET=PASS id=$id"
+            else
+              cat "$RUNNER_TEMP/get-$id.err"
+              echo "REGISTRY_GET=FAIL id=$id"
+            fi
+            echo "REGISTRY_GET_END id=$id"
+          done
+
+      - name: Read Terraform state identity only
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_TFSTATE_ACCESS_KEY"
+          test -n "$YC_TFSTATE_SECRET_KEY"
+          terraform -chdir=terraform init -reconfigure -input=false \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          echo 'TF_REGISTRY_STATE_BEGIN'
+          terraform -chdir=terraform state show -no-color yandex_container_registry.mcp \
+            | grep -E '^[[:space:]]*(id|name|folder_id|status|created_at)[[:space:]]*=' || true
+          echo 'TF_REGISTRY_STATE_END'
+          echo -n 'terraform_output_container_registry_id='
+          terraform -chdir=terraform output -raw container_registry_id || true
+          echo
+
+      - name: If Terraform registry exists, test helper push there only
+        shell: bash
+        run: |
+          set -euo pipefail
+          TF_REGISTRY_ID="$(terraform -chdir=terraform output -raw container_registry_id 2>/dev/null || true)"
+          test -n "$TF_REGISTRY_ID"
+          if ! yc container registry get "$TF_REGISTRY_ID" --format json >/dev/null 2>&1; then
+            echo "TF_REGISTRY_LIVE=NO id=$TF_REGISTRY_ID"
+            exit 0
+          fi
+          echo "TF_REGISTRY_LIVE=YES id=$TF_REGISTRY_ID"
+          yc container registry configure-docker
+          IMAGE="cr.yandex/${TF_REGISTRY_ID}/semantic-core-tf-probe:${GITHUB_SHA}"
+          mkdir -p "$RUNNER_TEMP/probe"
+          printf 'FROM scratch\nLABEL purpose="semantic-core-terraform-registry-identity-probe"\n' > "$RUNNER_TEMP/probe/Dockerfile"
+          docker build --tag "$IMAGE" "$RUNNER_TEMP/probe"
+          docker push "$IMAGE"
+          echo "TF_REGISTRY_PUSH=PASS id=$TF_REGISTRY_ID image=$IMAGE"
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP"/registries.json "$RUNNER_TEMP"/get-*.json "$RUNNER_TEMP"/get-*.err
