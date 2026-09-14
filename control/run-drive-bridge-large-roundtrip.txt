@@ -1,0 +1,2 @@
+Run large Google Drive bridge read-write-read exact SHA256 acceptance using the canonical 2026 Novokshenov file as source bytes and a dedicated diagnostic copy as the write target.
+Requested: 2026-09-14.
