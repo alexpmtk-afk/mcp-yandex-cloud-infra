@@ -86,6 +86,18 @@ resource "yandex_lockbox_secret" "marketplace_credentials" {
   labels              = local.labels
 }
 
+# Dedicated Shared Google Drive Bridge Protocol v1 credential container.
+# The secret value is bootstrapped out of band only after the isolated
+# Marketplaces Apps Script deployment passes identity/root checks. Never reuse
+# the legacy marketplace credential bundle for this bridge.
+resource "yandex_lockbox_secret" "marketplaces_google_drive_bridge_v1" {
+  folder_id           = yandex_resourcemanager_folder.mcp_test.id
+  name                = "marketplaces-google-drive-bridge-v1"
+  description         = "Dedicated TEST credential for Marketplaces Google Drive Bridge Protocol v1. Value is added out of band after live bridge validation."
+  deletion_protection = true
+  labels              = local.labels
+}
+
 # Authoritative shared file archive. The bucket is private. Runtime and
 # Terraform use IAM tokens only and this stack creates no Object Storage static
 # access key. Versioning is enabled immediately after Terraform apply via the
