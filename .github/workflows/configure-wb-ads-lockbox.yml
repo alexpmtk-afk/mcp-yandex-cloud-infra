@@ -65,6 +65,7 @@ jobs:
           jq -r '.entries[]|select(.key=="cabinets_json")|.text_value' "$RUNNER_TEMP/payload.json" > "$RUNNER_TEMP/cabinets.json"
           test -s "$RUNNER_TEMP/cabinets.json"
           chmod 600 "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/cabinets.json"
+          echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
           echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "base_version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
           echo "deployer_id=$DEPLOYER_ID" >> "$GITHUB_OUTPUT"
@@ -139,23 +140,21 @@ jobs:
             echo 'change_required=true' >> "$GITHUB_OUTPUT"
           fi
 
-      - name: Grant temporary secret-scoped Lockbox admin to deployer
+      - name: Grant temporary TEST-folder Lockbox admin to deployer
         if: steps.transform.outputs.change_required == 'true'
         id: grant
         shell: bash
         env:
-          SECRET_ID: ${{ steps.secret.outputs.secret_id }}
+          FOLDER_ID: ${{ steps.secret.outputs.folder_id }}
           DEPLOYER_ID: ${{ steps.secret.outputs.deployer_id }}
         run: |
           set -euo pipefail
-          timeout 45s yc lockbox secret add-access-binding \
-            --id "$SECRET_ID" \
-            --service-account-id "$DEPLOYER_ID" \
+          timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" \
             --role lockbox.admin \
-            --no-user-output >/dev/null
+            --service-account-id "$DEPLOYER_ID"
           echo 'granted=true' >> "$GITHUB_OUTPUT"
-          echo 'TEMP_LOCKBOX_ADMIN=GRANTED'
-          sleep 12
+          echo 'TEMP_TEST_FOLDER_LOCKBOX_ADMIN=GRANTED'
+          sleep 20
 
       - name: Create new Lockbox version from current version
         if: steps.transform.outputs.change_required == 'true'
@@ -227,20 +226,18 @@ jobs:
           print('CRITICAL_LOCKBOX_KEYS_PRESERVED=PASS')
           PY
 
-      - name: Revoke temporary Lockbox admin
+      - name: Revoke temporary TEST-folder Lockbox admin
         if: always() && steps.grant.outputs.granted == 'true'
         shell: bash
         env:
-          SECRET_ID: ${{ steps.secret.outputs.secret_id }}
+          FOLDER_ID: ${{ steps.secret.outputs.folder_id }}
           DEPLOYER_ID: ${{ steps.secret.outputs.deployer_id }}
         run: |
           set -euo pipefail
-          timeout 45s yc lockbox secret remove-access-binding \
-            --id "$SECRET_ID" \
-            --service-account-id "$DEPLOYER_ID" \
+          timeout 90s yc resource-manager folder remove-access-binding "$FOLDER_ID" \
             --role lockbox.admin \
-            --no-user-output >/dev/null
-          echo 'TEMP_LOCKBOX_ADMIN=REVOKED'
+            --service-account-id "$DEPLOYER_ID"
+          echo 'TEMP_TEST_FOLDER_LOCKBOX_ADMIN=REVOKED'
 
       - name: Cleanup ephemeral credentials
         if: always()
