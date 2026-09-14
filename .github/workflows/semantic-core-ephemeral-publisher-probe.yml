@@ -1,0 +1,93 @@
+name: Semantic Core Ephemeral Publisher Probe
+
+on:
+  push:
+    branches:
+      - fix/semantic-core-test-iam-20260914
+    paths:
+      - .github/workflows/semantic-core-ephemeral-publisher-probe.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors -o "$RUNNER_TEMP/yc.tgz" \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate existing CI identity
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/ci-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create ci-bootstrap || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+          echo 'EXISTING_SERVICE_ACCOUNTS_BEGIN'
+          yc iam service-account list --folder-id b1gnd0dqoq3ljod88i8t --format json | jq -c '.[] | {id,name,created_at}'
+          echo 'EXISTING_SERVICE_ACCOUNTS_END'
+
+      - name: Create ephemeral TEST image publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          NAME="semantic-core-publisher-probe-${GITHUB_RUN_ID}"
+          yc iam service-account create --name "$NAME" --folder-id b1gnd0dqoq3ljod88i8t --format json > "$RUNNER_TEMP/publisher.json"
+          SA_ID="$(jq -r '.id' "$RUNNER_TEMP/publisher.json")"
+          test -n "$SA_ID"
+          echo "PROBE_SA_ID=$SA_ID" >> "$GITHUB_ENV"
+          echo "ephemeral_publisher=$SA_ID"
+          yc resource-manager folder add-access-binding b1gnd0dqoq3ljod88i8t \
+            --role container-registry.images.pusher \
+            --service-account-id "$SA_ID"
+          sleep 15
+          yc iam key create --service-account-id "$SA_ID" --output "$RUNNER_TEMP/publisher-key.json"
+          test -s "$RUNNER_TEMP/publisher-key.json"
+          echo 'EPHEMERAL_PUBLISHER_BOOTSTRAP=PASS'
+
+      - name: Push using only ephemeral publisher identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc config profile create ephemeral-publisher || true
+          yc config set service-account-key "$RUNNER_TEMP/publisher-key.json"
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+          yc container registry configure-docker
+          IMAGE="cr.yandex/crpnhk1hs1gsai91b164/semantic-core-ephemeral-probe:${GITHUB_SHA}"
+          mkdir -p "$RUNNER_TEMP/probe"
+          printf 'FROM scratch\nLABEL purpose="semantic-core-ephemeral-publisher-probe"\n' > "$RUNNER_TEMP/probe/Dockerfile"
+          docker build --tag "$IMAGE" "$RUNNER_TEMP/probe"
+          docker push "$IMAGE"
+          echo 'EPHEMERAL_PUBLISHER_PUSH=PASS'
+
+      - name: Cleanup ephemeral publisher
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate ci-bootstrap >/dev/null 2>&1
+          if [[ -n "${PROBE_SA_ID:-}" ]]; then
+            yc iam service-account delete "$PROBE_SA_ID" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/ci-key.json" "$RUNNER_TEMP/publisher-key.json" "$RUNNER_TEMP/publisher.json" "$RUNNER_TEMP/yc.tgz"
+          echo 'EPHEMERAL_PUBLISHER_CLEANUP=DONE'
