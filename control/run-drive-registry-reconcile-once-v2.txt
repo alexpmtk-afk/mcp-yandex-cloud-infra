@@ -1,0 +1,2 @@
+Run strict Drive registry reconciliation v2 using httpx redirect handling.
+Requested: 2026-09-14.
