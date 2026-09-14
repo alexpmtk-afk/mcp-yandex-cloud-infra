@@ -1,4 +1,4 @@
-name: Bootstrap TEST Registry Pusher and Deploy
+name: Diagnose TEST Registry Access
 
 on:
   workflow_dispatch:
@@ -10,14 +10,13 @@ on:
 
 permissions:
   contents: read
-  actions: write
 
 concurrency:
   group: marketplaces-test-registry-bootstrap
   cancel-in-progress: false
 
 jobs:
-  bootstrap-and-dispatch:
+  diagnose:
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 20
@@ -47,7 +46,7 @@ jobs:
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Grant TEST registry image pusher to CI only
+      - name: Diagnose TEST registry IAM and IP policy
         shell: bash
         run: |
           set -euo pipefail
@@ -57,21 +56,22 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
           test -n "$REGISTRY_ID"
-          timeout 90s yc container registry add-access-binding "$REGISTRY_ID" \
-            --role container-registry.images.pusher \
-            --subject "serviceAccount:$CI_SA_ID"
-          echo 'test_registry_pusher_binding=PASS'
 
-      - name: Dispatch existing TEST deploy
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          set -euo pipefail
-          gh workflow run deploy-mcp-test.yml --repo "$GITHUB_REPOSITORY" --ref main
-          echo 'test_deploy_dispatch=PASS'
+          timeout 45s yc container registry list-access-bindings "$REGISTRY_ID" --format json > "$RUNNER_TEMP/registry-access.json"
+          timeout 45s yc container registry list-ip-permissions "$REGISTRY_ID" --format json > "$RUNNER_TEMP/registry-ip.json"
+          RUNNER_IP="$(curl -fsS --max-time 15 https://api.ipify.org)"
+          test -n "$RUNNER_IP"
 
-      - name: Cleanup ephemeral credential
+          echo "ci_service_account=$CI_SA_ID"
+          echo "registry_id=$REGISTRY_ID"
+          echo "runner_public_ip=$RUNNER_IP"
+          echo 'registry_access_bindings:'
+          jq -c '.' "$RUNNER_TEMP/registry-access.json"
+          echo 'registry_ip_permissions:'
+          jq -c '.' "$RUNNER_TEMP/registry-ip.json"
+          echo 'registry_access_diagnostic=PASS'
+
+      - name: Cleanup diagnostic files and credential
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/registry-access.json" "$RUNNER_TEMP/registry-ip.json"
