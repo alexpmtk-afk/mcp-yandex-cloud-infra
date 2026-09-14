@@ -58,13 +58,14 @@ jobs:
           set -euo pipefail
           export BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
           python -u - <<'PY'
-          import base64,hashlib,json,os,time
+          import base64,hashlib,os,time
           import httpx
 
           url=os.environ['DRIVE_BRIDGE_URL']
           secret=os.environ['BRIDGE_SECRET']
           source_path='База данных/WB/wb_novokshenov/2026/finance/weekly/main'
           source_name='wb_novokshenov__weekly_main__2026.csv'
+          expected_source_id='1MDI21jGg4IHnC93HTGcvcSemUvRXn3WK'
           test_path='app/diagnostics/bridge-roundtrip'
           test_name='wb_novokshenov__weekly_main__2026__roundtrip_test.csv'
           expected_size=16159972
@@ -83,12 +84,37 @@ jobs:
                   print(f'{action.upper()}_SECONDS={dt:.3f}',flush=True)
                   return d
 
-              src=post('read',path=source_path,filename=source_name)
-              assert src.get('found') is True
-              raw=base64.b64decode(src.get('content_base64',''),validate=True)
+              stat=post('stat',path=source_path,filename=source_name)
+              sf=stat.get('file') or {}
+              print('SOURCE_STAT_FOUND='+str(bool(stat.get('found'))),flush=True)
+              print('SOURCE_STAT_ID='+str(sf.get('id')),flush=True)
+              print('SOURCE_STAT_SIZE='+str(sf.get('size')),flush=True)
+              assert stat.get('found') is True
+              source_id=str(sf.get('id') or '')
+              assert source_id==expected_source_id, (source_id,expected_source_id)
+              assert int(sf.get('size') or 0)==expected_size
+
+              path_read=None
+              for attempt in range(1,4):
+                  candidate=post('read',path=source_path,filename=source_name)
+                  print(f'PATH_READ_ATTEMPT_{attempt}_FOUND={bool(candidate.get("found"))}',flush=True)
+                  if candidate.get('found') is True:
+                      path_read=candidate
+                      break
+                  time.sleep(2)
+
+              if path_read is not None:
+                  raw=base64.b64decode(path_read.get('content_base64',''),validate=True)
+                  print('SOURCE_READ_MODE=path',flush=True)
+              else:
+                  by_id=post('read_by_id',file_id=source_id)
+                  assert by_id.get('found') is True
+                  raw=base64.b64decode(by_id.get('content_base64',''),validate=True)
+                  print('SOURCE_READ_MODE=id_fallback',flush=True)
+
               source_sha=hashlib.sha256(raw).hexdigest()
-              print(f'SOURCE_BYTES={len(raw)}')
-              print(f'SOURCE_SHA256={source_sha}')
+              print(f'SOURCE_BYTES={len(raw)}',flush=True)
+              print(f'SOURCE_SHA256={source_sha}',flush=True)
               assert len(raw)==expected_size, (len(raw),expected_size)
               assert source_sha==expected_sha, (source_sha,expected_sha)
 
@@ -101,21 +127,32 @@ jobs:
                   sha256=source_sha,
               )
               wf=written.get('file') or {}
-              print('TEST_FILE_ID='+str(wf.get('id')))
-              print('TEST_FILE_SIZE='+str(wf.get('size')))
-              print('WRITE_SHA256='+str(written.get('sha256')))
+              test_id=str(wf.get('id') or '')
+              print('TEST_FILE_ID='+test_id,flush=True)
+              print('TEST_FILE_SIZE='+str(wf.get('size')),flush=True)
+              print('WRITE_SHA256='+str(written.get('sha256')),flush=True)
+              assert test_id
+              assert int(wf.get('size') or 0)==expected_size
+              assert str(written.get('sha256') or '').lower()==source_sha
 
-              back=post('read',path=test_path,filename=test_name)
+              back=post('read_by_id',file_id=test_id)
               assert back.get('found') is True
               returned=base64.b64decode(back.get('content_base64',''),validate=True)
               returned_sha=hashlib.sha256(returned).hexdigest()
-              print(f'RETURN_BYTES={len(returned)}')
-              print(f'RETURN_SHA256={returned_sha}')
-              print('BYTE_EXACT_MATCH='+str(returned==raw))
+              print(f'RETURN_BYTES={len(returned)}',flush=True)
+              print(f'RETURN_SHA256={returned_sha}',flush=True)
+              print('BYTE_EXACT_MATCH='+str(returned==raw),flush=True)
               assert len(returned)==expected_size
               assert returned_sha==source_sha
               assert returned==raw
-              print('LARGE_ROUNDTRIP=PASS')
+
+              named_back=post('read',path=test_path,filename=test_name)
+              print('TEST_PATH_READ_FOUND='+str(bool(named_back.get('found'))),flush=True)
+              assert named_back.get('found') is True
+              named_raw=base64.b64decode(named_back.get('content_base64',''),validate=True)
+              assert hashlib.sha256(named_raw).hexdigest()==source_sha
+              assert named_raw==raw
+              print('LARGE_ROUNDTRIP=PASS',flush=True)
           PY
 
       - name: Cleanup
