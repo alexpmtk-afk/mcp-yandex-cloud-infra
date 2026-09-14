@@ -6,10 +6,10 @@ The helper keeps the refresh token out of chat, files and command-line arguments
 2. runs the loopback-browser authorization flow with PKCE;
 3. verifies access to the exact archive root folder;
 4. sends the minimal OAuth JSON to a temporary GitHub Actions secret via stdin;
-5. runs the bootstrap workflow and waits for it to finish;
+5. runs the storage-only bootstrap workflow and waits for it to finish;
 6. deletes the temporary GitHub Actions secret in a finally block.
 
-The durable credential is stored by the workflow in Yandex Lockbox.
+The durable credential is stored by the workflow in Yandex Lockbox. Runtime deployment is deliberately separate.
 """
 from __future__ import annotations
 
@@ -244,7 +244,7 @@ def main() -> int:
         run_id = str(run["databaseId"])
         print(f"Запущен защищённый bootstrap workflow #{run_id}. Ожидаю результат…")
         run_gh(["run", "watch", run_id, "--repo", REPO, "--exit-status"])
-        print("Yandex Lockbox + Drive-enabled MCP deployment — PASS")
+        print("Yandex Lockbox OAuth bootstrap — PASS")
     finally:
         if secret_set:
             try:
