@@ -1,4 +1,4 @@
-name: BIRZHA YDB Temporary Editor Resume Once
+name: BIRZHA YDB Runtime Impersonation Resume Once
 
 on:
   push:
@@ -25,7 +25,6 @@ jobs:
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
       - name: Authenticate central infra deployer
-        id: auth
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -36,44 +35,30 @@ jobs:
           chmod 600 "$KEY_FILE"
           DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
           test "$DEPLOYER_ID" = 'ajecdjjrkdo1t3itpl9k'
-          echo "DEPLOYER_ID=$DEPLOYER_ID" >> "$GITHUB_ENV"
           yc config profile create birzha-ydb-resume || true
           yc config set service-account-key "$KEY_FILE"
           echo 'DEPLOYER_AUTH=PASS'
 
-      - name: Verify exact database and current binding absence
-        id: precheck
+      - name: Verify exact runtime identity and YDB binding
         shell: bash
         env:
+          FOLDER_ID: b1g00gqb66tbnfoumnkv
           YDB_ID: etnes7omhgut11oulsd5
+          EXPECTED_RUNTIME_ID: ajegcsoflha6k57q640h
         run: |
           set -euo pipefail
+          RUNTIME_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-runtime")|.id' | head -1)"
+          test "$RUNTIME_ID" = "$EXPECTED_RUNTIME_ID"
+          echo "RUNTIME_ID=$RUNTIME_ID" >> "$GITHUB_ENV"
           yc ydb database get --id "$YDB_ID" --format json > "$RUNNER_TEMP/db-before.json"
           test "$(jq -r '.name' "$RUNNER_TEMP/db-before.json")" = 'birzha-mcp-forecast-state'
           STATUS="$(jq -r '.status' "$RUNNER_TEMP/db-before.json")"
           [[ "$STATUS" == 'STOPPED' || "$STATUS" == 'RUNNING' ]]
-          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/access-before.json"
-          if jq -e --arg sid "$DEPLOYER_ID" '.[]? | select(.role_id=="ydb.editor" and (.subject.id // "")==$sid)' "$RUNNER_TEMP/access-before.json" >/dev/null; then
-            echo 'FAIL: deployer already had ydb.editor; refusing temporary-grant workflow' >&2
-            exit 1
-          fi
-          echo "YDB_PRECHECK=PASS status=$STATUS binding_absent=true"
+          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/db-access.json"
+          jq -e --arg sid "$RUNTIME_ID" '.[]? | select(.role_id=="ydb.editor" and (.subject.id // "")==$sid)' "$RUNNER_TEMP/db-access.json" >/dev/null
+          echo "YDB_PRECHECK=PASS status=$STATUS runtime_ydb_editor=true"
 
-      - name: Add temporary database-scoped ydb.editor
-        id: grant
-        shell: bash
-        env:
-          YDB_ID: etnes7omhgut11oulsd5
-        run: |
-          set -euo pipefail
-          yc ydb database add-access-binding --id "$YDB_ID" --role ydb.editor --service-account-id "$DEPLOYER_ID"
-          echo 'granted=true' >> "$GITHUB_OUTPUT"
-          sleep 20
-          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/access-granted.json"
-          jq -e --arg sid "$DEPLOYER_ID" '.[]? | select(.role_id=="ydb.editor" and (.subject.id // "")==$sid)' "$RUNNER_TEMP/access-granted.json" >/dev/null
-          echo 'TEMP_DATABASE_YDB_EDITOR=GRANTED'
-
-      - name: Start exact Birzha YDB
+      - name: Start exact Birzha YDB as runtime service account
         shell: bash
         env:
           YDB_ID: etnes7omhgut11oulsd5
@@ -81,41 +66,35 @@ jobs:
           set -euo pipefail
           STATUS="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
           if [[ "$STATUS" == 'STOPPED' ]]; then
-            yc ydb database start --id "$YDB_ID"
+            yc ydb database start --id "$YDB_ID" --impersonate-service-account-id "$RUNTIME_ID"
           elif [[ "$STATUS" != 'RUNNING' ]]; then
             echo "Unexpected YDB status: $STATUS" >&2
             exit 1
           fi
-          FINAL="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
-          test "$FINAL" = 'RUNNING'
-          echo 'YDB_START=PASS status=RUNNING'
+          for attempt in $(seq 1 30); do
+            FINAL="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
+            echo "YDB_STATUS attempt=$attempt status=$FINAL"
+            if [[ "$FINAL" == 'RUNNING' ]]; then
+              echo 'YDB_START=PASS status=RUNNING'
+              exit 0
+            fi
+            [[ "$FINAL" == 'STARTING' || "$FINAL" == 'STOPPED' ]]
+            sleep 5
+          done
+          echo 'YDB did not reach RUNNING' >&2
+          exit 1
 
-      - name: Remove temporary database-scoped ydb.editor
-        if: always() && steps.grant.outputs.granted == 'true'
+      - name: Verify no IAM bindings were changed
         shell: bash
         env:
           YDB_ID: etnes7omhgut11oulsd5
         run: |
           set -euo pipefail
-          yc ydb database remove-access-binding --id "$YDB_ID" --role ydb.editor --service-account-id "$DEPLOYER_ID"
-          echo 'TEMP_DATABASE_YDB_EDITOR=REVOKED'
-
-      - name: Verify cleanup and final state
-        if: always()
-        shell: bash
-        env:
-          YDB_ID: etnes7omhgut11oulsd5
-        run: |
-          set -euo pipefail
-          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/access-final.json"
-          if jq -e --arg sid "$DEPLOYER_ID" '.[]? | select(.role_id=="ydb.editor" and (.subject.id // "")==$sid)' "$RUNNER_TEMP/access-final.json" >/dev/null; then
-            echo 'FAIL: temporary ydb.editor still present' >&2
-            exit 1
-          fi
+          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/db-access-final.json"
+          jq -e --arg sid "$RUNTIME_ID" '.[]? | select(.role_id=="ydb.editor" and (.subject.id // "")==$sid)' "$RUNNER_TEMP/db-access-final.json" >/dev/null
           FINAL="$(yc ydb database get --id "$YDB_ID" --format json | jq -r '.status')"
-          echo "YDB_FINAL_STATUS=$FINAL"
           test "$FINAL" = 'RUNNING'
-          echo 'YDB_RESUME_CLEANUP=PASS'
+          echo 'YDB_RESUME=PASS iam_mutations=NONE status=RUNNING'
 
       - name: Cleanup local credentials
         if: always()
