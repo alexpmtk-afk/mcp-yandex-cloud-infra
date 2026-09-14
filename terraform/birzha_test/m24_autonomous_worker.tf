@@ -44,14 +44,14 @@ resource "yandex_serverless_container" "orchestrator_worker" {
     type = "http"
   }
 
-  # Bridge v1 is project-isolated. The secret id/version below must belong to
-  # Birzha and MUST NOT point at the Marketplaces Lockbox.
+  # Bridge v1 is isolated by project. The secret id/version must belong to the
+  # Birzha project Lockbox and the runtime reads only the dedicated v1 key.
   dynamic "secrets" {
     for_each = var.m25_birzha_bridge_v1_url == null ? [] : [1]
     content {
       id                   = var.m25_birzha_bridge_v1_secret_id
       version_id           = var.m25_birzha_bridge_v1_secret_version_id
-      key                  = "google_drive_bridge_secret"
+      key                  = "gdrive_bridge_v1_secret"
       environment_variable = "BIRZHA_MARKET_MIRROR_BRIDGE_SECRET"
     }
   }
@@ -90,7 +90,7 @@ resource "yandex_serverless_container" "orchestrator_worker" {
           var.m25_birzha_bridge_v1_secret_version_id != null
         )
       )
-      error_message = "Dedicated Birzha Bridge v1 Lockbox id/version are required when Bridge v1 is enabled."
+      error_message = "Birzha project Lockbox id/version containing gdrive_bridge_v1_secret are required when Bridge v1 is enabled."
     }
   }
 
