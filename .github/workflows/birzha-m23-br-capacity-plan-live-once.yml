@@ -10,7 +10,7 @@ permissions:
   contents: read
 
 env:
-  APP_SHA: 03999b4118793cdf92381007ae56b3d2d45b33db
+  APP_SHA: 926d9060eac6b8efb77924c77aa4cfee41bc26d3
 
 jobs:
   audit:
