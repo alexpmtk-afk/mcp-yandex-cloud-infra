@@ -8,6 +8,7 @@ on:
   push:
     branches:
       - feature/google-drive-bridge-v1
+      - feature/bridge-v1-large-read
     paths:
       - 'shared/google-drive-bridge/**'
       - '.github/workflows/google-drive-bridge-v1-ci.yml'
@@ -28,7 +29,8 @@ jobs:
           python -m py_compile \
             shared/google-drive-bridge/python_client/bridge_client.py \
             shared/google-drive-bridge/scripts/acceptance.py \
-            shared/google-drive-bridge/scripts/sheets_acceptance.py
+            shared/google-drive-bridge/scripts/sheets_acceptance.py \
+            shared/google-drive-bridge/scripts/cross_project_acceptance.py
       - run: pytest -q shared/google-drive-bridge/tests
 
   static-contract:
@@ -54,6 +56,9 @@ jobs:
           grep -Fq "SHORTCUT_FORBIDDEN" "$f"
           grep -Fq "idempotency_key" "$f"
           grep -Fq "resumable_start" "$f"
+          grep -Fq "large_download_start" "$f"
+          grep -Fq "large_download_poll" "$f"
+          grep -Fq "drive_files_download_lro" "$f"
           grep -Fq "sheet_write_chunk" "$f"
           if grep -Fq "getScriptLock(); lock.waitLock" "$f"; then
             echo 'Global whole-request ScriptLock pattern is forbidden'
