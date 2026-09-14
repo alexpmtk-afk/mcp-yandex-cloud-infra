@@ -1,4 +1,5 @@
 name: Bind Marketplaces Publisher to TEST Registry
+# Trigger narrow direct registry binding.
 
 on:
   push:
