@@ -40,10 +40,12 @@ jobs:
           set -euo pipefail
           test -f app/.source-revision
           grep -Eq 'alexpmtk-afk/marketplaces-mcp-ru@[0-9a-f]{40}' app/.source-revision
+          grep -Eq '^Semantic Core source: alexpmtk-afk/marketplaces-mcp-ru@[0-9a-f]{40}$' app/.source-revision
           test -z "$(find app -type d -name __pycache__ -print -quit)"
           test -z "$(find app -type f \( -name '*.pyc' -o -name '*.pyo' \) -print -quit)"
           git diff --check
           echo "source_revision=$(head -1 app/.source-revision)"
+          echo 'semantic_source_revision=PASS'
           echo 'snapshot_gate=PASS'
 
       - name: Detect Marketplace Terraform changes
@@ -286,7 +288,7 @@ jobs:
           echo 'authenticated_initialize_200=PASS'
           echo 'MCP_READINESS=PASS'
 
-      - name: Remote MCP, canonical Drive archive, and live WB/Ozon acceptance
+      - name: Remote MCP, Semantic Core, canonical Drive archive, and live WB/Ozon acceptance
         shell: bash
         timeout-minutes: 8
         env:
@@ -346,7 +348,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'11'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'12'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
@@ -356,6 +358,9 @@ jobs:
               assert 'Yandex Object Storage' in instructions, instructions
               assert 'MULTI-DATASET' in instructions, instructions
               assert 'marketplace_metric_route' in instructions, instructions
+              assert 'marketplace_business_query' in instructions, instructions
+              assert 'Semantic Core' in instructions, instructions
+              assert 'FULL_COVERAGE' in instructions, instructions
               print('initialize=PASS', flush=True)
               h = dict(headers0)
               sid = r.headers.get('mcp-session-id')
@@ -384,13 +389,14 @@ jobs:
                   'wb_get_sales','ozon_get_products','wb_rate_limit_status','ozon_rate_limit_status',
                   'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query',
                   'marketplace_archive_resumable_diagnostic_step',
-                  'marketplace_system_map','marketplace_data_catalog','marketplace_metric_route'
+                  'marketplace_system_map','marketplace_data_catalog','marketplace_metric_route',
+                  'marketplace_business_query'
               }
               assert need <= names, sorted(need-names)
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-14.v16', system_map
+              assert system_map.get('architecture_version') == '2026-09-14.v17', system_map
               assert system_map['storage_policy']['primary_archive_storage'] == 'Google Drive', system_map
               assert 'Apps Script' in system_map['storage_policy']['google_drive_auth'], system_map
               assert 'no Google OAuth refresh token' in system_map['storage_policy']['google_drive_auth'], system_map
@@ -402,7 +408,13 @@ jobs:
               assert 'never follow redirects' in large['redirect_rule'], system_map
               assert system_map['archive_policy']['multi_dataset'] is True, system_map
               assert system_map['archive_policy']['no_single_report_is_complete_database'] is True, system_map
+              semantic = system_map['semantic_core']
+              assert semantic['status'] == 'TEST_RUNTIME_WIRED', semantic
+              assert semantic['runtime_entry'] == 'marketplace_business_query', semantic
+              assert 'FULL_COVERAGE' in semantic['execution_gate'], semantic
+              assert 'agencyVat' in semantic['schema_drift_policy'], semantic
               print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
+              print('SYSTEM_MAP_SEMANTIC_CORE=PASS', flush=True)
 
               catalog = call('marketplace_data_catalog', {})
               assert catalog.get('version') == '2026-09-14.v1', catalog
@@ -421,6 +433,20 @@ jobs:
               assert sales_route.get('ok') is False, sales_route
               assert sales_route.get('status') == 'AMBIGUOUS', sales_route
               print('BUSINESS_METRIC_ROUTING=PASS', flush=True)
+
+              semantic_fail = call('marketplace_business_query', {
+                  'marketplace':'wb',
+                  'seller':'wb_novokshenov',
+                  'date_from':'2026-09-01',
+                  'date_to':'2026-09-07',
+                  'question':'Какой актуальный коэффициент склада сейчас?'
+              })
+              assert semantic_fail.get('ok') is False, semantic_fail
+              assert semantic_fail.get('error') == 'source_not_suitable', semantic_fail
+              resolution = (semantic_fail.get('details') or {}).get('semantic_resolution') or {}
+              assert resolution.get('route_id') == 'current_warehouse_tariff', semantic_fail
+              assert resolution.get('resolution_type') == 'NOT_COVERED', semantic_fail
+              print('SEMANTIC_CORE_FAIL_CLOSED=PASS', flush=True)
 
               archive = call('marketplace_archive_status', {'year':datetime.date.today().year})
               assert archive.get('ok') is True, archive
@@ -453,7 +479,7 @@ jobs:
               if oz_state != 'pass':
                   print(f'OZON_RATE_LIMIT_HANDLING=PASS mode={oz_state}', flush=True)
               print('LIMITER_BACKEND=redis', flush=True)
-              print('REMOTE_WB_OZON_ARCHIVE_ACCEPTANCE=PASS', flush=True)
+              print('REMOTE_WB_OZON_ARCHIVE_SEMANTIC_ACCEPTANCE=PASS', flush=True)
           PY
 
       - name: Best-effort Yandex runtime-log evidence

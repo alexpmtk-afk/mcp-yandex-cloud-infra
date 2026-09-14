@@ -22,6 +22,7 @@ ERROR_TYPES = (
     "timeout",         # network timeout
     "network",         # connection failure
     "safety_gate",     # blocked locally before the call left the machine
+    "source_not_suitable",  # semantic/source contract forbids the requested interpretation
     "seller_known_but_not_configured",  # business cabinet exists but has no credentials
     "unknown",
 )
