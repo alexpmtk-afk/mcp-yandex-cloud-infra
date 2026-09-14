@@ -1,8 +1,9 @@
-Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@d25087637c19cf7455bd8e3074d647f5da37930c
+Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@e747fa65d302a0972400f783a621d0f9abcc4f7f
 Purpose: production TEST rollout of Google Drive as the canonical marketplace archive plus WB Advertising M0 read-only tools, retaining Yandex Object Storage for durable queue/staging and backup.
-Architecture contract: annual dataset CSV files and reports registry are authoritative on Google Drive; Yandex Object Storage stores job state/staging and a byte-for-byte backup; the Apps Script bridge secret is stored in Yandex Lockbox; Google Cloud OAuth is not a runtime dependency.
+Architecture contract: annual dataset CSV files and reports registry are authoritative on Google Drive; Yandex Object Storage stores job state/staging, resumable-upload state and a byte-for-byte backup; Apps Script handles small Drive operations, while large annual CSV writes use direct Google Drive API resumable upload with OAuth stored in Yandex Lockbox.
 Production overlays: preserve the multi-dataset data catalog/routing, runtime service-account archive authentication and other runtime hardening already present in this vendored snapshot; Advertising M0 is layered on top rather than replacing those controls.
 Advertising contract: WB only in this phase; live campaign state comes from Promotion API using dedicated server-side wb_ads credentials; advertising-attribution metrics are not actual business profit; Advertising Archive V1 category scaffold exists on Drive for all three WB cabinets but ingestion/coverage/registry integration is not yet accepted.
 Security contract: Promotion start/pause/stop are WRITE and delete is DESTRUCTIVE at MCP level even though WB exposes them as HTTP GET operations. M0 exposes only read-only advertising business tools.
-Source acceptance: marketplaces-mcp-ru PR #37 advertising M0 merged as f5de92164b0c4fdbd52a8e355f17531ca1ded063 with CI/security/dependency/supply-chain PASS; subsequent PR #38 archive finalization produced current source d25087637c19cf7455bd8e3074d647f5da37930c and remains included in this vendored snapshot.
+Resumable contract: existing WB archive PREPARE candidates are reused; UPLOAD_ANNUAL transfers at most one bounded Drive chunk per worker step, persists the confirmed offset, verifies Drive and Yandex backup, and only then advances to COMMIT.
+Source acceptance: marketplaces-mcp-ru PR #39 merged as e747fa65d302a0972400f783a621d0f9abcc4f7f after CI/security/dependency/supply-chain PASS.
 Synced: 2026-09-14.
