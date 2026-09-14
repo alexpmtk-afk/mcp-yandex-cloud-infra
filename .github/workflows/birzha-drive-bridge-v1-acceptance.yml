@@ -19,7 +19,7 @@ permissions:
 env:
   PROJECT_ID: birzha
   EXPECTED_ROOT_ID: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
-  EXPECTED_BRIDGE_RELEASE: 1.0.0-alpha.2
+  EXPECTED_BRIDGE_RELEASE: 1.0.0
   LOCKBOX_NAME: birzha-mcp-forecast-test-auth
   LOCKBOX_KEY: gdrive_bridge_v1_secret
 
@@ -34,6 +34,17 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+
+      - name: Validate stable common source before live calls
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
+          grep -q "BRIDGE_RELEASE = '1.0.0'" shared/google-drive-bridge/bridge.gs
+          ! grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge
+          grep -q "action === 'sheet_inspect'" shared/google-drive-bridge/bridge.gs
+          grep -q 'async def sheet_inspect' shared/google-drive-bridge/python_client/bridge_client.py
+          echo 'BIRZHA_STABLE_COMMON_SOURCE=PASS'
 
       - name: Install Python dependencies
         run: python -m pip install 'httpx>=0.27,<1'
@@ -91,6 +102,7 @@ jobs:
           export GDRIVE_BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
           export GDRIVE_BRIDGE_PROJECT_ID=birzha
           export GDRIVE_BRIDGE_EXPECTED_ROOT_ID="$EXPECTED_ROOT_ID"
+          export GDRIVE_BRIDGE_EXPECTED_RELEASE="$EXPECTED_BRIDGE_RELEASE"
           python - <<'PY'
           import asyncio, os, sys
           from pathlib import Path
@@ -99,11 +111,15 @@ jobs:
           async def main():
               c=GoogleDriveBridgeClient(BridgeConfig(url=os.environ['GDRIVE_BRIDGE_URL'],secret=os.environ['GDRIVE_BRIDGE_SECRET'],project_id='birzha'))
               h=await c.health()
-              assert h.get('bridge_release') == '1.0.0-alpha.2', h
+              assert h.get('bridge_release') == os.environ['GDRIVE_BRIDGE_EXPECTED_RELEASE'], h
+              assert h.get('project_id') == 'birzha', h
               assert h.get('root_id') == os.environ['GDRIVE_BRIDGE_EXPECTED_ROOT_ID'], h
               caps=h.get('capabilities') or {}
               assert caps.get('google_sheets_chunked') is True, h
+              assert caps.get('google_sheets_inspect') is True, h
               assert caps.get('fixed_root_file_id_guard') is True, h
+              assert caps.get('idempotent_mutations') is True, h
+              assert caps.get('global_script_lock') is False, h
               wrong=GoogleDriveBridgeClient(BridgeConfig(url=os.environ['GDRIVE_BRIDGE_URL'],secret=os.environ['GDRIVE_BRIDGE_SECRET'],project_id='marketplaces'))
               try:
                   await wrong.health()
@@ -119,11 +135,11 @@ jobs:
                       assert e.code == 'OUTSIDE_ROOT', e
                   else:
                       raise AssertionError('foreign-root object was accepted')
-              print('BIRZHA_DEEP_HEALTH_SECURITY=PASS')
+              print('BIRZHA_STABLE_DEEP_HEALTH_SECURITY=PASS')
           asyncio.run(main())
           PY
 
-      - name: Google Sheets staged/chunked acceptance
+      - name: Google Sheets complete staged transaction acceptance
         shell: bash
         env:
           GDRIVE_BRIDGE_URL: ${{ inputs.bridge_url }}
@@ -133,9 +149,9 @@ jobs:
           export GDRIVE_BRIDGE_PROJECT_ID=birzha
           export GDRIVE_BRIDGE_EXPECTED_ROOT_ID="$EXPECTED_ROOT_ID"
           python shared/google-drive-bridge/scripts/sheets_acceptance.py
-          echo 'BIRZHA_SHEETS_STAGE_VERIFY_COMMIT_ABORT=PASS'
+          echo 'BIRZHA_SHEETS_STAGE_REPLAY_CHUNKS_VERIFY_COMMIT_INSPECT_REPLAY_ABORT=PASS'
 
-      - name: Confirm production remains untouched
+      - name: Confirm production remains untouched before explicit cutover
         shell: bash
         run: |
           set -euo pipefail
