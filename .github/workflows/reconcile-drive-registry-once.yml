@@ -1,0 +1,187 @@
+name: Reconcile Drive Archive Registry Once
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - control/run-drive-registry-reconcile-once.txt
+
+permissions:
+  contents: read
+
+jobs:
+  reconcile:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=30 --tries=3 -O "$RUNNER_TEMP/yc.tgz" \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate Yandex CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create registry-reconcile || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve bridge secret and download Yandex registry
+        shell: bash
+        env:
+          BUCKET: marketplaces-mcp-archive-b1gnd0dqoq3ljod88i8t
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BRIDGE_SECRET="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BRIDGE_SECRET"
+          echo "::add-mask::$BRIDGE_SECRET"
+          printf '%s' "$BRIDGE_SECRET" > "$RUNNER_TEMP/bridge-secret"
+          chmod 600 "$RUNNER_TEMP/bridge-secret"
+
+          TOKEN="$(yc iam create-token)"
+          echo "::add-mask::$TOKEN"
+          URL="https://storage.yandexcloud.net/${BUCKET}/app/registry/reports_registry.csv"
+          CODE="$(curl -sS --max-time 90 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/yandex-registry.csv" -w '%{http_code}' "$URL")"
+          test "$CODE" = 200
+          echo 'REGISTRY_INPUTS=RESOLVED'
+
+      - name: Strict compare, backup Drive registry, and promote newer registry
+        shell: bash
+        env:
+          DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+        run: |
+          set -euo pipefail
+          export BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
+          python -u - <<'PY'
+          import base64, csv, hashlib, io, json, os, urllib.request
+          from collections import Counter
+
+          url=os.environ['DRIVE_BRIDGE_URL']
+          secret=os.environ['BRIDGE_SECRET']
+          yandex_raw=open(os.environ['RUNNER_TEMP']+'/yandex-registry.csv','rb').read()
+
+          def post(action, **extra):
+              payload={'secret':secret,'action':action,**extra}
+              req=urllib.request.Request(
+                  url,
+                  data=json.dumps(payload, ensure_ascii=False).encode('utf-8'),
+                  headers={'Content-Type':'application/json','Accept':'application/json'},
+                  method='POST',
+              )
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  body=json.loads(r.read().decode('utf-8'))
+              if body.get('ok') is not True:
+                  raise RuntimeError(f'bridge rejected {action}: {body}')
+              return body
+
+          drive_resp=post('read', path='app/registry', filename='reports_registry.csv')
+          if drive_resp.get('found') is not True:
+              raise RuntimeError('canonical Drive registry is missing; refusing automatic reconcile')
+          drive_raw=base64.b64decode(drive_resp.get('content_base64',''), validate=True)
+
+          def parse(raw):
+              text=raw.decode('utf-8-sig')
+              reader=csv.DictReader(io.StringIO(text), delimiter=';')
+              rows=list(reader)
+              return list(reader.fieldnames or []), rows
+
+          def index(rows):
+              out={}
+              for row in rows:
+                  key=(row.get('cabinet',''),row.get('dataset',''),row.get('report_id',''))
+                  if not all(key):
+                      raise RuntimeError(f'invalid registry key: {key}')
+                  if key in out:
+                      raise RuntimeError(f'duplicate registry key: {key}')
+                  out[key]=row
+              return out
+
+          df, dr=parse(drive_raw)
+          yf, yr=parse(yandex_raw)
+          if df != yf:
+              raise RuntimeError(f'registry headers differ: drive={df} yandex={yf}')
+          di=index(dr); yi=index(yr)
+          missing_in_yandex=set(di)-set(yi)
+          if missing_in_yandex:
+              raise RuntimeError(f'Drive contains keys absent from Yandex backup: {len(missing_in_yandex)}')
+          mismatches=[]
+          for key in sorted(di):
+              if di[key] != yi[key]:
+                  mismatches.append(key)
+          if mismatches:
+              raise RuntimeError(f'overlapping registry rows differ; refusing overwrite: {mismatches[:5]} total={len(mismatches)}')
+          if len(yi) < len(di):
+              raise RuntimeError('Yandex registry is older than Drive registry')
+
+          dsha=hashlib.sha256(drive_raw).hexdigest()
+          ysha=hashlib.sha256(yandex_raw).hexdigest()
+          print(f'DRIVE_BEFORE rows={len(dr)} bytes={len(drive_raw)} sha256={dsha}')
+          print(f'YANDEX_SOURCE rows={len(yr)} bytes={len(yandex_raw)} sha256={ysha}')
+          print(f'OVERLAP_EXACT={len(di)} NEW_KEYS={len(yi)-len(di)}')
+
+          if drive_raw == yandex_raw:
+              print('REGISTRY_ALREADY_SYNCED=PASS')
+          else:
+              backup_name=f'reports_registry__pre_reconcile_2026-09-14__{dsha[:12]}.csv'
+              b=post(
+                  'write',
+                  path='app/registry/backups',
+                  filename=backup_name,
+                  mime_type='text/csv',
+                  content_base64=base64.b64encode(drive_raw).decode('ascii'),
+                  sha256=dsha,
+              )
+              if str(b.get('sha256','')).lower() != dsha:
+                  raise RuntimeError('Drive backup hash mismatch')
+              w=post(
+                  'write',
+                  path='app/registry',
+                  filename='reports_registry.csv',
+                  mime_type='text/csv',
+                  content_base64=base64.b64encode(yandex_raw).decode('ascii'),
+                  sha256=ysha,
+              )
+              if str(w.get('sha256','')).lower() != ysha:
+                  raise RuntimeError('canonical Drive registry write hash mismatch')
+              verify=post('read', path='app/registry', filename='reports_registry.csv')
+              verify_raw=base64.b64decode(verify.get('content_base64',''), validate=True)
+              if verify_raw != yandex_raw or hashlib.sha256(verify_raw).hexdigest()!=ysha:
+                  raise RuntimeError('canonical Drive registry read-back mismatch')
+              print('DRIVE_REGISTRY_RECONCILE=PASS')
+              print('BACKUP_FILE='+backup_name)
+
+          counts=Counter(r.get('cabinet','') for r in yr if r.get('status')=='COMPLETE')
+          for c in ('wb_dmitrieva','wb_novokshenov','wb_laser_master'):
+              print(f'CANONICAL_COMPLETE_{c}={counts[c]}')
+          print('CANONICAL_REGISTRY_SHA256='+ysha)
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/yandex-registry.csv"
