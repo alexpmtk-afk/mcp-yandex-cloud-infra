@@ -1,4 +1,5 @@
 name: Publish Semantic Core TEST via Publisher Impersonation
+# Trigger approved TEST publication after workflow bootstrap.
 
 on:
   push:
