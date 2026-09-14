@@ -31,6 +31,7 @@ class DriveFile:
     mime_type: str
     size: int | None = None
     md5_checksum: str | None = None
+    sha256_checksum: str | None = None
     modified_time: str | None = None
 
 
@@ -78,12 +79,14 @@ class GoogleDriveArchiveStore:
         except (TypeError, ValueError):
             size = None
         md5 = str(item.get("md5_checksum") or item.get("md5Checksum") or "").strip() or None
+        sha256 = str(item.get("sha256_checksum") or item.get("sha256Checksum") or "").strip() or None
         return DriveFile(
             id=str(item.get("id", "")),
             name=str(item.get("name", "")),
             mime_type=str(item.get("mime_type") or item.get("mimeType") or ""),
             size=size,
             md5_checksum=md5,
+            sha256_checksum=sha256,
             modified_time=item.get("modified_time") or item.get("modifiedTime"),
         )
 
@@ -139,7 +142,15 @@ class GoogleDriveArchiveStore:
         item = self._to_file(dict(data.get("file") or {}))
         if not item.id:
             raise ArchiveStorageError("Apps Script Drive bridge metadata returned no file id")
-        return {"id": item.id, "name": item.name, "size": item.size, "md5Checksum": item.md5_checksum, "mimeType": item.mime_type, "modifiedTime": item.modified_time}
+        return {
+            "id": item.id,
+            "name": item.name,
+            "size": item.size,
+            "md5Checksum": item.md5_checksum,
+            "sha256Checksum": item.sha256_checksum,
+            "mimeType": item.mime_type,
+            "modifiedTime": item.modified_time,
+        }
 
     async def start_resumable_session(self, *, parent_id: str, name: str, total_bytes: int, mime_type: str = "text/csv") -> dict[str, Any]:
         data = await self._post("resumable_start", path=self._path((parent_id,)), filename=str(name), mime_type=str(mime_type), total_bytes=int(total_bytes))
