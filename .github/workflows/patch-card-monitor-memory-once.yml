@@ -1,0 +1,39 @@
+name: Patch Card Monitor Runtime Memory Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/patch-card-monitor-memory-once.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - name: Replace stale 512MB runtime setting
+        shell: bash
+        run: |
+          set -euo pipefail
+          FILE=.github/workflows/configure-card-monitor.yml
+          COUNT="$(grep -F -- '--memory 512MB' "$FILE" | wc -l)"
+          test "$COUNT" = 1
+          sed -i 's/--memory 512MB/--memory 2048MB/' "$FILE"
+          grep -F -- '--memory 2048MB' "$FILE"
+          ! grep -F -- '--memory 512MB' "$FILE"
+          git diff --check
+          git diff -- "$FILE"
+      - name: Commit permanent fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add .github/workflows/configure-card-monitor.yml
+          git commit -m 'fix: preserve 2GB memory in Card Monitor redeploy'
+          git push origin HEAD:main
