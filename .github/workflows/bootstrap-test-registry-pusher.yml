@@ -1,4 +1,4 @@
-name: Probe TEST Registry IAM Docker Login
+name: Probe TEST Folder Registry Pusher
 
 on:
   workflow_dispatch:
@@ -40,10 +40,13 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$CI_SA_ID"
+          echo "CI_SA_ID=$CI_SA_ID" >> "$GITHUB_ENV"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Push disposable probe using explicit IAM token
+      - name: Grant folder-scoped pusher and push disposable probe
         shell: bash
         run: |
           set -euo pipefail
@@ -54,19 +57,25 @@ jobs:
           REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
           test -n "$REGISTRY_ID"
 
+          timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" \
+            --role container-registry.images.pusher \
+            --service-account-id "$CI_SA_ID"
+          echo 'folder_registry_pusher_binding=PASS'
+          sleep 20
+
           IAM_TOKEN="$(yc iam create-token)"
           test -n "$IAM_TOKEN"
           echo "::add-mask::$IAM_TOKEN"
           printf '%s' "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
           unset IAM_TOKEN
 
-          PROBE_TAG="auth-probe-${GITHUB_SHA}"
+          PROBE_TAG="folder-scope-probe-${GITHUB_SHA}"
           IMAGE="cr.yandex/${REGISTRY_ID}/auth-probe:${PROBE_TAG}"
           mkdir -p "$RUNNER_TEMP/registry-probe"
-          printf 'FROM scratch\nLABEL purpose="marketplaces-test-registry-auth-probe"\n' > "$RUNNER_TEMP/registry-probe/Dockerfile"
+          printf 'FROM scratch\nLABEL purpose="marketplaces-test-folder-registry-pusher-probe"\n' > "$RUNNER_TEMP/registry-probe/Dockerfile"
           docker build --tag "$IMAGE" "$RUNNER_TEMP/registry-probe"
           docker push "$IMAGE"
-          echo 'explicit_iam_docker_push=PASS'
+          echo 'folder_scoped_pusher_docker_push=PASS'
 
           REPO_NAME="${REGISTRY_ID}/auth-probe"
           IMAGE_ID="$(yc container image list --registry-id "$REGISTRY_ID" --repository-name "$REPO_NAME" --format json | jq -r --arg tag "$PROBE_TAG" '[.[] | select((.tags // []) | index($tag) != null)][0].id // empty')"
