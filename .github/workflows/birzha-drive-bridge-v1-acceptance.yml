@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bridge_url:
-        description: Dedicated Birzha Apps Script Bridge v1 /exec URL
+        description: Birzha Apps Script Bridge v1 /exec URL
         required: true
         type: string
       foreign_file_id:
@@ -20,8 +20,8 @@ env:
   PROJECT_ID: birzha
   EXPECTED_ROOT_ID: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
   EXPECTED_BRIDGE_RELEASE: 1.0.0-alpha.2
-  LOCKBOX_NAME: birzha-google-drive-bridge-v1
-  LOCKBOX_KEY: gdrive_bridge_secret
+  LOCKBOX_NAME: birzha-mcp-forecast-test-auth
+  LOCKBOX_KEY: gdrive_bridge_v1_secret
 
 concurrency:
   group: birzha-drive-bridge-v1-acceptance
@@ -58,10 +58,10 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          yc config profile create github-ci || true
+          yc config profile create bridge-v1-birzha-acceptance || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Resolve dedicated Birzha Bridge credential
+      - name: Resolve Birzha project Bridge v1 credential
         shell: bash
         run: |
           set -euo pipefail
@@ -72,13 +72,14 @@ jobs:
           yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
           VERSION_ID="$(jq -r --arg k "$LOCKBOX_KEY" '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index($k) != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
           test -n "$VERSION_ID"
-          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key "$LOCKBOX_KEY" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
           BRIDGE_SECRET="$(jq -r --arg k "$LOCKBOX_KEY" '.entries[]|select(.key==$k)|.text_value // empty' "$RUNNER_TEMP/payload.json")"
           test -n "$BRIDGE_SECRET"
           echo "::add-mask::$BRIDGE_SECRET"
           printf '%s' "$BRIDGE_SECRET" > "$RUNNER_TEMP/bridge-secret"
           chmod 600 "$RUNNER_TEMP/bridge-secret"
-          echo 'DEDICATED_BIRZHA_BRIDGE_CREDENTIAL=RESOLVED'
+          echo "BIRZHA_BRIDGE_V1_SECRET_VERSION_ID=$VERSION_ID"
+          echo 'BIRZHA_PROJECT_BRIDGE_V1_CREDENTIAL=RESOLVED'
 
       - name: Deep health and fixed-root security
         shell: bash
