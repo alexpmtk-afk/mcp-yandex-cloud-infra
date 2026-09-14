@@ -8,6 +8,7 @@ import random
 import uuid
 from dataclasses import dataclass
 from typing import Any, Iterable
+from urllib.parse import urlsplit
 
 import httpx
 
@@ -222,6 +223,96 @@ class GoogleDriveBridgeClient:
             idempotency_key=idempotency_key,
         )
 
+    async def large_download_start(self, file_id: str) -> dict[str, Any]:
+        return await self.call("large_download_start", {"file_id": file_id})
+
+    async def large_download_poll(self, download_ticket: str) -> dict[str, Any]:
+        return await self.call("large_download_poll", {"download_ticket": download_ticket})
+
+    async def download_large_by_id(
+        self,
+        file_id: str,
+        *,
+        max_bytes: int = 512 * 1024 * 1024,
+        max_polls: int = 30,
+        poll_seconds: float = 2.0,
+    ) -> tuple[dict[str, Any], bytes]:
+        """Download a Drive blob through a bridge-brokered Google download URI.
+
+        Apps Script authenticates and validates the fixed-root boundary, then brokers
+        Drive's files.download LRO. File bytes flow directly from the Google download
+        URI to this client. The URI is bearer-like and is never logged by this client.
+        """
+        state = await self.large_download_start(file_id)
+        for poll_index in range(max_polls + 1):
+            if state.get("ready") is True:
+                break
+            ticket = str(state.get("download_ticket") or "").strip()
+            if not ticket:
+                raise BridgeError("DOWNLOAD_TICKET_MISSING", "bridge returned no download ticket", retryable=True)
+            if poll_index >= max_polls:
+                raise BridgeError("LARGE_DOWNLOAD_NOT_READY", "Drive download operation did not become ready", retryable=True)
+            await asyncio.sleep(max(0.1, float(poll_seconds)))
+            state = await self.large_download_poll(ticket)
+        else:
+            raise BridgeError("LARGE_DOWNLOAD_NOT_READY", "Drive download operation did not become ready", retryable=True)
+
+        uri = str(state.get("download_uri") or "").strip()
+        _validate_google_download_uri(uri)
+        expected_size = int(state.get("total_bytes") if state.get("total_bytes") is not None else -1)
+        expected_sha = str(state.get("sha256") or "").strip().lower()
+        if expected_size < 0:
+            raise BridgeError("SIZE_UNAVAILABLE", "bridge returned no valid large-download size", retryable=False)
+        if expected_size > int(max_bytes):
+            raise BridgeError("DOWNLOAD_TOO_LARGE", f"large download exceeds client safety limit {max_bytes}", retryable=False)
+        if not _is_sha256(expected_sha):
+            raise BridgeError("SHA256_UNAVAILABLE", "bridge returned no valid large-download SHA256", retryable=False)
+
+        resource_key = str(state.get("resource_key") or "").strip()
+        headers: dict[str, str] = {"Accept": "application/octet-stream"}
+        if resource_key:
+            headers["X-Goog-Drive-Resource-Keys"] = f"{file_id}/{resource_key}"
+
+        buffer = bytearray()
+        hasher = hashlib.sha256()
+        try:
+            async with httpx.AsyncClient(timeout=self.config.timeout_seconds, follow_redirects=True) as direct:
+                async with direct.stream("GET", uri, headers=headers) as response:
+                    if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
+                        raise BridgeError(
+                            "LARGE_DOWNLOAD_TRANSPORT_ERROR",
+                            f"Google download URI HTTP {response.status_code}",
+                            retryable=True,
+                        )
+                    response.raise_for_status()
+                    async for chunk in response.aiter_bytes():
+                        if not chunk:
+                            continue
+                        buffer.extend(chunk)
+                        hasher.update(chunk)
+                        if len(buffer) > expected_size:
+                            raise BridgeError("SIZE_MISMATCH", "large download exceeded expected Drive size", retryable=False)
+        except BridgeError:
+            raise
+        except httpx.HTTPError as exc:
+            raise BridgeError("LARGE_DOWNLOAD_TRANSPORT_ERROR", type(exc).__name__, retryable=True) from exc
+
+        raw = bytes(buffer)
+        if len(raw) != expected_size:
+            raise BridgeError("SIZE_MISMATCH", f"large download size mismatch: {len(raw)} != {expected_size}", retryable=False)
+        actual_sha = hasher.hexdigest()
+        if actual_sha != expected_sha:
+            raise BridgeError("SHA256_MISMATCH", "large download SHA256 mismatch", retryable=False)
+        metadata = {
+            "id": file_id,
+            "size": expected_size,
+            "sha256_checksum": expected_sha,
+            "mime_type": state.get("mime_type"),
+            "modified_time": state.get("modified_time"),
+            "partial_download_allowed": bool(state.get("partial_download_allowed")),
+        }
+        return metadata, raw
+
     async def upload_resumable_chunks(
         self,
         session_uri: str,
@@ -258,7 +349,6 @@ class GoogleDriveBridgeClient:
                     range_header = response.headers.get("Range", "")
                     confirmed = _confirmed_offset(range_header)
                     if confirmed is None:
-                        # Query the session state; do not blindly resend after an ambiguous 308.
                         confirmed = await _query_resumable_offset(client, session_uri, total)
                     if confirmed < offset:
                         raise BridgeError("RESUMABLE_OFFSET_REGRESSION", "Drive confirmed an earlier offset", retryable=True)
@@ -367,6 +457,27 @@ class GoogleDriveBridgeClient:
             {"spreadsheet_id": spreadsheet_id, "stage_sheet_title": stage_sheet_title},
             idempotency_key=idempotency_key,
         )
+
+
+def _is_sha256(value: str) -> bool:
+    return len(value) == 64 and all(ch in "0123456789abcdef" for ch in value.lower())
+
+
+def _validate_google_download_uri(uri: str) -> None:
+    try:
+        parsed = urlsplit(uri)
+    except ValueError as exc:
+        raise BridgeError("INVALID_DOWNLOAD_URI", "download URI is malformed", retryable=False) from exc
+    host = (parsed.hostname or "").lower()
+    allowed = (
+        host == "googleapis.com"
+        or host.endswith(".googleapis.com")
+        or host == "googleusercontent.com"
+        or host.endswith(".googleusercontent.com")
+        or host == "drive.usercontent.google.com"
+    )
+    if parsed.scheme != "https" or not allowed:
+        raise BridgeError("INVALID_DOWNLOAD_URI", "download URI host is not an allowed Google endpoint", retryable=False)
 
 
 def _confirmed_offset(range_header: str) -> int | None:
