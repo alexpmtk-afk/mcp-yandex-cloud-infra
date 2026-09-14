@@ -56,14 +56,18 @@ jobs:
           FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$FOLDER_NAME" '.[]|select(.name==$n and .status=="ACTIVE")|.id' | head -1)"
           test "$FOLDER_ID" = "$EXPECTED_FOLDER_ID"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
-          PREPARER_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-historical-preparer")|.id' | head -1)"
+          yc iam service-account list --folder-id "$FOLDER_ID" --format json > "$RUNNER_TEMP/service-accounts.json"
+          PREPARER_ID="$(jq -r '.[]|select(.name=="birzha-mcp-forecast-historical-preparer")|.id' "$RUNNER_TEMP/service-accounts.json" | head -1)"
+          RUNTIME_ID="$(jq -r '.[]|select(.name=="birzha-mcp-forecast-runtime")|.id' "$RUNNER_TEMP/service-accounts.json" | head -1)"
           test -n "$PREPARER_ID"
+          test -n "$RUNTIME_ID"
           echo "PREPARER_ID=$PREPARER_ID" >> "$GITHUB_ENV"
+          echo "RUNTIME_ID=$RUNTIME_ID" >> "$GITHUB_ENV"
           yc ydb database get --id "$YDB_ID" --format json > "$RUNNER_TEMP/db.json"
           test "$(jq -r '.name' "$RUNNER_TEMP/db.json")" = 'birzha-mcp-forecast-state'
-          echo "COORDINATES=PASS org=$ORG_ID folder=$FOLDER_ID preparer=$PREPARER_ID ydb=$YDB_ID status=$(jq -r '.status' "$RUNNER_TEMP/db.json")"
+          echo "COORDINATES=PASS org=$ORG_ID folder=$FOLDER_ID preparer=$PREPARER_ID runtime=$RUNTIME_ID deployer=$DEPLOYER_ID status=$(jq -r '.status' "$RUNNER_TEMP/db.json")"
 
-      - name: Inspect inherited and database-level role bindings
+      - name: Map existing role bindings and service accounts
         shell: bash
         env:
           CLOUD_ID: b1gi4pr9msenirafh2c7
@@ -72,26 +76,29 @@ jobs:
           set -euo pipefail
           yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json > "$RUNNER_TEMP/folder-access.json"
           yc resource-manager cloud list-access-bindings "$CLOUD_ID" --format json > "$RUNNER_TEMP/cloud-access.json"
-          echo 'PREPARER_FOLDER_ROLES:'
-          jq -r --arg sid "$PREPARER_ID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/folder-access.json" | sort -u
-          echo 'PREPARER_CLOUD_ROLES:'
-          jq -r --arg sid "$PREPARER_ID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/cloud-access.json" | sort -u
+          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/db-access.json"
 
-          set +e
-          yc ydb database list-access-bindings --id "$YDB_ID" --format json > "$RUNNER_TEMP/db-access.json" 2> "$RUNNER_TEMP/db-access.err"
-          DB_ACCESS_RC=$?
-          set -e
-          echo "DB_ACCESS_QUERY_RC=$DB_ACCESS_RC"
-          if [[ "$DB_ACCESS_RC" -eq 0 ]]; then
-            echo 'PREPARER_DATABASE_ROLES:'
-            jq -r --arg sid "$PREPARER_ID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/db-access.json" | sort -u
-            echo 'ALL_DATABASE_BINDINGS:'
-            jq -c '.[]? | {role_id,subject}' "$RUNNER_TEMP/db-access.json" || true
-          else
-            sed -n '1,8p' "$RUNNER_TEMP/db-access.err"
-          fi
+          for pair in "PREPARER:$PREPARER_ID" "RUNTIME:$RUNTIME_ID" "DEPLOYER:$DEPLOYER_ID"; do
+            LABEL="${pair%%:*}"; SID="${pair#*:}"
+            echo "${LABEL}_FOLDER_ROLES:"
+            jq -r --arg sid "$SID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/folder-access.json" | sort -u
+            echo "${LABEL}_CLOUD_ROLES:"
+            jq -r --arg sid "$SID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/cloud-access.json" | sort -u
+            echo "${LABEL}_DATABASE_ROLES:"
+            jq -r --arg sid "$SID" '.[]? | select((.subject.id // "") == $sid) | .role_id' "$RUNNER_TEMP/db-access.json" | sort -u
+          done
 
-      - name: Inspect organization cloud and folder access policies
+          echo 'FOLDER_MANAGEMENT_BINDINGS:'
+          jq -r '.[]? | select(.role_id=="editor" or .role_id=="admin" or .role_id=="ydb.editor" or .role_id=="ydb.admin") | [.role_id,.subject.type,.subject.id] | @tsv' "$RUNNER_TEMP/folder-access.json" | sort -u
+          echo 'CLOUD_MANAGEMENT_BINDINGS:'
+          jq -r '.[]? | select(.role_id=="editor" or .role_id=="admin" or .role_id=="ydb.editor" or .role_id=="ydb.admin") | [.role_id,.subject.type,.subject.id] | @tsv' "$RUNNER_TEMP/cloud-access.json" | sort -u
+          echo 'DATABASE_MANAGEMENT_BINDINGS:'
+          jq -r '.[]? | select(.role_id=="editor" or .role_id=="admin" or .role_id=="ydb.editor" or .role_id=="ydb.admin") | [.role_id,.subject.type,.subject.id] | @tsv' "$RUNNER_TEMP/db-access.json" | sort -u
+
+          echo 'BIRZHA_SERVICE_ACCOUNTS:'
+          jq -r '.[]? | [.name,.id] | @tsv' "$RUNNER_TEMP/service-accounts.json" | sort
+
+      - name: Recheck access-policy layers
         shell: bash
         env:
           CLOUD_ID: b1gi4pr9msenirafh2c7
@@ -109,27 +116,9 @@ jobs:
             set -e
             echo "${scope^^}_POLICY_QUERY_RC=$RC"
             if [[ "$RC" -eq 0 ]]; then
-              echo "${scope^^}_ACCESS_POLICIES:"
               jq -c '.[]? | {template_id:(.access_policy_template_id // .accessPolicyTemplateId),parameters}' "$RUNNER_TEMP/${scope}-policies.json" || true
             else
               sed -n '1,5p' "$RUNNER_TEMP/${scope}-policies.err"
-            fi
-          done
-
-      - name: Inspect live role definitions
-        shell: bash
-        run: |
-          set -euo pipefail
-          for role in ydb.viewer ydb.editor ydb.admin editor admin; do
-            set +e
-            yc iam role get "$role" --format json > "$RUNNER_TEMP/role-${role//./_}.json" 2> "$RUNNER_TEMP/role-${role//./_}.err"
-            RC=$?
-            set -e
-            echo "ROLE=$role QUERY_RC=$RC"
-            if [[ "$RC" -eq 0 ]]; then
-              jq -c '{id,name,description}' "$RUNNER_TEMP/role-${role//./_}.json" || true
-            else
-              sed -n '1,3p' "$RUNNER_TEMP/role-${role//./_}.err"
             fi
           done
           echo 'DIAGNOSTIC_ONLY=PASS'
