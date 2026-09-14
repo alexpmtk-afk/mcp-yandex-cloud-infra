@@ -1,15 +1,18 @@
-name: M24 Worker Infra Validate
+name: BIRZHA Worker Infra Validate
 
 on:
   push:
-    branches: [m24-autonomous-worker-infra]
+    branches: [main]
     paths:
-      - "terraform/birzha_test/**"
+      - "terraform/birzha_test/m24_autonomous_worker.tf"
+      - "terraform/birzha_test/m25_market_mirror.tf"
       - ".github/workflows/m24-worker-infra-validate.yml"
   pull_request:
     paths:
-      - "terraform/birzha_test/**"
+      - "terraform/birzha_test/m24_autonomous_worker.tf"
+      - "terraform/birzha_test/m25_market_mirror.tf"
       - ".github/workflows/m24-worker-infra-validate.yml"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -30,8 +33,8 @@ jobs:
           terraform_version: "1.9.8"
           terraform_wrapper: false
 
-      - name: Check M24 worker formatting
-        run: terraform fmt -check -diff terraform/birzha_test/m24_autonomous_worker.tf
+      - name: Check worker and market-mirror formatting
+        run: terraform fmt -check -diff terraform/birzha_test/m24_autonomous_worker.tf terraform/birzha_test/m25_market_mirror.tf
 
       - name: Initialize providers without remote backend
         run: terraform -chdir=terraform/birzha_test init -backend=false -input=false -lockfile=readonly
