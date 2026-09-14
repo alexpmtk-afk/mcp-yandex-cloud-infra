@@ -2,6 +2,11 @@ name: Bootstrap Google Drive Apps Script Bridge
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - control/run-google-drive-bridge-bootstrap-once.txt
 
 permissions:
   contents: read
