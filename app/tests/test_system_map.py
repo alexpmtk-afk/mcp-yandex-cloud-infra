@@ -16,11 +16,17 @@ def test_canonical_map_fixes_storage_boundaries():
     assert storage["google_drive_root"] == "MCP архив базы данных"
     assert "Apps Script" in storage["google_drive_auth"]
     assert "Yandex Lockbox" in storage["google_drive_auth"]
+    assert "resumable" in storage["google_drive_large_upload"]
     assert "job state" in storage["yandex_object_storage"]
     assert "backup" in storage["yandex_object_storage"]
     assert "runtime service-account IAM token" in storage["yandex_archive_auth"]
-    assert "no Google Cloud OAuth runtime dependency" in storage["google_cloud"]
+    assert "not part of the runtime architecture" in storage["google_cloud"]
     assert SYSTEM_MAP["archive_policy"]["canonical_source_of_truth"] == "Google Drive annual dataset CSV files plus reports registry"
+    large = SYSTEM_MAP["archive_policy"]["large_file_upload"]
+    assert large["transport"] == "Google Drive API resumable upload"
+    assert large["apps_script_large_upload"] == "forbidden"
+    assert "256 KiB" in large["chunk_rule"]
+    assert "COMMIT" in large["commit_rule"]
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["report_type"] == 1
     assert SYSTEM_MAP["archive_policy"]["wb_weekly_finance_main"]["row_deduplication"] == "(reportId, rrdId)"
 
@@ -56,7 +62,7 @@ def test_wb_advertising_m0_boundaries_are_explicit():
 
 
 def test_server_instructions_contain_hard_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-14.v5"
+    assert ARCHITECTURE_VERSION == "2026-09-14.v6"
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
     assert "Google Drive" in SYSTEM_INSTRUCTIONS
     assert "Apps Script" in SYSTEM_INSTRUCTIONS
@@ -64,6 +70,7 @@ def test_server_instructions_contain_hard_boundaries():
     assert "temporary IAM token" in SYSTEM_INSTRUCTIONS
     assert "Yandex Lockbox" in SYSTEM_INSTRUCTIONS
     assert "Google Cloud is not part" in SYSTEM_INSTRUCTIONS
+    assert "resumable upload" in SYSTEM_INSTRUCTIONS
     assert "MULTI-DATASET" in SYSTEM_INSTRUCTIONS
     assert "NOT authoritative for customer orders" in SYSTEM_INSTRUCTIONS
     assert "marketplace_metric_route" in SYSTEM_INSTRUCTIONS
