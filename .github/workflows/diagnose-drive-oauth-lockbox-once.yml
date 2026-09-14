@@ -1,6 +1,7 @@
 name: Diagnose Drive OAuth Lockbox Once
 
 on:
+  workflow_dispatch:
   push:
     branches:
       - main
@@ -34,7 +35,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/key.json"
           yc config profile create drive-oauth-diag || true
           yc config set service-account-key "$RUNNER_TEMP/key.json"
-      - name: Inspect Lockbox version metadata and payload access
+      - name: Inspect current Lockbox key presence without exposing values
         shell: bash
         run: |
           set -euo pipefail
@@ -43,22 +44,34 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
           yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
-          jq -r '.[] | [.id,.status,.created_at,((.payload_entry_keys//[])|index("google_drive_oauth_json")!=null)] | @tsv' "$RUNNER_TEMP/versions.json" | tail -20
+
+          CURRENT_VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$CURRENT_VERSION_ID"
+          CURRENT_HAS_OAUTH="$(jq -r --arg id "$CURRENT_VERSION_ID" '.[]|select(.id==$id)|((.payload_entry_keys//[])|index("google_drive_oauth_json")!=null)' "$RUNNER_TEMP/versions.json")"
+          CURRENT_HAS_BRIDGE="$(jq -r --arg id "$CURRENT_VERSION_ID" '.[]|select(.id==$id)|((.payload_entry_keys//[])|index("google_drive_bridge_secret")!=null)' "$RUNNER_TEMP/versions.json")"
+          echo "CURRENT_ACTIVE_HAS_DRIVE_OAUTH=$CURRENT_HAS_OAUTH"
+          echo "CURRENT_ACTIVE_HAS_DRIVE_BRIDGE=$CURRENT_HAS_BRIDGE"
+
           SOURCE_VERSION_ID="$(jq -r '[.[]|select((.payload_entry_keys//[])|index("google_drive_oauth_json")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
-          test -n "$SOURCE_VERSION_ID"
-          echo "SOURCE_VERSION_ID=$SOURCE_VERSION_ID"
-          set +e
-          yc lockbox payload get --id "$SECRET_ID" --version-id "$SOURCE_VERSION_ID" --key google_drive_oauth_json --format json --no-user-output > "$RUNNER_TEMP/payload.json" 2> "$RUNNER_TEMP/payload.err"
-          RC=$?
-          set -e
-          echo "PAYLOAD_GET_RC=$RC"
-          if [ "$RC" -ne 0 ]; then
-            sed -E 's/[A-Za-z0-9_\-]{32,}/[REDACTED]/g' "$RUNNER_TEMP/payload.err"
-            exit "$RC"
+          if [ -n "$SOURCE_VERSION_ID" ]; then
+            echo 'HISTORICAL_DRIVE_OAUTH_VERSION=FOUND'
+          else
+            echo 'HISTORICAL_DRIVE_OAUTH_VERSION=NOT_FOUND'
           fi
-          jq -r '{entry_count:(.entries|length),keys:[.entries[].key]}' "$RUNNER_TEMP/payload.json"
-          echo 'DRIVE_OAUTH_PAYLOAD_ACCESS=PASS'
+
+          if [ "$CURRENT_HAS_OAUTH" != true ]; then
+            echo 'CURRENT_DRIVE_OAUTH=ABSENT'
+            exit 2
+          fi
+          if [ "$CURRENT_HAS_BRIDGE" != true ]; then
+            echo 'CURRENT_DRIVE_BRIDGE=ABSENT'
+            exit 3
+          fi
+
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$CURRENT_VERSION_ID" --key google_drive_oauth_json --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          jq -e '.entries | length == 1 and .[0].key == "google_drive_oauth_json" and ((.[0].text_value // "") | length > 0)' "$RUNNER_TEMP/payload.json" >/dev/null
+          echo 'CURRENT_DRIVE_OAUTH_PAYLOAD_ACCESS=PASS'
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/payload.err"
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json"
