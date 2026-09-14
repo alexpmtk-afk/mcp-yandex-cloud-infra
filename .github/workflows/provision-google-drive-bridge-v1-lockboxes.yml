@@ -59,7 +59,7 @@ jobs:
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Grant temporary admin only on the two TEST folders
+      - name: Grant temporary lockbox.admin only on the two TEST folders
         id: grant
         shell: bash
         env:
@@ -72,17 +72,15 @@ jobs:
             test -n "$FOLDER_ID"
             printf '%s' "$FOLDER_ID" > "$RUNNER_TEMP/folder-$folder_name-id"
             timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" \
-              --role admin \
+              --role lockbox.admin \
               --service-account-id "$DEPLOYER_ID"
-            echo "TEMP_TEST_FOLDER_ADMIN=GRANTED folder=$folder_name"
+            echo "TEMP_LOCKBOX_ADMIN=GRANTED folder=$folder_name"
           done
           echo 'granted=true' >> "$GITHUB_OUTPUT"
-          sleep 20
+          sleep 45
 
       - name: Provision isolated Lockboxes and runtime access
         shell: bash
-        env:
-          CLOUD_ID: b1gi4pr9msenirafh2c7
         run: |
           set -euo pipefail
 
@@ -142,7 +140,7 @@ jobs:
           echo 'SECRET_PAYLOAD_CREATED=NO'
           echo 'PRODUCTION_BINDINGS_CHANGED=NO'
 
-      - name: Revoke temporary TEST-folder admin
+      - name: Revoke temporary lockbox.admin
         if: always() && steps.grant.outputs.granted == 'true'
         shell: bash
         run: |
@@ -153,9 +151,9 @@ jobs:
             if [[ -s "$FOLDER_FILE" ]]; then
               FOLDER_ID="$(cat "$FOLDER_FILE")"
               timeout 90s yc resource-manager folder remove-access-binding "$FOLDER_ID" \
-                --role admin \
+                --role lockbox.admin \
                 --service-account-id "$DEPLOYER_ID"
-              echo "TEMP_TEST_FOLDER_ADMIN=REVOKED folder=$folder_name"
+              echo "TEMP_LOCKBOX_ADMIN=REVOKED folder=$folder_name"
             fi
           done
 
