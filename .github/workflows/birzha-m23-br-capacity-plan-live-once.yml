@@ -84,13 +84,16 @@ jobs:
           if len(matches)!=1:
               raise RuntimeError(f'expected one ACTIVE Birzha TEST folder, got {len(matches)}')
           folder_id=matches[0]['id']
+          print(f'BIRZHA_FOLDER_DISCOVERY=PASS id={folder_id}')
 
           db_url='https://ydb.api.cloud.yandex.net/ydb/v1/databases?'+urllib.parse.urlencode({'folderId':folder_id,'pageSize':1000})
           with urllib.request.urlopen(urllib.request.Request(db_url,headers=headers),timeout=30) as response:
               databases=json.loads(response.read()).get('databases',[])
+          inventory=[{'name':x.get('name'),'id':x.get('id'),'status':x.get('status')} for x in databases]
+          print('YDB_INVENTORY='+json.dumps(inventory,sort_keys=True))
           dbs=[x for x in databases if x.get('name')==db_name and x.get('status')=='RUNNING']
           if len(dbs)!=1:
-              raise RuntimeError(f'expected one RUNNING Birzha YDB, got {len(dbs)}')
+              raise RuntimeError(f'expected one RUNNING Birzha YDB named {db_name}, got {len(dbs)}')
           db=dbs[0]
           endpoint=str(db.get('endpoint') or '').strip()
           if not endpoint.startswith('grpcs://') or 'database=' not in endpoint:
