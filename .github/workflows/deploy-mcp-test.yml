@@ -18,8 +18,9 @@ env:
   DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
 
 concurrency:
-  group: marketplaces-mcp-test-terraform
+  group: marketplaces-test-runtime-write
   cancel-in-progress: false
+  queue: max
 
 jobs:
   deploy:
