@@ -1,0 +1,2 @@
+Run archive registry divergence diagnostic after Drive bridge migration.
+Requested: 2026-09-14.
