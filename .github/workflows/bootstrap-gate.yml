@@ -79,3 +79,18 @@ jobs:
             exit 1
           fi
           echo "PASS: no terraform apply path is enabled during bootstrap."
+
+  drive-oauth-handoff-presence:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - name: Check protected OAuth handoff presence only
+        shell: bash
+        env:
+          GOOGLE_DRIVE_OAUTH_JSON: ${{ secrets.GOOGLE_DRIVE_OAUTH_JSON }}
+        run: |
+          if [ -n "$GOOGLE_DRIVE_OAUTH_JSON" ]; then
+            echo 'GOOGLE_DRIVE_OAUTH_GITHUB_SECRET=FOUND'
+          else
+            echo 'GOOGLE_DRIVE_OAUTH_GITHUB_SECRET=ABSENT'
+          fi
