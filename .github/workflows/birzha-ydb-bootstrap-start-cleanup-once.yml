@@ -37,10 +37,10 @@ jobs:
         run: |
           set -euo pipefail
           test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
-          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          export YC_KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$YC_KEY_FILE"
+          chmod 600 "$YC_KEY_FILE"
+          echo "YC_KEY_FILE=$YC_KEY_FILE" >> "$GITHUB_ENV"
           python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
           python - <<'PY'
           import json, os, time, urllib.request
