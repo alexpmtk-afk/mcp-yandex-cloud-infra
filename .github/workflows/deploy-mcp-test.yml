@@ -127,7 +127,7 @@ jobs:
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
           test -n "$SECRET_ID"
           timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
-          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)|select((.payload_entry_keys // [])|index("google_drive_oauth_json") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
           test -n "$VERSION_ID"
           CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           RUNTIME_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
@@ -142,6 +142,7 @@ jobs:
           done
           timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/secret-keys.json"
           jq -e '[.entries[].key] | index("google_drive_bridge_secret") != null' "$RUNNER_TEMP/secret-keys.json" >/dev/null
+          jq -e '[.entries[].key] | index("google_drive_oauth_json") != null' "$RUNNER_TEMP/secret-keys.json" >/dev/null
           echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
           echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
@@ -153,6 +154,7 @@ jobs:
           echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
           echo "archive_bucket=$ARCHIVE_BUCKET" >> "$GITHUB_OUTPUT"
           echo 'google_drive_bridge_lockbox=RESOLVED'
+          echo 'google_drive_resumable_oauth_lockbox=RESOLVED'
           echo 'test_resources=RESOLVED'
 
       - name: Build and push exact MCP image
@@ -195,6 +197,7 @@ jobs:
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
             --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_bridge_secret" \
+            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_oauth_json" \
             --format json --no-user-output > "$RUNNER_TEMP/revision.json"
           REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"
           test -n "$REVISION_ID"
@@ -324,6 +327,7 @@ jobs:
               assert 'Google Drive' in instructions, instructions
               assert 'Apps Script' in instructions, instructions
               assert 'Yandex Object Storage' in instructions, instructions
+              assert 'resumable upload' in instructions, instructions
               assert 'MULTI-DATASET' in instructions, instructions
               assert 'marketplace_metric_route' in instructions, instructions
               print('initialize=PASS', flush=True)
@@ -359,11 +363,12 @@ jobs:
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-14.v4', system_map
+              assert system_map.get('architecture_version') == '2026-09-14.v6', system_map
               assert system_map['storage_policy']['primary_archive_storage'] == 'Google Drive', system_map
               assert 'Apps Script' in system_map['storage_policy']['google_drive_auth'], system_map
               assert system_map['archive_policy']['multi_dataset'] is True, system_map
               assert system_map['archive_policy']['no_single_report_is_complete_database'] is True, system_map
+              assert system_map['archive_policy']['large_file_upload']['transport'] == 'Google Drive API resumable upload', system_map
               print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
 
               catalog = call('marketplace_data_catalog', {})
