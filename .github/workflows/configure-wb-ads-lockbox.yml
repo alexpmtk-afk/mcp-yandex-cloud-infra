@@ -1,0 +1,202 @@
+name: Configure WB Ads Lockbox
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/configure-wb-ads-lockbox.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-test-runtime-write
+  cancel-in-progress: false
+  queue: max
+
+jobs:
+  configure:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget --quiet --timeout=30 --tries=3 --output-document="$ARCHIVE" "$URL"
+          tar -tzf "$ARCHIVE" >/dev/null
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and resolve active secret version
+        id: secret
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create wb-ads-lockbox || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          jq -r '.entries[]|select(.key=="cabinets_json")|.text_value' "$RUNNER_TEMP/payload.json" > "$RUNNER_TEMP/cabinets.json"
+          test -s "$RUNNER_TEMP/cabinets.json"
+          chmod 600 "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/cabinets.json"
+          echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "base_version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo 'lockbox_base=RESOLVED'
+
+      - name: Build idempotent wb_ads logical service in memory
+        id: transform
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import base64
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          data = json.loads((temp / 'cabinets.json').read_text(encoding='utf-8'))
+          assert isinstance(data, dict), 'cabinets_json root must be object'
+          wb = data.get('wb')
+          assert isinstance(wb, dict), 'wb service missing'
+          wb_cabinets = wb.get('cabinets')
+          assert isinstance(wb_cabinets, dict), 'wb.cabinets missing'
+          required = ('wb_dmitrieva', 'wb_novokshenov', 'wb_laser_master')
+
+          source_tokens = {}
+          for name in required:
+              item = wb_cabinets.get(name)
+              assert isinstance(item, dict), f'missing WB cabinet {name}'
+              token = str(item.get('token', '')).strip()
+              assert token, f'missing WB token {name}'
+              parts = token.split('.')
+              assert len(parts) >= 2, f'WB token is not JWT-shaped: {name}'
+              payload = parts[1] + '=' * (-len(parts[1]) % 4)
+              claims = json.loads(base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8'))
+              mask = int(claims.get('s') or 0)
+              assert bool(mask & (1 << 5)), f'WB token lacks Promotion category: {name}'
+              source_tokens[name] = token
+
+          current_ads = data.get('wb_ads')
+          if isinstance(current_ads, dict):
+              current_cabs = current_ads.get('cabinets')
+              if isinstance(current_cabs, dict) and all(
+                  isinstance(current_cabs.get(name), dict)
+                  and str(current_cabs[name].get('token', '')).strip()
+                  for name in required
+              ):
+                  print('WB_ADS_LOCKBOX_ALREADY_CONFIGURED=PASS')
+                  (temp / 'no_change').write_text('1', encoding='utf-8')
+                  raise SystemExit(0)
+
+          active = str(wb.get('active') or '').strip()
+          if active not in required:
+              active = 'wb_novokshenov'
+          data['wb_ads'] = {
+              'active': active,
+              'cabinets': {name: {'token': source_tokens[name]} for name in required},
+          }
+          compact = json.dumps(data, ensure_ascii=False, separators=(',', ':'))
+          changes = [{'key': 'cabinets_json', 'text_value': compact}]
+          (temp / 'lockbox-change.json').write_text(
+              json.dumps(changes, ensure_ascii=False, separators=(',', ':')),
+              encoding='utf-8',
+          )
+          print('WB_ADS_LOCKBOX_TRANSFORM=READY cabinets=' + ','.join(required))
+          PY
+          if [[ -f "$RUNNER_TEMP/no_change" ]]; then
+            echo 'change_required=false' >> "$GITHUB_OUTPUT"
+          else
+            test -s "$RUNNER_TEMP/lockbox-change.json"
+            chmod 600 "$RUNNER_TEMP/lockbox-change.json"
+            echo 'change_required=true' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create new Lockbox version from current version
+        if: steps.transform.outputs.change_required == 'true'
+        id: add
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.secret.outputs.secret_id }}
+          BASE_VERSION_ID: ${{ steps.secret.outputs.base_version_id }}
+        run: |
+          set -euo pipefail
+          cat "$RUNNER_TEMP/lockbox-change.json" | timeout 60s yc lockbox secret add-version \
+            --id "$SECRET_ID" \
+            --base-version-id "$BASE_VERSION_ID" \
+            --description 'Add logical wb_ads service using existing Promotion-enabled WB personal tokens' \
+            --payload - \
+            --format json --no-user-output > "$RUNNER_TEMP/new-version.json"
+          NEW_VERSION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/new-version.json")"
+          test -n "$NEW_VERSION_ID"
+          STATUS="$(jq -r '.status//empty' "$RUNNER_TEMP/new-version.json")"
+          test "$STATUS" = ACTIVE
+          echo "new_version_id=$NEW_VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo 'LOCKBOX_NEW_VERSION=ACTIVE'
+
+      - name: Verify resulting secret without exposing values
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.secret.outputs.secret_id }}
+          BASE_VERSION_ID: ${{ steps.secret.outputs.base_version_id }}
+          NEW_VERSION_ID: ${{ steps.add.outputs.new_version_id }}
+          CHANGE_REQUIRED: ${{ steps.transform.outputs.change_required }}
+        run: |
+          set -euo pipefail
+          VERSION_ID="$NEW_VERSION_ID"
+          if [[ "$CHANGE_REQUIRED" != true ]]; then
+            VERSION_ID="$BASE_VERSION_ID"
+          fi
+          test -n "$VERSION_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/verify-payload.json"
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          temp = Path(os.environ['RUNNER_TEMP'])
+          payload = json.loads((temp / 'verify-payload.json').read_text(encoding='utf-8'))
+          entries = {x.get('key'): x.get('text_value', '') for x in payload.get('entries', [])}
+          required_keys = {'cabinets_json', 'mcp_bearer_token', 'redis_password', 'google_drive_bridge_secret'}
+          missing_keys = sorted(required_keys - set(entries))
+          assert not missing_keys, f'critical Lockbox entries missing: {missing_keys}'
+          data = json.loads(entries['cabinets_json'])
+          ads = data.get('wb_ads')
+          assert isinstance(ads, dict), 'wb_ads missing after migration'
+          cabs = ads.get('cabinets')
+          assert isinstance(cabs, dict), 'wb_ads.cabinets missing after migration'
+          required = ('wb_dmitrieva', 'wb_novokshenov', 'wb_laser_master')
+          missing = [name for name in required if not isinstance(cabs.get(name), dict) or not str(cabs[name].get('token', '')).strip()]
+          assert not missing, f'wb_ads cabinet credentials missing after migration: {missing}'
+          print('WB_ADS_LOCKBOX_VERIFY=PASS cabinets=' + ','.join(required))
+          print('CRITICAL_LOCKBOX_KEYS_PRESERVED=PASS')
+          PY
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/cabinets.json" "$RUNNER_TEMP/lockbox-change.json" "$RUNNER_TEMP/no_change" "$RUNNER_TEMP/new-version.json" "$RUNNER_TEMP/verify-payload.json"
