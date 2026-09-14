@@ -79,7 +79,7 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
           timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
-          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)|select((.payload_entry_keys // [])|index("google_drive_oauth_json") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
           CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           RUNTIME_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
           GATEWAY_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-gateway")|.id'|head -1)"
@@ -155,6 +155,7 @@ jobs:
           BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/current-payload.json")"
           test -n "$BEARER"
           jq -e '[.entries[].key] | index("google_drive_bridge_secret") != null' "$RUNNER_TEMP/current-payload.json" >/dev/null
+          jq -e '[.entries[].key] | index("google_drive_oauth_json") != null' "$RUNNER_TEMP/current-payload.json" >/dev/null
           echo "::add-mask::$BEARER"
           printf '%s' "$BEARER" > "$RUNNER_TEMP/mcp-bearer"
           chmod 600 "$RUNNER_TEMP/mcp-bearer"
@@ -172,6 +173,7 @@ jobs:
           echo "CARD_MONITOR_SOURCE_SHA=$SOURCE_SHA"
           echo 'card_monitor_source=LATEST_SUCCESSFUL_DEPLOY'
           echo 'google_drive_bridge_lockbox=RESOLVED'
+          echo 'google_drive_resumable_oauth_lockbox=RESOLVED'
 
       - name: Deploy Card Monitor-enabled runtime revision
         id: deploy
@@ -197,6 +199,7 @@ jobs:
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
             --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_bridge_secret" \
+            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_oauth_json" \
             --secret "environment-variable=CARD_MONITOR_INGEST_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=card_monitor_ingest_token" \
             --format json --no-user-output > "$RUNNER_TEMP/card-monitor-revision.json"
           REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/card-monitor-revision.json")"
