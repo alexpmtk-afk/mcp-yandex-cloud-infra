@@ -1,1 +1,1 @@
-2026-09-14T15:20:00+03:00 read-only durable Laser state after annual upload disconnect
+2026-09-14T22:04:00+03:00 read-only durable Laser state before resumable diagnostic continuation
