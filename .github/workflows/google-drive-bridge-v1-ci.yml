@@ -4,14 +4,25 @@ on:
   pull_request:
     paths:
       - 'shared/google-drive-bridge/**'
-      - '.github/workflows/google-drive-bridge-v1-ci.yml'
+      - 'tools/bootstrap_bridge_v1_apps_script.py'
+      - 'scripts/patch_bridge_v1_*'
+      - 'terraform/birzha_test/m24_autonomous_worker.tf'
+      - 'terraform/birzha_test/m25_market_mirror.tf'
+      - '.github/workflows/*drive-bridge-v1*'
+      - '.github/workflows/google-drive-bridge-v1-*'
   push:
     branches:
       - feature/google-drive-bridge-v1
       - feature/bridge-v1-large-read
+      - bridge-v1-finalization-20260914
     paths:
       - 'shared/google-drive-bridge/**'
-      - '.github/workflows/google-drive-bridge-v1-ci.yml'
+      - 'tools/bootstrap_bridge_v1_apps_script.py'
+      - 'scripts/patch_bridge_v1_*'
+      - 'terraform/birzha_test/m24_autonomous_worker.tf'
+      - 'terraform/birzha_test/m25_market_mirror.tf'
+      - '.github/workflows/*drive-bridge-v1*'
+      - '.github/workflows/google-drive-bridge-v1-*'
 
 permissions:
   contents: read
@@ -25,12 +36,16 @@ jobs:
         with:
           python-version: '3.12'
       - run: python -m pip install --disable-pip-version-check httpx pytest
-      - run: |
+      - name: Compile all Bridge helpers
+        run: |
           python -m py_compile \
             shared/google-drive-bridge/python_client/bridge_client.py \
             shared/google-drive-bridge/scripts/acceptance.py \
             shared/google-drive-bridge/scripts/sheets_acceptance.py \
-            shared/google-drive-bridge/scripts/cross_project_acceptance.py
+            shared/google-drive-bridge/scripts/cross_project_acceptance.py \
+            tools/bootstrap_bridge_v1_apps_script.py \
+            scripts/patch_bridge_v1_source_once.py \
+            scripts/patch_bridge_v1_workflows_once.py
       - run: pytest -q shared/google-drive-bridge/tests
 
   static-contract:
@@ -45,6 +60,11 @@ jobs:
           node --check "$RUNNER_TEMP/bridge.js"
           cp shared/google-drive-bridge/setup.gs "$RUNNER_TEMP/setup.js"
           node --check "$RUNNER_TEMP/setup.js"
+          for f in shared/google-drive-bridge/deploy/*_config.gs; do
+            cp "$f" "$RUNNER_TEMP/config.js"
+            node --check "$RUNNER_TEMP/config.js"
+          done
+
       - name: Validate required bridge invariants
         shell: bash
         run: |
@@ -60,8 +80,33 @@ jobs:
           grep -Fq "large_download_poll" "$f"
           grep -Fq "drive_files_download_lro" "$f"
           grep -Fq "sheet_write_chunk" "$f"
+          grep -Fq "injected.secret" "$f"
           if grep -Fq "getScriptLock(); lock.waitLock" "$f"; then
             echo 'Global whole-request ScriptLock pattern is forbidden'
             exit 1
           fi
           echo 'BRIDGE_STATIC_CONTRACT=PASS'
+
+      - name: Prove secrets are not committed
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in shared/google-drive-bridge/deploy/*_config.gs; do
+            grep -Fq "secret: ''" "$f"
+          done
+          ! grep -R --line-number -E "gdrive_bridge_v1_secret['\"]?[[:space:]]*[:=][[:space:]]*['\"][A-Za-z0-9_-]{20,}" shared tools scripts .github terraform || false
+          echo 'BRIDGE_COMMITTED_SECRET_VALUES=NONE'
+
+      - name: Validate project Lockbox isolation and joint acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'LOCKBOX_NAME: marketplaces-mcp-api-credentials' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -Fq 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
+          grep -Fq 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
+          grep -Fq 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
+          grep -Fq 'LOCKBOX_NAME: marketplaces-mcp-api-credentials' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+          grep -Fq 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -Fq 'key                  = "gdrive_bridge_v1_secret"' terraform/birzha_test/m24_autonomous_worker.tf
+          test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
+          echo 'BRIDGE_PROJECT_ISOLATION_STATIC=PASS'
