@@ -73,26 +73,26 @@ jobs:
         run: |
           set -euo pipefail
           echo '--- REGISTRY METADATA ---'
-          yc container registry get "$TEST_REGISTRY_ID" --format json || true
+          timeout 45s yc container registry get "$TEST_REGISTRY_ID" --format json || true
           echo '--- IP PERMISSIONS ---'
-          yc container registry list-ip-permissions "$TEST_REGISTRY_ID" --format json || true
+          timeout 45s yc container registry list-ip-permissions "$TEST_REGISTRY_ID" --format json || true
           echo '--- FOLDER BINDINGS FOR CI ---'
-          yc resource-manager folder list-access-bindings "$TEST_FOLDER_ID" --format json \
+          timeout 45s yc resource-manager folder list-access-bindings "$TEST_FOLDER_ID" --format json \
             | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
           echo '--- REGISTRY BINDINGS FOR CI ---'
-          yc container registry list-access-bindings "$TEST_REGISTRY_ID" --format json \
+          timeout 45s yc container registry list-access-bindings "$TEST_REGISTRY_ID" --format json \
             | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
           echo '--- REPOSITORY BINDINGS FOR CI ---'
-          yc container repository list-access-bindings "$TEST_REPOSITORY_ID" --format json \
+          timeout 45s yc container repository list-access-bindings "$TEST_REPOSITORY_ID" --format json \
             | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
           echo '--- EXISTING IMAGES ---'
-          yc container image list --repository-name "$TEST_REGISTRY_ID/marketplaces-mcp" --limit 5 --format json > "$RUNNER_TEMP/images.json"
+          timeout 45s yc container image list --repository-name "$TEST_REGISTRY_ID/marketplaces-mcp" --limit 5 --format json > "$RUNNER_TEMP/images.json"
           jq -c '[.[] | {id,name,digest,tags,created_at}]' "$RUNNER_TEMP/images.json"
           IMAGE_COUNT="$(jq 'length' "$RUNNER_TEMP/images.json")"
           echo "image_count=$IMAGE_COUNT"
           echo 'READ_ONLY_REGISTRY_DIAGNOSTIC=PASS'
 
-      - name: Prove pull with same identity
+      - name: Login once for data-plane probes
         shell: bash
         run: |
           set -euo pipefail
@@ -101,13 +101,32 @@ jobs:
           echo "::add-mask::$IAM_TOKEN"
           printf '%s' "$IAM_TOKEN" | docker login --username iam --password-stdin cr.yandex
           unset IAM_TOKEN
+          echo 'DOCKER_LOGIN=PASS'
+
+      - name: Prove pull with same identity
+        shell: bash
+        run: |
+          set -euo pipefail
           DIGEST="$(jq -r '.[0].digest // empty' "$RUNNER_TEMP/images.json")"
           test -n "$DIGEST"
           EXISTING_IMAGE="cr.yandex/${TEST_REGISTRY_ID}/marketplaces-mcp@${DIGEST}"
-          docker pull "$EXISTING_IMAGE"
+          timeout 180s docker pull "$EXISTING_IMAGE"
           echo 'EXISTING_REGISTRY_DIRECT_PULL=PASS'
 
-      - name: Prove direct pusher data-plane access
+      - name: Probe first push to a new repository name
+        shell: bash
+        run: |
+          set -euo pipefail
+          PROBE_TAG="${GITHUB_SHA}"
+          NEW_IMAGE="cr.yandex/${TEST_REGISTRY_ID}/semantic-core-probe:${PROBE_TAG}"
+          mkdir -p "$RUNNER_TEMP/new-repository-probe"
+          printf 'FROM scratch\nLABEL purpose="semantic-core-new-repository-probe"\n' > "$RUNNER_TEMP/new-repository-probe/Dockerfile"
+          docker build --tag "$NEW_IMAGE" "$RUNNER_TEMP/new-repository-probe"
+          docker push "$NEW_IMAGE"
+          echo "new_repository_probe_image=$NEW_IMAGE"
+          echo 'NEW_REPOSITORY_FIRST_PUSH=PASS'
+
+      - name: Prove push to existing repository
         shell: bash
         run: |
           set -euo pipefail
