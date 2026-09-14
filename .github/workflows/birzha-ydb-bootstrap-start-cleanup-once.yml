@@ -1,0 +1,157 @@
+name: BIRZHA YDB bootstrap start cleanup once
+
+on:
+  push:
+    branches: [birzha-m23-br-capacity-plan-20260914]
+    paths:
+      - ".github/workflows/birzha-ydb-bootstrap-start-cleanup-once.yml"
+
+permissions:
+  contents: read
+
+env:
+  YDB_DATABASE_ID: etnes7omhgut11oulsd5
+
+jobs:
+  start:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Checkout infrastructure source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          path: infra
+          persist-credentials: false
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Prepare provider identity and IAM token
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          python -m pip install --disable-pip-version-check 'PyJWT==2.10.0' cryptography
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          import jwt
+          key=json.loads(Path(os.environ['YC_KEY_FILE']).read_text())
+          now=int(time.time())
+          signed=jwt.encode({'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600},key['private_key'],algorithm='PS256',headers={'kid':key['id']})
+          req=urllib.request.Request('https://iam.api.cloud.yandex.net/iam/v1/tokens',data=json.dumps({'jwt':signed}).encode(),headers={'Content-Type':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r:
+              token=json.loads(r.read())['iamToken']
+          assert token and len(token)>100
+          print(f'::add-mask::{token}')
+          with open(os.environ['GITHUB_ENV'],'a') as f:
+              f.write(f'TF_VAR_yc_token={token}\n')
+          p=Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token'; p.write_text(token); p.chmod(0o600)
+          print('INFRA_DEPLOYER_TOKEN=PASS')
+          PY
+
+      - name: Initialize Birzha remote state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform/birzha_test init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY"
+
+      - name: Grant temporary YDB bootstrap admin to infra deployer
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform/birzha_test apply -input=false -auto-approve \
+            -target='yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin[0]' \
+            -var='ydb_bootstrap_enabled=true'
+          echo 'TEMP_YDB_BOOTSTRAP_ADMIN=GRANTED'
+
+      - name: Start exact Birzha TEST YDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json, os, time, urllib.request
+          from pathlib import Path
+          token=(Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token').read_text().strip()
+          headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'}
+          db_id=os.environ['YDB_DATABASE_ID']
+          get_url=f'https://ydb.api.cloud.yandex.net/ydb/v1/databases/{db_id}'
+          def get_db():
+              with urllib.request.urlopen(urllib.request.Request(get_url,headers=headers),timeout=30) as r:
+                  return json.loads(r.read())
+          db=get_db(); status=db.get('status'); name=db.get('name')
+          assert name=='birzha-mcp-forecast-state', (name,status)
+          print(f'YDB_PRECHECK=PASS status={status}')
+          if status=='STOPPED':
+              req=urllib.request.Request(f'https://ydb.api.cloud.yandex.net/ydb/v1/databases/{db_id}:start',data=b'{}',headers=headers,method='POST')
+              with urllib.request.urlopen(req,timeout=30) as r:
+                  op=json.loads(r.read() or b'{}')
+              print('YDB_START_REQUEST=ACCEPTED operation_id='+str(op.get('id','')))
+          elif status!='RUNNING':
+              raise RuntimeError(f'unsafe YDB status: {status}')
+          for _ in range(60):
+              db=get_db(); status=db.get('status')
+              if status=='RUNNING':
+                  print('YDB_START=PASS status=RUNNING')
+                  break
+              if status not in ('STARTING','STOPPED'):
+                  raise RuntimeError(f'unexpected YDB status: {status}')
+              time.sleep(5)
+          else:
+              raise RuntimeError(f'YDB did not reach RUNNING; final={status}')
+          PY
+
+      - name: Remove temporary YDB bootstrap admin
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir=infra/terraform/birzha_test apply -input=false -auto-approve \
+            -target='yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin' \
+            -var='ydb_bootstrap_enabled=false'
+          echo 'TEMP_YDB_BOOTSTRAP_ADMIN=REMOVED'
+
+      - name: Verify cleanup and final YDB state
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          set +e
+          terraform -chdir=infra/terraform/birzha_test plan -input=false -no-color -detailed-exitcode \
+            -target='yandex_resourcemanager_folder_iam_member.ydb_bootstrap_admin' \
+            -var='ydb_bootstrap_enabled=false' > "$RUNNER_TEMP/cleanup-plan.txt"
+          RC=$?
+          set -e
+          cat "$RUNNER_TEMP/cleanup-plan.txt"
+          test "$RC" -eq 0
+          python - <<'PY'
+          import json, os, urllib.request
+          from pathlib import Path
+          token=(Path(os.environ['RUNNER_TEMP'])/'yandex-iam-token').read_text().strip()
+          req=urllib.request.Request(f"https://ydb.api.cloud.yandex.net/ydb/v1/databases/{os.environ['YDB_DATABASE_ID']}",headers={'Authorization':'Bearer '+token})
+          with urllib.request.urlopen(req,timeout=30) as r:
+              db=json.loads(r.read())
+          print('YDB_FINAL_STATUS='+str(db.get('status')))
+          assert db.get('status')=='RUNNING', db.get('status')
+          print('BOOTSTRAP_CLEANUP=PASS')
+          PY
+
+      - name: Cleanup local credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yandex-iam-token"
