@@ -1,0 +1,67 @@
+name: Birzha Google Drive Bridge v1 Cutover Gate
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  PROJECT_ID: birzha
+  EXPECTED_ROOT_ID: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
+
+jobs:
+  gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate common standard identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'protocol_version.*1' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'Project id: `birzha`' shared/google-drive-bridge/clients/birzha.md
+          grep -q "rootId: '$EXPECTED_ROOT_ID'" shared/google-drive-bridge/deploy/birzha_config.gs
+          grep -q 'sheetsEnabled: true' shared/google-drive-bridge/deploy/birzha_config.gs
+          echo 'BIRZHA_SHARED_STANDARD=PASS'
+
+      - name: Validate isolated manual readiness workflows
+        shell: bash
+        run: |
+          set -euo pipefail
+          for f in \
+            .github/workflows/birzha-drive-bridge-v1-bootstrap.yml \
+            .github/workflows/birzha-drive-bridge-v1-acceptance.yml; do
+            test -f "$f"
+            grep -q 'workflow_dispatch:' "$f"
+          done
+          grep -q 'LOCKBOX_NAME: birzha-google-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
+          grep -q 'LOCKBOX_NAME: birzha-google-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          echo 'BIRZHA_READINESS_WORKFLOW_ISOLATION=PASS'
+
+      - name: Prove legacy Marketplaces dependency is not removed by this gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f terraform/birzha_test/m25_market_mirror.tf
+          echo 'LEGACY_DEPENDENCY_REMOVAL=NO'
+          echo 'PRODUCTION_CUTOVER_PERFORMED=NO'
+
+      - name: Verify Birzha acceptance prerequisites
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'sheet_stage_begin' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'sheet_write_chunk' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'sheet_verify' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'sheet_commit' shared/google-drive-bridge/PROTOCOL.md
+          grep -q 'sheet_abort' shared/google-drive-bridge/PROTOCOL.md
+          test -f shared/google-drive-bridge/scripts/cross_project_acceptance.py
+          echo 'BIRZHA_CUTOVER_PRECONDITIONS_DOCUMENTED=PASS'
+
+      - name: Cutover deliberately not executed
+        run: |
+          echo 'This gate is read-only. Live BR E2E parity and cross-project acceptance must PASS before a separate cutover change.'
+          echo 'CUTOVER_ACTION=NONE'
