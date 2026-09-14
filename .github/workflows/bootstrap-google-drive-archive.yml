@@ -14,11 +14,8 @@ jobs:
   bootstrap:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 25
+    timeout-minutes: 20
     steps:
-      - name: Checkout infrastructure
-        uses: actions/checkout@v4
-
       - name: Validate one-time OAuth handoff
         shell: bash
         env:
@@ -60,7 +57,6 @@ jobs:
           tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
-          "$RUNNER_TEMP/yc/yc" version
 
       - name: Authenticate Yandex CI service account
         shell: bash
@@ -75,7 +71,7 @@ jobs:
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Resolve live MCP resources and current image
+      - name: Resolve safe Lockbox base
         id: live
         shell: bash
         run: |
@@ -84,37 +80,16 @@ jobs:
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
-
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
-          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id // empty')"
-          CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
-          RUNTIME_SA="$(timeout 45s yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
-          NETWORK_ID="$(timeout 45s yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-net")|.id'|head -1)"
-          CLUSTER_ID="$(timeout 45s yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
-          REDIS_HOST="$(timeout 45s yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
-          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain // .[0].domain // empty')"
-
-          timeout 45s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json"
-          REVISION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/revisions.json")"
-          test -n "$REVISION_ID"
-          timeout 45s yc serverless container revision get --id "$REVISION_ID" --format json --no-user-output > "$RUNNER_TEMP/current-revision.json"
-          IMAGE="$(jq -r '.image.image_url // empty' "$RUNNER_TEMP/current-revision.json")"
-
-          for v in SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN IMAGE; do
-            test -n "${!v}"
-          done
-          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          test -n "$SECRET_ID"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
           echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "base_version=$VERSION_ID" >> "$GITHUB_OUTPUT"
-          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
-          echo "sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
-          echo "network=$NETWORK_ID" >> "$GITHUB_OUTPUT"
-          echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
-          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
-          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
-          echo 'live_runtime_resolved=PASS'
+          echo 'LOCKBOX_BASE=RESOLVED'
 
-      - name: Add Google Drive OAuth to Yandex Lockbox
+      - name: Store Google Drive OAuth in Yandex Lockbox only
         id: lockbox
         shell: bash
         env:
@@ -126,8 +101,7 @@ jobs:
           PAYLOAD="$RUNNER_TEMP/oauth-payload.json"
           python - <<'PY'
           import json, os
-          raw = os.environ['GOOGLE_DRIVE_OAUTH_JSON']
-          cfg = json.loads(raw)
+          cfg = json.loads(os.environ['GOOGLE_DRIVE_OAUTH_JSON'])
           compact = json.dumps(cfg, ensure_ascii=False, separators=(',', ':'))
           with open(os.environ['RUNNER_TEMP'] + '/oauth-payload.json', 'w', encoding='utf-8') as f:
               json.dump([{'key':'google_drive_oauth_json','text_value':compact}], f, ensure_ascii=False, separators=(',', ':'))
@@ -136,131 +110,28 @@ jobs:
           timeout 60s yc lockbox secret add-version \
             --id "$SECRET_ID" \
             --base-version-id "$BASE_VERSION_ID" \
-            --description "Google Drive archive OAuth bootstrap 2026-09-13" \
+            --description "Google Drive resumable archive OAuth bootstrap 2026-09-14" \
             --payload - --format json --no-user-output \
             < "$PAYLOAD" > "$RUNNER_TEMP/new-version.json"
           NEW_VERSION_ID="$(jq -r '.id // .response.id // empty' "$RUNNER_TEMP/new-version.json")"
           test -n "$NEW_VERSION_ID"
           echo "version=$NEW_VERSION_ID" >> "$GITHUB_OUTPUT"
 
-          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
-          jq -r --arg id "$NEW_VERSION_ID" '.[]|select(.id==$id)|.payload_entry_keys[]?' "$RUNNER_TEMP/versions.json" | sort -u > "$RUNNER_TEMP/keys.txt"
-          for key in cabinets_json mcp_bearer_token redis_password google_drive_oauth_json; do
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions-after.json"
+          jq -r --arg id "$NEW_VERSION_ID" '.[]|select(.id==$id)|.payload_entry_keys[]?' "$RUNNER_TEMP/versions-after.json" | sort -u > "$RUNNER_TEMP/keys.txt"
+          for key in cabinets_json mcp_bearer_token redis_password google_drive_bridge_secret google_drive_oauth_json; do
             grep -Fxq "$key" "$RUNNER_TEMP/keys.txt"
           done
-          echo 'lockbox_google_drive_oauth=PASS'
 
-      - name: Deploy Drive-enabled MCP revision
-        id: deploy
-        shell: bash
-        env:
-          FOLDER_ID: ${{ steps.live.outputs.folder }}
-          SECRET_ID: ${{ steps.live.outputs.secret }}
-          VERSION_ID: ${{ steps.lockbox.outputs.version }}
-          CONTAINER_ID: ${{ steps.live.outputs.container }}
-          RUNTIME_SA: ${{ steps.live.outputs.sa }}
-          NETWORK_ID: ${{ steps.live.outputs.network }}
-          REDIS_HOST: ${{ steps.live.outputs.redis_host }}
-          DOMAIN: ${{ steps.live.outputs.domain }}
-          IMAGE: ${{ steps.live.outputs.image }}
-        run: |
-          set -euo pipefail
-          timeout 180s yc serverless container revision deploy \
-            --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
-            --image "$IMAGE" --memory 512MB --cores 1 --execution-timeout 600s --concurrency 8 \
-            --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ" \
-            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
-            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
-            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
-            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_oauth_json" \
-            --format json --no-user-output > "$RUNNER_TEMP/drive-revision.json"
-          REVISION_ID="$(jq -r '.id // empty' "$RUNNER_TEMP/drive-revision.json")"
-          test -n "$REVISION_ID"
-          BASE="https://${DOMAIN}"
-          CODE=000
-          for attempt in $(seq 1 18); do
-            CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
-            [[ "$CODE" == 200 ]] && break
-            sleep 5
-          done
-          test "$CODE" = 200
-          echo "gateway=$BASE" >> "$GITHUB_OUTPUT"
-          echo "revision=$REVISION_ID" >> "$GITHUB_OUTPUT"
-          echo 'drive_enabled_revision=PASS'
-
-      - name: Prove Drive archive is live through remote MCP
-        shell: bash
-        timeout-minutes: 5
-        env:
-          SECRET_ID: ${{ steps.live.outputs.secret }}
-          VERSION_ID: ${{ steps.lockbox.outputs.version }}
-          GATEWAY_URL: ${{ steps.deploy.outputs.gateway }}
-        run: |
-          set -euo pipefail
-          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key mcp_bearer_token --format json --no-user-output > "$RUNNER_TEMP/bearer-entry.json"
-          BEARER="$(jq -r '.entries[0].text_value // empty' "$RUNNER_TEMP/bearer-entry.json")"
-          test -n "$BEARER"
-          echo "::add-mask::$BEARER"
-          export MCP_BEARER="$BEARER"
-          export MCP_URL="${GATEWAY_URL}/mcp"
-          python -m pip install --quiet 'httpx>=0.27,<1'
-          python -u - <<'PY'
-          import datetime, itertools, json, os
-          import httpx
-
-          headers = {
-              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
-              'Accept': 'application/json, text/event-stream',
-              'Content-Type': 'application/json',
-          }
-          ids = itertools.count(1)
-          timeout = httpx.Timeout(connect=10, read=90, write=30, pool=10)
-
-          def unpack(resp):
-              resp.raise_for_status()
-              for line in resp.text.splitlines():
-                  if line.startswith('data:'):
-                      return json.loads(line[5:].strip())
-              return resp.json()
-
-          with httpx.Client(timeout=timeout, follow_redirects=True) as c:
-              r = c.post(os.environ['MCP_URL'], headers=headers, json={
-                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
-                      'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'drive-oauth-bootstrap','version':'1'}
-                  }})
-              init = unpack(r)
-              assert 'result' in init, init
-              h = dict(headers)
-              sid = r.headers.get('mcp-session-id')
-              if sid:
-                  h['Mcp-Session-Id'] = sid
-              h['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
-              n = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','method':'notifications/initialized'})
-              assert n.status_code in (200,202), n.status_code
-
-              def rpc(method, params=None):
-                  rr = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
-                  data = unpack(rr)
-                  assert 'result' in data, data
-                  return data['result']
-
-              def call(name, args):
-                  result = rpc('tools/call', {'name':name,'arguments':args})
-                  assert not result.get('isError'), result
-                  text = next(x['text'] for x in result['content'] if x.get('type')=='text')
-                  return json.loads(text)
-
-              names = {x['name'] for x in rpc('tools/list')['tools']}
-              assert {'marketplace_archive_update','marketplace_archive_status','marketplace_archive_query'} <= names
-              status = call('marketplace_archive_status', {'year': datetime.date.today().year})
-              assert status.get('ok') is True, status
-              storage = status.get('storage') or {}
-              assert storage.get('configured') is True and storage.get('reachable') is True, storage
-              assert storage.get('root_folder_id') == '1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ', storage
-              assert storage.get('root_name') == 'MCP архив базы данных', storage
-              print('DRIVE_ARCHIVE_LIVE=PASS')
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$NEW_VERSION_ID" --key google_drive_oauth_json --format json --no-user-output > "$RUNNER_TEMP/oauth-entry.json"
+          python - <<'PY'
+          import json, os
+          body = json.load(open(os.environ['RUNNER_TEMP'] + '/oauth-entry.json', encoding='utf-8'))
+          raw = str((body.get('entries') or [{}])[0].get('text_value') or '')
+          cfg = json.loads(raw)
+          required = {'client_id','client_secret','refresh_token','token_uri'}
+          assert all(str(cfg.get(k, '')).strip() for k in required)
+          print('LOCKBOX_GOOGLE_DRIVE_OAUTH=PASS')
           PY
 
       - name: Cleanup temporary files
@@ -269,12 +140,10 @@ jobs:
         run: |
           rm -f \
             "$RUNNER_TEMP/yc-service-account-key.json" \
+            "$RUNNER_TEMP/yc/yc.tgz" \
             "$RUNNER_TEMP/oauth-payload.json" \
             "$RUNNER_TEMP/new-version.json" \
             "$RUNNER_TEMP/versions.json" \
+            "$RUNNER_TEMP/versions-after.json" \
             "$RUNNER_TEMP/keys.txt" \
-            "$RUNNER_TEMP/revisions.json" \
-            "$RUNNER_TEMP/current-revision.json" \
-            "$RUNNER_TEMP/drive-revision.json" \
-            "$RUNNER_TEMP/bearer-entry.json" \
-            "$RUNNER_TEMP/health"
+            "$RUNNER_TEMP/oauth-entry.json"
