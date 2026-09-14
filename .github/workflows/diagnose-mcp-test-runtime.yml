@@ -64,7 +64,12 @@ jobs:
         run: |
           set -euo pipefail
           timeout 45s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json" || printf '[]' > "$RUNNER_TEMP/revisions.json"
-          timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '12m ago' --limit 1000 --format json > "$RUNNER_TEMP/logs.json"
+          if timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '15m ago' --limit 1000 --format json > "$RUNNER_TEMP/logs.json"; then
+            echo 'runtime_log_read=PASS'
+          else
+            printf '[]' > "$RUNNER_TEMP/logs.json"
+            echo 'runtime_log_read=UNAVAILABLE'
+          fi
           python - <<'PY'
           import json, re
           from pathlib import Path
@@ -77,12 +82,12 @@ jobs:
               text = re.sub(r"(?i)(authorization|bearer|token|secret|password)(\s*[:=]\s*)[^,}\s]+", r"\1\2<redacted>", text)
               text = re.sub(r"eyJ[A-Za-z0-9_\-.]{20,}", "<redacted-jwt>", text)
               text = re.sub(r"[A-Za-z0-9_\-]{48,}", "<redacted-long-value>", text)
-              return text[:1400]
+              return text[:1600]
 
           def created_at(item):
               return str(item.get("created_at") or item.get("createdAt") or "")
 
-          latest = sorted((x for x in revisions if isinstance(x, dict)), key=created_at, reverse=True)[:8]
+          latest = sorted((x for x in revisions if isinstance(x, dict)), key=created_at, reverse=True)[:10]
           latest_ids = {str(x.get("id") or "") for x in latest if x.get("id")}
           print(f"revision_count={len(revisions)}")
           print(f"runtime_log_count={len(logs)}")
@@ -92,7 +97,9 @@ jobs:
                   "created_at": rev.get("created_at") or rev.get("createdAt"),
                   "status": rev.get("status"),
                   "image_url": rev.get("image_url") or rev.get("imageUrl"),
+                  "image_digest": rev.get("image_digest") or rev.get("imageDigest"),
                   "execution_timeout": rev.get("execution_timeout") or rev.get("executionTimeout"),
+                  "concurrency": rev.get("concurrency"),
               }
               print(f"LATEST_REVISION_{i}={sanitize(json.dumps(meta, ensure_ascii=False, sort_keys=True))}")
 
