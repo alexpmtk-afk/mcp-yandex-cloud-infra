@@ -152,6 +152,11 @@ class GoogleDriveArchiveStore:
             "modifiedTime": item.modified_time,
         }
 
+    async def trash_file(self, file_id: str) -> None:
+        data = await self._post("trash_by_id", file_id=str(file_id))
+        if data.get("trashed") is not True:
+            raise ArchiveStorageError("Apps Script Drive bridge failed to trash diagnostic file")
+
     async def start_resumable_session(self, *, parent_id: str, name: str, total_bytes: int, mime_type: str = "text/csv") -> dict[str, Any]:
         data = await self._post("resumable_start", path=self._path((parent_id,)), filename=str(name), mime_type=str(mime_type), total_bytes=int(total_bytes))
         session_uri = str(data.get("session_uri") or "").strip()
