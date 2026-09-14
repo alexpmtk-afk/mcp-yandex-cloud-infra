@@ -1,4 +1,5 @@
 name: Diagnose TEST Registry Policy Chain
+# Trigger current policy-chain diagnostic after reproducible data-plane PUSH denial.
 
 on:
   workflow_dispatch:
