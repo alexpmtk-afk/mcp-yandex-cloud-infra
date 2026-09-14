@@ -59,10 +59,31 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
           test -n "$REGISTRY_ID"
+          REPOSITORY_ID="$(timeout 45s yc container repository list --registry-id "$REGISTRY_ID" --format json | jq -r --arg n "$REGISTRY_ID/marketplaces-mcp" '.[]|select(.name==$n)|.id'|head -1)"
+          test -n "$REPOSITORY_ID"
           echo "TEST_FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "TEST_REGISTRY_ID=$REGISTRY_ID" >> "$GITHUB_ENV"
+          echo "TEST_REPOSITORY_ID=$REPOSITORY_ID" >> "$GITHUB_ENV"
           echo "existing_registry=$REGISTRY_ID"
+          echo "existing_repository=$REPOSITORY_ID"
           echo 'REGISTRY_MUTATIONS=NONE'
+
+      - name: Inspect effective registry gates read-only
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '--- IP PERMISSIONS ---'
+          yc container registry list-ip-permissions "$TEST_REGISTRY_ID" --format json || true
+          echo '--- FOLDER BINDINGS FOR CI ---'
+          yc resource-manager folder list-access-bindings "$TEST_FOLDER_ID" --format json \
+            | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
+          echo '--- REGISTRY BINDINGS FOR CI ---'
+          yc container registry list-access-bindings "$TEST_REGISTRY_ID" --format json \
+            | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
+          echo '--- REPOSITORY BINDINGS FOR CI ---'
+          yc container repository list-access-bindings "$TEST_REPOSITORY_ID" --format json \
+            | jq -c --arg sid "$CI_SA_ID" '.[]? | select((.subject.id // "") == $sid) | {role_id,subject}' || true
+          echo 'READ_ONLY_REGISTRY_DIAGNOSTIC=PASS'
 
       - name: Prove direct pusher data-plane access
         shell: bash
