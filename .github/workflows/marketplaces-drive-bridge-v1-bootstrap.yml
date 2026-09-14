@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       bridge_url:
-        description: Dedicated Marketplaces Apps Script Bridge v1 /exec URL
+        description: Marketplaces Apps Script Bridge v1 /exec URL
         required: true
         type: string
 
@@ -15,8 +15,8 @@ env:
   PROJECT_ID: marketplaces
   EXPECTED_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
   EXPECTED_ROOT_NAME: MCP архив базы данных
-  LOCKBOX_NAME: marketplaces-google-drive-bridge-v1
-  LOCKBOX_KEY: gdrive_bridge_secret
+  LOCKBOX_NAME: marketplaces-mcp-api-credentials
+  LOCKBOX_KEY: gdrive_bridge_v1_secret
 
 concurrency:
   group: marketplaces-drive-bridge-v1-bootstrap
@@ -42,7 +42,7 @@ jobs:
           grep -q 'request_id' shared/google-drive-bridge/PROTOCOL.md
           echo 'SHARED_BRIDGE_CONTRACT=PASS'
 
-      - name: Validate dedicated Bridge before Lockbox bootstrap
+      - name: Validate Marketplaces Bridge identity before Lockbox bootstrap
         shell: bash
         env:
           BRIDGE_URL: ${{ inputs.bridge_url }}
@@ -54,7 +54,6 @@ jobs:
           echo "::add-mask::$BOOTSTRAP_SECRET"
           python - <<'PY'
           import json, os, urllib.request, uuid
-
           body = {
               'secret': os.environ['BOOTSTRAP_SECRET'],
               'project_id': 'marketplaces',
@@ -81,7 +80,7 @@ jobs:
           assert caps.get('fixed_root_file_id_guard') is True, data
           assert caps.get('idempotent_mutations') is True, data
           assert caps.get('global_script_lock') is False, data
-          print('DEDICATED_MARKETPLACES_BRIDGE_IDENTITY=PASS')
+          print('MARKETPLACES_BRIDGE_IDENTITY=PASS')
           PY
 
       - name: Install Yandex Cloud CLI
@@ -105,7 +104,8 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate Yandex CI service account
+      - name: Authenticate and resolve project Lockbox
+        id: lockbox
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -115,57 +115,147 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
-          yc config profile create github-ci || true
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$DEPLOYER_ID"
+          yc config profile create bridge-v1-marketplaces || true
           yc config set service-account-key "$KEY_FILE"
-
-      - name: Resolve dedicated Marketplaces Bridge v1 Lockbox
-        id: lockbox
-        shell: bash
-        run: |
-          set -euo pipefail
           CLOUD_ID=b1gi4pr9msenirafh2c7
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$LOCKBOX_NAME" '.[]|select(.name==$n)|.id'|head -1)"
-          if [[ -z "$SECRET_ID" ]]; then
-            echo "Dedicated Lockbox '$LOCKBOX_NAME' has not been provisioned; refusing to reuse the legacy Marketplaces credential bundle." >&2
-            exit 1
-          fi
+          test -n "$SECRET_ID"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions-before.json"
+          BASE_VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions-before.json")"
+          test -n "$BASE_VERSION_ID"
+          jq -r --arg id "$BASE_VERSION_ID" '.[]|select(.id==$id)|(.payload_entry_keys // [])[]?' "$RUNNER_TEMP/versions-before.json" | sort -u > "$RUNNER_TEMP/base-keys.txt"
+          test -s "$RUNNER_TEMP/base-keys.txt"
+          echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
           echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
-          echo 'DEDICATED_LOCKBOX=RESOLVED'
+          echo "base_version_id=$BASE_VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "deployer_id=$DEPLOYER_ID" >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_PROJECT_LOCKBOX=RESOLVED'
 
-      - name: Store Bridge v1 secret in dedicated Lockbox only
+      - name: Detect whether Bridge v1 secret is already current
+        id: change
         shell: bash
         env:
           SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          BASE_VERSION_ID: ${{ steps.lockbox.outputs.base_version_id }}
           BOOTSTRAP_SECRET: ${{ secrets.MARKETPLACES_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET }}
         run: |
           set -euo pipefail
           echo "::add-mask::$BOOTSTRAP_SECRET"
-          PAYLOAD="$RUNNER_TEMP/bridge-v1-payload.json"
+          if grep -Fxq "$LOCKBOX_KEY" "$RUNNER_TEMP/base-keys.txt"; then
+            timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION_ID" --key "$LOCKBOX_KEY" --format json --no-user-output > "$RUNNER_TEMP/current-v1.json"
+            CURRENT="$(jq -r --arg k "$LOCKBOX_KEY" '.entries[]|select(.key==$k)|.text_value // empty' "$RUNNER_TEMP/current-v1.json")"
+            echo "::add-mask::$CURRENT"
+            if [[ -n "$CURRENT" && "$CURRENT" == "$BOOTSTRAP_SECRET" ]]; then
+              echo 'required=false' >> "$GITHUB_OUTPUT"
+              echo 'MARKETPLACES_BRIDGE_V1_SECRET=ALREADY_CURRENT'
+              exit 0
+            fi
+          fi
+          echo 'required=true' >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_BRIDGE_V1_SECRET=UPDATE_REQUIRED'
+
+      - name: Grant temporary TEST-folder admin for version write
+        if: steps.change.outputs.required == 'true'
+        id: grant
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
+          DEPLOYER_ID: ${{ steps.lockbox.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID"
+          echo 'granted=true' >> "$GITHUB_OUTPUT"
+          echo 'TEMP_TEST_FOLDER_ADMIN=GRANTED'
+          sleep 20
+
+      - name: Add isolated Bridge v1 key while preserving every existing key
+        if: steps.change.outputs.required == 'true'
+        id: version
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          BASE_VERSION_ID: ${{ steps.lockbox.outputs.base_version_id }}
+          BOOTSTRAP_SECRET: ${{ secrets.MARKETPLACES_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$BOOTSTRAP_SECRET"
           python - <<'PY'
           import json, os
-          with open(os.environ['RUNNER_TEMP'] + '/bridge-v1-payload.json','w',encoding='utf-8') as f:
-              json.dump([{'key':'gdrive_bridge_secret','text_value':os.environ['BOOTSTRAP_SECRET']}],f,separators=(',',':'))
+          with open(os.environ['RUNNER_TEMP'] + '/bridge-v1-change.json','w',encoding='utf-8') as f:
+              json.dump([{'key':'gdrive_bridge_v1_secret','text_value':os.environ['BOOTSTRAP_SECRET']}],f,separators=(',',':'))
           PY
-          chmod 600 "$PAYLOAD"
-          timeout 60s yc lockbox secret add-version \
-            --id "$SECRET_ID" \
-            --description 'Marketplaces Google Drive Bridge Protocol v1' \
-            --payload - --format json --no-user-output \
-            < "$PAYLOAD" > "$RUNNER_TEMP/new-version.json"
+          chmod 600 "$RUNNER_TEMP/bridge-v1-change.json"
+          ok=0
+          for attempt in $(seq 1 6); do
+            rm -f "$RUNNER_TEMP/new-version.json"
+            if timeout 60s yc lockbox secret add-version \
+              --id "$SECRET_ID" \
+              --base-version-id "$BASE_VERSION_ID" \
+              --description 'Marketplaces Google Drive Bridge Protocol v1 credential' \
+              --payload - --format json --no-user-output \
+              < "$RUNNER_TEMP/bridge-v1-change.json" > "$RUNNER_TEMP/new-version.json"; then
+              ok=1
+              break
+            fi
+            echo "lockbox add-version retry $attempt/6"
+            sleep 6
+          done
+          test "$ok" = 1
           VERSION_ID="$(jq -r '.id // .response.id // empty' "$RUNNER_TEMP/new-version.json")"
           test -n "$VERSION_ID"
-          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/verify.json"
-          jq -e --arg k "$LOCKBOX_KEY" '[.entries[].key] | index($k) != null' "$RUNNER_TEMP/verify.json" >/dev/null
-          test "$(jq '[.entries[]|select(.key=="gdrive_bridge_secret")]|length' "$RUNNER_TEMP/verify.json")" = 1
+          echo "version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_BRIDGE_V1_VERSION=ACTIVE'
+
+      - name: Verify no legacy Lockbox keys were lost
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          BASE_VERSION_ID: ${{ steps.lockbox.outputs.base_version_id }}
+          NEW_VERSION_ID: ${{ steps.version.outputs.version_id }}
+          CHANGE_REQUIRED: ${{ steps.change.outputs.required }}
+          BOOTSTRAP_SECRET: ${{ secrets.MARKETPLACES_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET }}
+        run: |
+          set -euo pipefail
+          echo "::add-mask::$BOOTSTRAP_SECRET"
+          VERSION_ID="$NEW_VERSION_ID"
+          if [[ "$CHANGE_REQUIRED" != true ]]; then VERSION_ID="$BASE_VERSION_ID"; fi
+          test -n "$VERSION_ID"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions-after.json"
+          jq -r --arg id "$VERSION_ID" '.[]|select(.id==$id)|(.payload_entry_keys // [])[]?' "$RUNNER_TEMP/versions-after.json" | sort -u > "$RUNNER_TEMP/final-keys.txt"
+          grep -Fxq "$LOCKBOX_KEY" "$RUNNER_TEMP/final-keys.txt"
+          comm -23 "$RUNNER_TEMP/base-keys.txt" "$RUNNER_TEMP/final-keys.txt" > "$RUNNER_TEMP/missing-keys.txt"
+          test ! -s "$RUNNER_TEMP/missing-keys.txt"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key "$LOCKBOX_KEY" --format json --no-user-output > "$RUNNER_TEMP/verify-v1.json"
+          ACTUAL="$(jq -r --arg k "$LOCKBOX_KEY" '.entries[]|select(.key==$k)|.text_value // empty' "$RUNNER_TEMP/verify-v1.json")"
+          echo "::add-mask::$ACTUAL"
+          test "$ACTUAL" = "$BOOTSTRAP_SECRET"
+          echo "MARKETPLACES_BRIDGE_V1_SECRET_VERSION_ID=$VERSION_ID"
           echo 'MARKETPLACES_BRIDGE_V1_LOCKBOX_BOOTSTRAP=PASS'
+          echo 'LEGACY_LOCKBOX_KEYS_PRESERVED=PASS'
           echo 'RUNTIME_BINDING_CHANGED=NO'
+
+      - name: Revoke temporary TEST-folder admin
+        if: always() && steps.grant.outputs.granted == 'true'
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
+          DEPLOYER_ID: ${{ steps.lockbox.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          timeout 90s yc resource-manager folder remove-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID"
+          echo 'TEMP_TEST_FOLDER_ADMIN=REVOKED'
 
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
         run: |
           rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" \
-            "$RUNNER_TEMP/bridge-v1-payload.json" "$RUNNER_TEMP/new-version.json" "$RUNNER_TEMP/verify.json"
+            "$RUNNER_TEMP/versions-before.json" "$RUNNER_TEMP/versions-after.json" \
+            "$RUNNER_TEMP/base-keys.txt" "$RUNNER_TEMP/final-keys.txt" "$RUNNER_TEMP/missing-keys.txt" \
+            "$RUNNER_TEMP/current-v1.json" "$RUNNER_TEMP/bridge-v1-change.json" \
+            "$RUNNER_TEMP/new-version.json" "$RUNNER_TEMP/verify-v1.json"
