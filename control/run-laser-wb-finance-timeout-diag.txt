@@ -1,0 +1,3 @@
+triggered_at_utc=2026-09-14T09:10:00Z
+reason=diagnose Laser Master WB finance detail timeout versus successful previous cabinets
+mode=read-only-state-plus-single-direct-provider-probe
