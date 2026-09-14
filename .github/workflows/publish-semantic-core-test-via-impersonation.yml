@@ -45,8 +45,11 @@ jobs:
           test -f app/.source-revision
           test -f app/Dockerfile
           grep -Fqx "Semantic Core source: alexpmtk-afk/marketplaces-mcp-ru@${APPROVED_SEMANTIC_SHA}" app/.source-revision
-          test -f app/core/semantic_core.py
+          test -f app/core/semantic_archive.py
+          test -f app/core/semantic_registry.yaml
+          test -f app/core/semantic_execution.yaml
           test -f app/core/system_map.py
+          grep -Fq "${APPROVED_SEMANTIC_SHA}" app/core/system_map.py
           TARGET_TAG="semantic-${APPROVED_SEMANTIC_SHA}"
           TARGET_REPOSITORY="${REGISTRY_ID}/${IMAGE_NAME}"
           TARGET_IMAGE="cr.yandex/${TARGET_REPOSITORY}:${TARGET_TAG}"
