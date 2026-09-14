@@ -48,6 +48,8 @@ jobs:
           KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
           chmod 600 "$KEY_FILE"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          test -n "$DEPLOYER_ID"
           yc config profile create wb-ads-lockbox || true
           yc config set service-account-key "$KEY_FILE"
           CLOUD_ID=b1gi4pr9msenirafh2c7
@@ -65,6 +67,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/cabinets.json"
           echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "base_version_id=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "deployer_id=$DEPLOYER_ID" >> "$GITHUB_OUTPUT"
           echo 'lockbox_base=RESOLVED'
 
       - name: Build idempotent wb_ads logical service in memory
@@ -136,6 +139,23 @@ jobs:
             echo 'change_required=true' >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Grant temporary secret-scoped Lockbox editor to deployer
+        if: steps.transform.outputs.change_required == 'true'
+        id: grant
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.secret.outputs.secret_id }}
+          DEPLOYER_ID: ${{ steps.secret.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          timeout 45s yc lockbox secret add-access-binding \
+            --id "$SECRET_ID" \
+            --service-account-id "$DEPLOYER_ID" \
+            --role lockbox.editor \
+            --no-user-output >/dev/null
+          echo 'granted=true' >> "$GITHUB_OUTPUT"
+          echo 'TEMP_LOCKBOX_EDITOR=GRANTED'
+
       - name: Create new Lockbox version from current version
         if: steps.transform.outputs.change_required == 'true'
         id: add
@@ -195,6 +215,21 @@ jobs:
           print('WB_ADS_LOCKBOX_VERIFY=PASS cabinets=' + ','.join(required))
           print('CRITICAL_LOCKBOX_KEYS_PRESERVED=PASS')
           PY
+
+      - name: Revoke temporary Lockbox editor
+        if: always() && steps.grant.outputs.granted == 'true'
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.secret.outputs.secret_id }}
+          DEPLOYER_ID: ${{ steps.secret.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          timeout 45s yc lockbox secret remove-access-binding \
+            --id "$SECRET_ID" \
+            --service-account-id "$DEPLOYER_ID" \
+            --role lockbox.editor \
+            --no-user-output >/dev/null
+          echo 'TEMP_LOCKBOX_EDITOR=REVOKED'
 
       - name: Cleanup ephemeral credentials
         if: always()
