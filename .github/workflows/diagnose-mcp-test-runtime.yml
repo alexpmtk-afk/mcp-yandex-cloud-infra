@@ -1,0 +1,103 @@
+name: Diagnose Marketplaces MCP TEST Runtime
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/diagnose-mcp-test-runtime.yml
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget --quiet --timeout=30 --tries=3 --output-document="$ARCHIVE" "$URL"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate diagnostic service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_SERVICE_ACCOUNT_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create runtime-diagnostic || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve TEST container
+        id: resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$CONTAINER_ID"
+          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo 'test_container=RESOLVED'
+
+      - name: Read and classify startup evidence
+        shell: bash
+        env:
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+        run: |
+          set -euo pipefail
+          timeout 45s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json" || printf '[]' > "$RUNNER_TEMP/revisions.json"
+          timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '30m ago' --limit 300 --format json > "$RUNNER_TEMP/logs.json"
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+
+          revisions = json.loads(Path("/home/runner/work/_temp/revisions.json").read_text() or "[]")
+          logs = json.loads(Path("/home/runner/work/_temp/logs.json").read_text() or "[]")
+          print(f"revision_count={len(revisions)}")
+          print(f"runtime_log_count={len(logs)}")
+
+          needles = (
+              "traceback", "exception", "error", "failed", "fatal", "module", "import",
+              "typeerror", "valueerror", "keyerror", "validation", "redis", "startup",
+              "application startup", "cannot", "refused", "timeout", "credential", "cabinet",
+          )
+          candidates = []
+          for item in logs:
+              raw = json.dumps(item, ensure_ascii=False, sort_keys=True)
+              if any(word in raw.lower() for word in needles):
+                  candidates.append(raw)
+
+          def sanitize(text: str) -> str:
+              text = re.sub(r"https?://[^\s\"']+", "<url>", text)
+              text = re.sub(r"(?i)(authorization|bearer|token|secret|password)(\s*[:=]\s*)[^,}\s]+", r"\1\2<redacted>", text)
+              text = re.sub(r"eyJ[A-Za-z0-9_\-.]{20,}", "<redacted-jwt>", text)
+              text = re.sub(r"[A-Za-z0-9_\-]{48,}", "<redacted-long-value>", text)
+              return text[:1200]
+
+          print(f"startup_error_candidate_count={len(candidates)}")
+          for i, text in enumerate(candidates[-20:], 1):
+              print(f"STARTUP_EVIDENCE_{i}={sanitize(text)}")
+          PY
+
+      - name: Cleanup diagnostic credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/logs.json"
