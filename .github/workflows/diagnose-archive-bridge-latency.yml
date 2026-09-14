@@ -1,0 +1,171 @@
+name: Diagnose Archive Bridge Latency
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - control/run-archive-bridge-latency-diag.txt
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget --quiet --timeout=30 --tries=3 -O "$RUNNER_TEMP/yc.tgz" \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate Yandex CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create archive-diag || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Resolve live secrets without printing them
+        id: live
+        shell: bash
+        run: |
+          set -euo pipefail
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BRIDGE_SECRET="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value' "$RUNNER_TEMP/payload.json")"
+          MCP_BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BRIDGE_SECRET"
+          test -n "$MCP_BEARER"
+          echo "::add-mask::$BRIDGE_SECRET"
+          echo "::add-mask::$MCP_BEARER"
+          printf '%s' "$BRIDGE_SECRET" > "$RUNNER_TEMP/bridge-secret"
+          printf '%s' "$MCP_BEARER" > "$RUNNER_TEMP/mcp-bearer"
+          chmod 600 "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/mcp-bearer"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo 'LIVE_SECRETS=RESOLVED'
+
+      - name: Time direct Apps Script bridge metadata calls
+        shell: bash
+        env:
+          DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+        run: |
+          set -euo pipefail
+          export BRIDGE_SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
+          python -u - <<'PY'
+          import json, os, time, urllib.request
+
+          url = os.environ['DRIVE_BRIDGE_URL']
+          secret = os.environ['BRIDGE_SECRET']
+
+          def post(label, action, **extra):
+              body = {'secret': secret, 'action': action, **extra}
+              req = urllib.request.Request(
+                  url,
+                  data=json.dumps(body, ensure_ascii=False).encode('utf-8'),
+                  headers={'Content-Type':'application/json','Accept':'application/json'},
+                  method='POST',
+              )
+              t0 = time.monotonic()
+              with urllib.request.urlopen(req, timeout=120) as r:
+                  data = json.loads(r.read().decode('utf-8'))
+              dt = time.monotonic() - t0
+              safe = {'ok':data.get('ok'),'found':data.get('found'),'version':data.get('version')}
+              if isinstance(data.get('file'), dict):
+                  safe['file'] = {k:data['file'].get(k) for k in ('id','name','size','modified_time')}
+              print(f'{label}: seconds={dt:.3f} result={json.dumps(safe, ensure_ascii=False)}', flush=True)
+              return data
+
+          post('bridge_health', 'health')
+          post('registry_stat', 'stat', path='app/registry', filename='reports_registry.csv')
+          post('registry_read', 'read', path='app/registry', filename='reports_registry.csv')
+          for cabinet in ('wb_dmitrieva','wb_novokshenov','wb_laser_master'):
+              path=f'База данных/WB/{cabinet}/2026/finance/weekly/main'
+              name=f'{cabinet}__weekly_main__2026.csv'
+              post(f'{cabinet}_stat', 'stat', path=path, filename=name)
+          PY
+
+      - name: Time live MCP archive status with long diagnostic timeout
+        shell: bash
+        env:
+          MCP_URL: https://d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net/mcp
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/mcp-bearer")"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          python -u - <<'PY'
+          import json, os, time
+          import httpx
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          headers={
+              'Authorization':'Bearer '+os.environ['MCP_BEARER'],
+              'Accept':'application/json, text/event-stream',
+              'Content-Type':'application/json',
+          }
+          timeout=httpx.Timeout(connect=15, read=240, write=30, pool=15)
+          with httpx.Client(timeout=timeout, follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'archive-latency-diag','version':'1'}}})
+              init=unpack(r)
+              assert init and 'result' in init, init
+              h=dict(headers)
+              sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              t0=time.monotonic()
+              rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':2,'method':'tools/call','params':{'name':'marketplace_archive_status','arguments':{'year':2026}}})
+              dt=time.monotonic()-t0
+              data=unpack(rr)
+              print(f'MCP_ARCHIVE_STATUS_SECONDS={dt:.3f}', flush=True)
+              assert data and 'result' in data, data
+              result=data['result']
+              print('MCP_ARCHIVE_STATUS_IS_ERROR='+str(bool(result.get('isError'))), flush=True)
+              text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'), '')
+              payload=json.loads(text) if text else {}
+              storage=payload.get('storage') or {}
+              canonical=storage.get('canonical') or {}
+              print('ARCHIVE_OK='+str(payload.get('ok')), flush=True)
+              print('ARCHIVE_BACKEND='+str(storage.get('backend')), flush=True)
+              print('DRIVE_REACHABLE='+str(canonical.get('reachable')), flush=True)
+              print('DRIVE_BRIDGE_VERSION='+str(canonical.get('bridge_version')), flush=True)
+              for name, info in (payload.get('cabinets') or {}).items():
+                  print(f"CABINET={name} bytes={info.get('bytes')} object={bool(info.get('storage_object_key'))} complete_ids={info.get('complete_report_ids')}", flush=True)
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/mcp-bearer"
