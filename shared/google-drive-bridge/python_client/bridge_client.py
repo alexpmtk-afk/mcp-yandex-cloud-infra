@@ -425,6 +425,18 @@ class GoogleDriveBridgeClient:
             {"spreadsheet_id": spreadsheet_id, "stage_sheet_title": stage_sheet_title, "date_column": int(date_column)},
         )
 
+    async def sheet_inspect(
+        self,
+        *,
+        spreadsheet_id: str,
+        sheet_title: str,
+        date_column: int = 0,
+    ) -> dict[str, Any]:
+        return await self.call(
+            "sheet_inspect",
+            {"spreadsheet_id": spreadsheet_id, "sheet_title": sheet_title, "date_column": int(date_column)},
+        )
+
     async def sheet_commit(
         self,
         *,

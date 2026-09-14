@@ -17,8 +17,9 @@ Implemented and covered by static/contract CI:
 - staged verify/promote with exact size/SHA256 checks;
 - large verified download through Drive `files.download` LRO with direct Google → Yandex byte transport;
 - fixed-root ancestry validation and shortcut rejection;
-- Google Sheets ensure/stage/chunk/verify/commit/abort;
+- Google Sheets ensure/stage/chunk/verify/commit/inspect/abort;
 - non-destructive replay of `sheet_stage_begin`;
+- independent post-commit canonical-sheet read-back via `sheet_inspect`;
 - rollback attempt on Sheets commit failure;
 - no whole-request global ScriptLock;
 - reusable Python Protocol-v1 client;

@@ -90,6 +90,7 @@ function dispatch_(action, p, idem, cfg) {
   if (action === 'sheet_stage_begin') return sheetStageBegin_(p, idem, cfg);
   if (action === 'sheet_write_chunk') return sheetWriteChunk_(p, idem, cfg);
   if (action === 'sheet_verify') return sheetVerify_(p, cfg);
+  if (action === 'sheet_inspect') return sheetInspect_(p, cfg);
   if (action === 'sheet_commit') return sheetCommit_(p, idem, cfg);
   if (action === 'sheet_abort') return sheetAbort_(p, idem, cfg);
   throw bridgeError_('UNKNOWN_ACTION', 'unknown action', false);
@@ -132,6 +133,7 @@ function health_(cfg) {
       drive_large_download: true,
       drive_large_download_transport: 'drive_files_download_lro',
       google_sheets_chunked: cfg.sheetsEnabled,
+      google_sheets_inspect: cfg.sheetsEnabled,
       fixed_root_file_id_guard: true,
       idempotent_mutations: true,
       global_script_lock: false
@@ -558,6 +560,39 @@ function sheetVerify_(p, cfg) {
     if (nonEmpty.length) { firstDate = nonEmpty[0]; lastDate = nonEmpty[nonEmpty.length - 1]; }
   }
   return {spreadsheet_id: spreadsheetId, stage_sheet_title: stageTitle, row_count: lastRow, column_count: lastCol, digest_algorithm: 'sheet_digest_v1', digest: digest, first_date: firstDate, last_date: lastDate};
+}
+
+function sheetInspect_(p, cfg) {
+  requireSheets_(cfg);
+  const spreadsheetId = cleanId_(p.spreadsheet_id, 'spreadsheet_id');
+  assertFileInsideRoot_(spreadsheetId, cfg);
+  const sheetTitle = validateSheetTitle_(p.sheet_title);
+  const ss = SpreadsheetApp.openById(spreadsheetId);
+  const sheet = ss.getSheetByName(sheetTitle);
+  if (!sheet) return {found: false, spreadsheet_id: spreadsheetId, sheet_title: sheetTitle};
+  const lastRow = sheet.getLastRow();
+  const lastCol = sheet.getLastColumn();
+  const digest = sheetDigestV1_(sheet, lastRow, lastCol);
+  const dateCol = Number(p.date_column || 0);
+  let firstDate = null;
+  let lastDate = null;
+  if (dateCol > 0 && lastRow > 0 && lastCol >= dateCol) {
+    const vals = sheet.getRange(1, dateCol, lastRow, 1).getDisplayValues().map(function(r){return r[0];});
+    const nonEmpty = vals.filter(function(v){return String(v).trim() !== '';});
+    if (nonEmpty.length) { firstDate = nonEmpty[0]; lastDate = nonEmpty[nonEmpty.length - 1]; }
+  }
+  return {
+    found: true,
+    spreadsheet_id: spreadsheetId,
+    sheet_title: sheetTitle,
+    sheet_id: sheet.getSheetId(),
+    row_count: lastRow,
+    column_count: lastCol,
+    digest_algorithm: 'sheet_digest_v1',
+    digest: digest,
+    first_date: firstDate,
+    last_date: lastDate
+  };
 }
 
 function sheetCommit_(p, idem, cfg) {

@@ -71,6 +71,23 @@ async def main() -> None:
         values=rows1,
         idempotency_key=f"sheets-acceptance-chunk1:{project}:{spreadsheet_id}",
     )
+
+    # Replaying stage-begin with the same idempotency key must preserve rows already written.
+    replayed_stage = await client.sheet_stage_begin(
+        spreadsheet_id=spreadsheet_id,
+        sheet_title=target_title,
+        idempotency_key=stage_key,
+    )
+    if replayed_stage.get("replayed") is not True or str(replayed_stage.get("stage_sheet_title") or "") != stage_title:
+        raise RuntimeError(f"stage-begin replay contract failed: {replayed_stage}")
+    preserved = await client.sheet_verify(
+        spreadsheet_id=spreadsheet_id,
+        stage_sheet_title=stage_title,
+        date_column=2,
+    )
+    if int(preserved.get("row_count") or -1) != 3:
+        raise RuntimeError(f"stage replay destroyed staged rows: {preserved}")
+
     await client.sheet_write_chunk(
         spreadsheet_id=spreadsheet_id,
         stage_sheet_title=stage_title,
@@ -106,6 +123,18 @@ async def main() -> None:
     if first_commit.get("committed") is not True:
         raise RuntimeError("first sheet commit failed")
 
+    inspected = await client.sheet_inspect(
+        spreadsheet_id=spreadsheet_id,
+        sheet_title=target_title,
+        date_column=2,
+    )
+    if inspected.get("found") is not True:
+        raise RuntimeError(f"post-commit target is missing: {inspected}")
+    if int(inspected.get("row_count") or -1) != 5 or str(inspected.get("digest") or "") != digest:
+        raise RuntimeError(f"post-commit read-back parity failed: {inspected}")
+    if str(inspected.get("first_date") or "") != "date" or str(inspected.get("last_date") or "") != "2026-09-16":
+        raise RuntimeError(f"post-commit date parity failed: {inspected}")
+
     replay = await client.sheet_commit(
         spreadsheet_id=spreadsheet_id,
         stage_sheet_title=stage_title,
@@ -116,11 +145,26 @@ async def main() -> None:
     if replay.get("committed") is not True:
         raise RuntimeError("sheet commit replay failed")
 
+    abort_key = f"sheets-acceptance-abort-stage:{project}:{spreadsheet_id}"
+    abort_stage = await client.sheet_stage_begin(
+        spreadsheet_id=spreadsheet_id,
+        sheet_title="ABORT_TEST",
+        idempotency_key=abort_key,
+    )
+    abort_title = str(abort_stage.get("stage_sheet_title") or "")
+    aborted = await client.sheet_abort(
+        spreadsheet_id=spreadsheet_id,
+        stage_sheet_title=abort_title,
+        idempotency_key=f"sheets-acceptance-abort:{project}:{spreadsheet_id}",
+    )
+    if aborted.get("aborted") is not True:
+        raise RuntimeError(f"sheet abort failed: {aborted}")
+
     await client.trash_by_id(
         spreadsheet_id,
         idempotency_key=f"sheets-acceptance-trash:{project}:{spreadsheet_id}",
     )
-    print("SHEETS_STAGE_WRITE_VERIFY_COMMIT_REPLAY=PASS")
+    print("SHEETS_STAGE_REPLAY_WRITE_VERIFY_COMMIT_INSPECT_REPLAY_ABORT=PASS")
 
 
 if __name__ == "__main__":
