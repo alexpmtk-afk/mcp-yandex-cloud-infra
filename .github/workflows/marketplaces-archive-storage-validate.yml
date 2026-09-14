@@ -62,8 +62,12 @@ jobs:
             app/tests/test_archive_hybrid.py \
             app/tests/test_archive_drive_resumable.py \
             app/tests/test_archive_resumable_worker.py \
+            app/tests/test_archive_resumable_diagnostic.py \
             app/tests/test_system_map.py -q
           python -m compileall -q app/core
+          grep -q 'marketplace_archive_resumable_diagnostic_step' app/core/archive_tools.py
+          grep -q 'trash_by_id' docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -q 'sha256Checksum' docs/apps_script/marketplaces_drive_bridge_v3.gs
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL' .github/workflows/deploy-mcp-test.yml
