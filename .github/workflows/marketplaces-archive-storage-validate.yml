@@ -57,14 +57,20 @@ jobs:
           python -m compileall -q app/core
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/deploy-mcp-test.yml
-          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/deploy-mcp-test.yml
-          grep -q 'google_drive_oauth_json' .github/workflows/deploy-mcp-test.yml
-          grep -q 'ARCHIVE_GOOGLE_DRIVE_PRIMARY=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL' .github/workflows/deploy-mcp-test.yml
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' .github/workflows/deploy-mcp-test.yml
+          grep -q 'google_drive_bridge_secret' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/deploy-mcp-test.yml
+          ! grep -q 'google_drive_oauth_json' .github/workflows/deploy-mcp-test.yml
+          grep -q 'ARCHIVE_GOOGLE_DRIVE_BRIDGE=PASS' .github/workflows/deploy-mcp-test.yml
           grep -q 'yandex_storage_bucket.marketplace_archive' .github/workflows/deploy-mcp-test.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_BUCKET' .github/workflows/configure-card-monitor.yml
           grep -q 'MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID' .github/workflows/configure-card-monitor.yml
-          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/configure-card-monitor.yml
-          grep -q 'google_drive_oauth_json' .github/workflows/configure-card-monitor.yml
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL' .github/workflows/configure-card-monitor.yml
+          grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' .github/workflows/configure-card-monitor.yml
+          grep -q 'google_drive_bridge_secret' .github/workflows/configure-card-monitor.yml
+          ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/configure-card-monitor.yml
+          ! grep -q 'google_drive_oauth_json' .github/workflows/configure-card-monitor.yml
           grep -q 'ARCHIVE_GOOGLE_DRIVE_AFTER_CARD_MONITOR=PASS' .github/workflows/configure-card-monitor.yml
           grep -q -- '--execution-timeout 600s' .github/workflows/configure-card-monitor.yml
           grep -q 'resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_editor"' terraform/mcp_test.tf

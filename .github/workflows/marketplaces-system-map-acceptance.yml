@@ -54,7 +54,9 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
           SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
-          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
           yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
           BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
           test -n "$DOMAIN" && test -n "$BEARER"
@@ -90,13 +92,14 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers, json={
                   'jsonrpc':'2.0','id':1,'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'system-map-acceptance','version':'3'}
+                      'clientInfo':{'name':'system-map-acceptance','version':'4'}
                   }})
               init = unpack(r)
               assert 'result' in init, init
               instructions = init['result'].get('instructions','')
               assert 'CANONICAL MARKETPLACES MCP ARCHITECTURE' in instructions, instructions
               assert 'Google Drive' in instructions, instructions
+              assert 'Apps Script' in instructions, instructions
               assert 'Yandex Object Storage' in instructions, instructions
               h = dict(headers)
               sid = r.headers.get('mcp-session-id')
@@ -116,10 +119,11 @@ jobs:
               text = next(x['text'] for x in result['content'] if x.get('type')=='text')
               body = json.loads(text)
               assert body['status'] == 'CANONICAL', body
-              assert body['architecture_version'] == '2026-09-14.v2', body
+              assert body['architecture_version'] == '2026-09-14.v4', body
               assert body['runtime']['cloud'] == 'Yandex Cloud only', body
               assert body['storage_policy']['primary_archive_storage'] == 'Google Drive', body
-              assert 'only Google Drive API' in body['storage_policy']['google_cloud'], body
+              assert 'Apps Script' in body['storage_policy']['google_drive_auth'], body
+              assert 'no Google Cloud OAuth runtime dependency' in body['storage_policy']['google_cloud'], body
               assert body['archive_policy']['multi_dataset'] is True, body
               assert body['archive_policy']['canonical_source_of_truth'].startswith('Google Drive'), body
               print('MARKETPLACE_SYSTEM_MAP_LIVE=PASS')
@@ -129,4 +133,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/yc.tgz"
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/yc.tgz"

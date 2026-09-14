@@ -189,7 +189,7 @@ Yandex Object Storage остаётся обязательной частью run
 
 При переходе со старой архитектуры действует read-through migration: если канонического файла ещё нет на Google Drive, но он уже накоплен в Yandex Object Storage, сервер копирует существующий файл на Drive при первом обращении. Повторно скачивать те же отчёты из WB/Ozon для этой миграции не требуется.
 
-OAuth refresh credential Google Drive хранится в Yandex Lockbox. Access token существует только в памяти runtime. Google Cloud как отдельная runtime-инфраструктура не используется.
+Доступ серверного MCP к Google Drive выполняется через владельческий Google Apps Script web-app bridge, который работает от имени владельца папки `MCP архив базы данных`. Общий секрет bridge хранится в Yandex Lockbox. Google Cloud OAuth refresh token больше не является runtime-зависимостью; Google Cloud как отдельная runtime-инфраструктура не используется.
 
 ## Дедупликация
 
