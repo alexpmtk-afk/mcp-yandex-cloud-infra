@@ -8,7 +8,7 @@ locals {
 
   # The CI key file is ephemeral and already supplied to the provider. Resolve
   # only its non-secret service-account ID so Terraform can manage the minimum
-  # Object Storage role required to create/refresh the archive bucket.
+  # service-specific roles required by TEST deployment.
   terraform_deployer_service_account_id = var.yc_service_account_key_file == null ? null : try(
     jsondecode(file(var.yc_service_account_key_file)).service_account_id,
     jsondecode(file(var.yc_service_account_key_file)).serviceAccountId,
@@ -68,6 +68,16 @@ resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_ed
   member    = "serviceAccount:${local.terraform_deployer_service_account_id}"
 }
 
+# The GitHub Actions deployer builds the TEST image and pushes it to the TEST
+# Container Registry. Grant only the dedicated image-pusher role required for
+# that operation; runtime keeps the separate pull-only role above.
+resource "yandex_resourcemanager_folder_iam_member" "deployer_registry_image_pusher" {
+  count     = local.terraform_deployer_service_account_id == null ? 0 : 1
+  folder_id = yandex_resourcemanager_folder.mcp_test.id
+  role      = "container-registry.images.pusher"
+  member    = "serviceAccount:${local.terraform_deployer_service_account_id}"
+}
+
 resource "yandex_lockbox_secret" "marketplace_credentials" {
   folder_id           = yandex_resourcemanager_folder.mcp_test.id
   name                = "marketplaces-mcp-api-credentials"
@@ -89,6 +99,7 @@ resource "yandex_storage_bucket" "marketplace_archive" {
 
   depends_on = [
     yandex_resourcemanager_folder_iam_member.deployer_archive_storage_editor,
+    yandex_resourcemanager_folder_iam_member.deployer_registry_image_pusher,
   ]
 }
 
