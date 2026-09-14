@@ -1,0 +1,221 @@
+name: Publish Semantic Core TEST via Publisher Impersonation
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/publish-semantic-core-test-via-impersonation.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-test-semantic-publisher-recovery
+  cancel-in-progress: false
+
+env:
+  CLOUD_ID: b1gi4pr9msenirafh2c7
+  MARKETPLACES_FOLDER_NAME: marketplaces-mcp-test
+  REGISTRY_ID: crp6o36mbl2tqonu1qbi
+  PUBLISHER_SA_ID: ajepo7pe5jcrufdf0mv0
+  PUBLISHER_SA_NAME: marketplaces-mcp-image-publisher
+  APPROVED_SEMANTIC_SHA: 920f3f1458a1700ad350d43cf35178256e8e858f
+  IMAGE_NAME: marketplaces-mcp
+  REGISTRY_API: https://container-registry.api.cloud.yandex.net/container-registry/v1
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout exact infrastructure commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+
+      - name: Prove vendored approved Semantic Core snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f app/.source-revision
+          test -f app/Dockerfile
+          grep -Fqx "Semantic Core source: alexpmtk-afk/marketplaces-mcp-ru@${APPROVED_SEMANTIC_SHA}" app/.source-revision
+          test -f app/core/semantic_core.py
+          test -f app/core/system_map.py
+          TARGET_TAG="semantic-${APPROVED_SEMANTIC_SHA}"
+          TARGET_REPOSITORY="${REGISTRY_ID}/${IMAGE_NAME}"
+          TARGET_IMAGE="cr.yandex/${TARGET_REPOSITORY}:${TARGET_TAG}"
+          echo "TARGET_TAG=$TARGET_TAG" >> "$GITHUB_ENV"
+          echo "TARGET_REPOSITORY=$TARGET_REPOSITORY" >> "$GITHUB_ENV"
+          echo "TARGET_IMAGE=$TARGET_IMAGE" >> "$GITHUB_ENV"
+          echo "LOCAL_IMAGE=marketplaces-mcp:semantic-${APPROVED_SEMANTIC_SHA}" >> "$GITHUB_ENV"
+          echo 'semantic_snapshot=PASS'
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/bin/yc" version
+
+      - name: Authenticate central infrastructure deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          CI_SA_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
+          [[ "$CI_SA_ID" == "ajecdjjrkdo1t3itpl9k" ]]
+          echo "::add-mask::$CI_SA_ID"
+          echo "CI_SA_ID=$CI_SA_ID" >> "$GITHUB_ENV"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+
+      - name: Prove existing TEST registry and publisher identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$MARKETPLACES_FOLDER_NAME" '.[]|select(.name==$n)|.id' | head -1)"
+          test -n "$FOLDER_ID"
+          echo "TEST_FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          yc config set folder-id "$FOLDER_ID"
+
+          ACTUAL_REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id' | head -1)"
+          [[ "$ACTUAL_REGISTRY_ID" == "$REGISTRY_ID" ]]
+
+          timeout 45s yc iam service-account get "$PUBLISHER_SA_ID" --format json --no-user-output > "$RUNNER_TEMP/publisher.json"
+          jq -e --arg id "$PUBLISHER_SA_ID" --arg name "$PUBLISHER_SA_NAME" --arg folder "$FOLDER_ID" \
+            '(.id==$id) and (.name==$name) and (.folder_id==$folder or .folderId==$folder)' "$RUNNER_TEMP/publisher.json" >/dev/null
+
+          timeout 45s yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/folder-bindings-before.json"
+          PUBLISHER_PUSHER_PRESENT="$(jq -r --arg id "$PUBLISHER_SA_ID" 'any(.[]; .role_id=="container-registry.images.pusher" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/folder-bindings-before.json")"
+          [[ "$PUBLISHER_PUSHER_PRESENT" == "true" ]]
+          echo 'existing_registry_and_publisher=PASS'
+
+      - name: Record pre-existing recovery permissions
+        shell: bash
+        run: |
+          set -euo pipefail
+          timeout 45s yc resource-manager folder list-access-bindings "$TEST_FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/folder-bindings-before.json"
+          timeout 45s yc iam service-account list-access-bindings "$PUBLISHER_SA_ID" --format json --no-user-output > "$RUNNER_TEMP/publisher-bindings-before.json"
+          MARKET_ADMIN_PRESENT="$(jq -r --arg id "$CI_SA_ID" 'any(.[]; .role_id=="admin" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/folder-bindings-before.json")"
+          TOKEN_CREATOR_PRESENT="$(jq -r --arg id "$CI_SA_ID" 'any(.[]; .role_id=="iam.serviceAccounts.tokenCreator" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/publisher-bindings-before.json")"
+          echo "MARKET_ADMIN_PRESENT=$MARKET_ADMIN_PRESENT" >> "$GITHUB_ENV"
+          echo "TOKEN_CREATOR_PRESENT=$TOKEN_CREATOR_PRESENT" >> "$GITHUB_ENV"
+          echo 'recovery_permission_inventory=PASS'
+
+      - name: Grant temporary publisher impersonation permission
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ "$MARKET_ADMIN_PRESENT" != "true" ]]; then
+            timeout 90s yc resource-manager folder add-access-binding "$TEST_FOLDER_ID" --role admin --service-account-id "$CI_SA_ID"
+            echo 'MARKET_ADMIN_ADDED=true' >> "$GITHUB_ENV"
+          fi
+          sleep 15
+          if [[ "$TOKEN_CREATOR_PRESENT" != "true" ]]; then
+            timeout 90s yc iam service-account add-access-binding "$PUBLISHER_SA_ID" \
+              --role iam.serviceAccounts.tokenCreator --service-account-id "$CI_SA_ID"
+            echo 'TOKEN_CREATOR_ADDED=true' >> "$GITHUB_ENV"
+          fi
+          sleep 20
+          echo 'temporary_publisher_impersonation=READY'
+
+      - name: Mint short-lived IAM token as dedicated publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLISHER_TOKEN="$(timeout 45s yc iam create-token --impersonate-service-account-id "$PUBLISHER_SA_ID")"
+          test -n "$PUBLISHER_TOKEN"
+          echo "::add-mask::$PUBLISHER_TOKEN"
+          umask 077
+          printf '%s' "$PUBLISHER_TOKEN" > "$RUNNER_TEMP/publisher-iam-token"
+          echo 'publisher_impersonation_token=PASS'
+
+      - name: Build exact vendored Semantic Core image
+        shell: bash
+        run: |
+          set -euo pipefail
+          docker build --pull --label "org.opencontainers.image.revision=${APPROVED_SEMANTIC_SHA}" -t "$LOCAL_IMAGE" app
+          echo 'semantic_image_build=PASS'
+
+      - name: Push approved image as dedicated publisher
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLISHER_TOKEN="$(cat "$RUNNER_TEMP/publisher-iam-token")"
+          DOCKER_CONFIG_DIR="$RUNNER_TEMP/docker-config"
+          mkdir -p "$DOCKER_CONFIG_DIR"
+          printf '%s' "$PUBLISHER_TOKEN" | docker --config "$DOCKER_CONFIG_DIR" login --username iam --password-stdin cr.yandex >/dev/null
+          docker tag "$LOCAL_IMAGE" "$TARGET_IMAGE"
+          docker --config "$DOCKER_CONFIG_DIR" push "$TARGET_IMAGE"
+          echo 'semantic_image_push=PASS'
+
+      - name: Resolve immutable digest and write evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          PUBLISHER_TOKEN="$(cat "$RUNNER_TEMP/publisher-iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${PUBLISHER_TOKEN}" \
+            "${REGISTRY_API}/images?registryId=${REGISTRY_ID}&pageSize=1000" \
+            -o "$RUNNER_TEMP/images.json"
+          mkdir -p evidence
+          python - "$RUNNER_TEMP/images.json" evidence/semantic-core-test-image.json <<'PY'
+          import json,os,sys
+          from pathlib import Path
+          d=json.loads(Path(sys.argv[1]).read_text())
+          matches=[x for x in d.get('images',[]) if x.get('name')==os.environ['TARGET_REPOSITORY'] and os.environ['TARGET_TAG'] in (x.get('tags') or [])]
+          assert len(matches)==1, len(matches)
+          image=matches[0]
+          digest=image.get('digest','')
+          assert digest.startswith('sha256:') and len(digest)==71, digest
+          e={
+            'schema':'MARKETPLACES_SEMANTIC_CORE_TEST_IMAGE_V1',
+            'semantic_source_sha':os.environ['APPROVED_SEMANTIC_SHA'],
+            'publisher_service_account_id':os.environ['PUBLISHER_SA_ID'],
+            'registry_id':os.environ['REGISTRY_ID'],
+            'image_id':image.get('id'),
+            'image_tag':os.environ['TARGET_IMAGE'],
+            'digest':digest,
+            'immutable_url':f"cr.yandex/{os.environ['TARGET_REPOSITORY']}@{digest}",
+            'production_changed':False,
+          }
+          Path(sys.argv[2]).write_text(json.dumps(e,indent=2,sort_keys=True)+'\n')
+          print(json.dumps(e,sort_keys=True))
+          PY
+
+      - name: Upload non-secret image evidence
+        uses: actions/upload-artifact@v4
+        with:
+          name: marketplaces-semantic-core-test-image
+          path: evidence/semantic-core-test-image.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Remove temporary impersonation permissions and credentials
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [[ "${TOKEN_CREATOR_ADDED:-false}" == "true" && -n "${PUBLISHER_SA_ID:-}" && -n "${CI_SA_ID:-}" ]]; then
+            yc iam service-account remove-access-binding "$PUBLISHER_SA_ID" \
+              --role iam.serviceAccounts.tokenCreator --service-account-id "$CI_SA_ID" >/dev/null 2>&1 || true
+          fi
+          if [[ "${MARKET_ADMIN_ADDED:-false}" == "true" && -n "${TEST_FOLDER_ID:-}" && -n "${CI_SA_ID:-}" ]]; then
+            yc resource-manager folder remove-access-binding "$TEST_FOLDER_ID" \
+              --role admin --service-account-id "$CI_SA_ID" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/publisher-iam-token" "$RUNNER_TEMP/publisher.json" "$RUNNER_TEMP/folder-bindings-before.json" "$RUNNER_TEMP/publisher-bindings-before.json" "$RUNNER_TEMP/images.json"
+          rm -rf "$RUNNER_TEMP/docker-config"
+          echo 'temporary_publisher_impersonation=CLEANUP_ATTEMPTED'
