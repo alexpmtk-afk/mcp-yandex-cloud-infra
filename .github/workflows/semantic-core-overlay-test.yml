@@ -1,0 +1,202 @@
+name: Semantic Core TEST Overlay E2E
+
+on:
+  push:
+    branches:
+      - fix/semantic-core-test-iam-20260914
+    paths:
+      - .github/workflows/semantic-core-overlay-test.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-test-runtime-write
+  cancel-in-progress: false
+
+jobs:
+  overlay:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 35
+    env:
+      FOLDER_ID: b1gnd0dqoq3ljod88i8t
+      CONTAINER_ID: bba6lj5ggejtop0jl5k8
+      RUNTIME_SA: ajems6nusv4frv6f29vt
+      NETWORK_ID: enp3vuoau0hkv7hcb6mh
+      REDIS_HOST: rc1a-bu0kmsr3iferj161.mdb.yandexcloud.net
+      DOMAIN: d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net
+      ARCHIVE_BUCKET: marketplaces-mcp-archive-b1gnd0dqoq3ljod88i8t
+      ARCHIVE_DRIVE_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+      DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+      BASE_IMAGE: cr.yandex/crp6o36mbl2tqonu1qbi/marketplaces-mcp@sha256:7eb2c81e6d44e22cffa481d09222c3a0b940a0426e63289d7aad3482a0462ead
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+
+      - name: Prove target Semantic Core snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -q 'Semantic Core source: alexpmtk-afk/marketplaces-mcp-ru@920f3f1458a1700ad350d43cf35178256e8e858f' app/.source-revision
+          test -f app/core/semantic_registry.yaml
+          test -f app/core/semantic_execution.yaml
+          test -f app/core/semantic_intents.yaml
+          test -f app/core/semantic_archive.py
+          echo 'TARGET_SEMANTIC_SNAPSHOT=PASS'
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error --retry 5 --retry-all-errors -o "$RUNNER_TEMP/yc.tgz" \
+            'https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate CI service account
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create semantic-overlay || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set folder-id "$FOLDER_ID"
+
+      - name: Build and upload immutable Semantic Core overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          OVERLAY_DIR="$RUNNER_TEMP/semantic-overlay"
+          mkdir -p "$OVERLAY_DIR"
+          tar -C app -czf "$OVERLAY_DIR/overlay.tgz" core wb_mcp ozon_mcp ozon_perf_mcp
+          cat > "$OVERLAY_DIR/bootstrap.py" <<'PY'
+          import os, sys, tarfile
+          target = '/tmp/semantic-runtime'
+          os.makedirs(target, exist_ok=True)
+          with tarfile.open('/semantic-overlay/overlay.tgz', 'r:gz') as tf:
+              tf.extractall(target)
+          sys.path.insert(0, target)
+          from core.remote import main
+          main()
+          PY
+          PREFIX="semantic-core-overlay/${GITHUB_SHA}"
+          yc storage s3api put-object --bucket "$ARCHIVE_BUCKET" --key "$PREFIX/overlay.tgz" --body "$OVERLAY_DIR/overlay.tgz" >/dev/null
+          yc storage s3api put-object --bucket "$ARCHIVE_BUCKET" --key "$PREFIX/bootstrap.py" --body "$OVERLAY_DIR/bootstrap.py" >/dev/null
+          echo "OVERLAY_PREFIX=$PREFIX" >> "$GITHUB_ENV"
+          echo 'SEMANTIC_OVERLAY_UPLOAD=PASS'
+
+      - name: Resolve active runtime secret version
+        shell: bash
+        run: |
+          set -euo pipefail
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          echo "SECRET_ID=$SECRET_ID" >> "$GITHUB_ENV"
+          echo "VERSION_ID=$VERSION_ID" >> "$GITHUB_ENV"
+          echo 'RUNTIME_SECRET_VERSION=PASS'
+
+      - name: Deploy TEST revision from mounted Semantic Core overlay
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
+            --image "$BASE_IMAGE" --memory 2048MB --cores 1 --execution-timeout 600s --concurrency 8 \
+            --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
+            --command python --args /semantic-overlay/bootstrap.py \
+            --mount "type=object-storage,mount-point=/semantic-overlay,bucket=$ARCHIVE_BUCKET,prefix=$OVERLAY_PREFIX,mode=ro" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID,MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL=$DRIVE_BRIDGE_URL,SEMANTIC_CORE_OVERLAY_SOURCE=920f3f1458a1700ad350d43cf35178256e8e858f" \
+            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
+            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
+            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_bridge_secret" \
+            --format json --no-user-output > "$RUNNER_TEMP/revision.json"
+          REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"
+          test -n "$REVISION_ID"
+          echo "REVISION_ID=$REVISION_ID" >> "$GITHUB_ENV"
+          echo "LIVE_TEST_OVERLAY_REVISION=$REVISION_ID"
+
+      - name: Wait for live TEST health
+        shell: bash
+        run: |
+          set -euo pipefail
+          BASE="https://${DOMAIN}"
+          CODE=000
+          for attempt in $(seq 1 30); do
+            CODE="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
+            [[ "$CODE" == 200 ]] && break
+            echo "health attempt $attempt/30 status=$CODE"
+            sleep 5
+          done
+          test "$CODE" = 200
+          echo 'LIVE_TEST_HEALTH=PASS'
+
+      - name: Resolve bearer and run live Semantic Core E2E
+        shell: bash
+        timeout-minutes: 8
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          export MCP_URL="https://${DOMAIN}/mcp"
+          export MCP_BEARER="$BEARER"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          python -u - <<'PY'
+          import itertools, json, os, httpx
+          ids=itertools.count(1)
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+          h0={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          with httpx.Client(timeout=httpx.Timeout(connect=10,read=90,write=30,pool=10),follow_redirects=True) as c:
+              u=c.post(os.environ['MCP_URL'],headers={'Accept':'application/json, text/event-stream','Content-Type':'application/json'},json={'jsonrpc':'2.0','id':0,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'overlay-e2e-unauth','version':'1'}}})
+              assert u.status_code==401,u.status_code
+              r=c.post(os.environ['MCP_URL'],headers=h0,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'overlay-e2e','version':'1'}}})
+              init=unpack(r); assert init and 'result' in init,init
+              h=dict(h0); sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              n=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'}); assert n.status_code in (200,202)
+              def rpc(method,params=None):
+                  d=unpack(c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})); assert d and 'result' in d,(method,d); return d['result']
+              def call(name,args):
+                  z=rpc('tools/call',{'name':name,'arguments':args}); assert not z.get('isError'),(name,z)
+                  text=next((x.get('text') for x in z.get('content',[]) if x.get('type')=='text'),None); assert text is not None,name
+                  return json.loads(text)
+              names={x['name'] for x in rpc('tools/list')['tools']}
+              assert {'marketplace_business_query','marketplace_system_map','marketplace_archive_status'} <= names,names
+              sm=call('marketplace_system_map',{})
+              blob=json.dumps(sm,ensure_ascii=False)
+              assert 'Semantic Core' in blob or 'semantic' in blob.lower(),blob[:2000]
+              current=call('marketplace_business_query',{'question':'Сколько сейчас заказов у ИП Новокшенов?'})
+              cb=json.dumps(current,ensure_ascii=False).lower()
+              assert any(x in cb for x in ('unsupported','fail','current','not supported','не поддерж')),cb[:2000]
+              historical=call('marketplace_business_query',{'question':'Сколько продал ИП Новокшенов за август 2026 в рублях и штуках?'})
+              hb=json.dumps(historical,ensure_ascii=False)
+              assert 'FULL_COVERAGE' in hb,hb[:4000]
+              archive=call('marketplace_archive_status',{})
+              ab=json.dumps(archive,ensure_ascii=False)
+              assert 'google' in ab.lower() or 'drive' in ab.lower(),ab[:3000]
+              print('SEMANTIC_CORE_OVERLAY_LIVE_E2E=PASS',flush=True)
+          PY
+
+      - name: Cleanup local credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/yc.tgz"
