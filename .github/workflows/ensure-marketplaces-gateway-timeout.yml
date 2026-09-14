@@ -1,0 +1,78 @@
+name: Ensure Marketplaces Gateway Timeout
+
+on:
+  workflow_run:
+    workflows:
+      - Configure Marketplace Card Monitor TEST
+    types:
+      - completed
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/ensure-marketplaces-gateway-timeout.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-gateway-timeout
+  cancel-in-progress: false
+
+jobs:
+  ensure:
+    if: >-
+      github.event_name != 'workflow_run' ||
+      github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Set and verify 600-second API Gateway timeout
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create gateway-timeout-guard || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          GATEWAY_ID="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].id//.[0].id//empty')"
+          test -n "$GATEWAY_ID"
+          timeout 120s yc serverless api-gateway update --id "$GATEWAY_ID" \
+            --execution-timeout 600s --format json --no-user-output \
+            > "$RUNNER_TEMP/gateway-update.json"
+          timeout 45s yc serverless api-gateway get --id "$GATEWAY_ID" --format json \
+            > "$RUNNER_TEMP/gateway-get.json"
+          python - <<'PY'
+          import json
+          from pathlib import Path
+          data=json.loads(Path(__import__('os').environ['RUNNER_TEMP'],'gateway-get.json').read_text())
+          value=str(data.get('execution_timeout') or data.get('executionTimeout') or '')
+          if value not in {'600s','600','600.0s','600.000s'}:
+              raise SystemExit(f'unexpected execution timeout: {value!r}')
+          print('API_GATEWAY_EXECUTION_TIMEOUT_600S=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/gateway-update.json" "$RUNNER_TEMP/gateway-get.json"
