@@ -1,6 +1,7 @@
 Source snapshot: alexpmtk-afk/marketplaces-mcp-ru@f5de92164b0c4fdbd52a8e355f17531ca1ded063
 Purpose: production TEST rollout of WB Advertising M0 read-only tools while retaining Google Drive as canonical marketplace archive and Yandex Object Storage for durable queue/staging and backup.
 Architecture contract: WB advertising is Wildberries-only in this phase; live campaign state comes from Promotion API using dedicated server-side wb_ads credentials; advertising-attribution metrics are not actual business profit; Advertising Archive V1 folder scaffold exists but ingestion/coverage is not yet accepted.
+Production overlays: preserve the multi-dataset data catalog/routing, runtime service-account archive authentication and other runtime hardening already present in the vendored infra snapshot; Advertising M0 is layered on top rather than replacing those controls.
 Security contract: Promotion start/pause/stop are WRITE and delete is DESTRUCTIVE at MCP level even though WB exposes them as HTTP GET operations. M0 exposes only read-only advertising business tools.
 Source acceptance: marketplaces-mcp-ru PR #37 merged as f5de92164b0c4fdbd52a8e355f17531ca1ded063 after CI, security, dependency-review and supply-chain PASS.
 Synced: 2026-09-14.
