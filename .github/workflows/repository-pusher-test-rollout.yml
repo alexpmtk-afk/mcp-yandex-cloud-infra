@@ -47,24 +47,30 @@ jobs:
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Open TEST registry IP policy and prove data-plane push
+      - name: Grant temporary TEST folder admin
         shell: bash
         run: |
           set -euo pipefail
           CLOUD_ID=b1gi4pr9msenirafh2c7
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
+          echo "TEST_FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           yc config set folder-id "$FOLDER_ID"
-          REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          timeout 90s yc resource-manager folder add-access-binding "$FOLDER_ID" \
+            --role admin \
+            --service-account-id "$CI_SA_ID"
+          echo 'temporary_test_folder_admin=GRANTED'
+          sleep 20
+
+      - name: Configure TEST registry policy and prove pusher-only data-plane access
+        shell: bash
+        run: |
+          set -euo pipefail
+          REGISTRY_ID="$(timeout 45s yc container registry list --folder-id "$TEST_FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
           test -n "$REGISTRY_ID"
           TARGET_REPO_ID="$(timeout 45s yc container repository list --registry-id "$REGISTRY_ID" --format json | jq -r --arg n "$REGISTRY_ID/marketplaces-mcp" '.[]|select(.name==$n)|.id'|head -1)"
           test -n "$TARGET_REPO_ID"
-
-          timeout 90s yc container registry add-access-binding "$REGISTRY_ID" \
-            --role container-registry.admin \
-            --subject "serviceAccount:$CI_SA_ID"
-          echo 'temporary_test_registry_admin=GRANTED'
-          sleep 20
+          echo "TEST_REGISTRY_ID=$REGISTRY_ID" >> "$GITHUB_ENV"
 
           timeout 90s yc container registry set-ip-permissions "$REGISTRY_ID" \
             --pull 0.0.0.0/1,128.0.0.0/1 \
@@ -79,9 +85,12 @@ jobs:
 
           timeout 90s yc container registry remove-access-binding "$REGISTRY_ID" \
             --role container-registry.admin \
-            --subject "serviceAccount:$CI_SA_ID"
-          echo 'temporary_test_registry_admin=REMOVED'
-          sleep 10
+            --subject "serviceAccount:$CI_SA_ID" || true
+          timeout 90s yc resource-manager folder remove-access-binding "$TEST_FOLDER_ID" \
+            --role admin \
+            --service-account-id "$CI_SA_ID"
+          echo 'temporary_admin_roles=REMOVED'
+          sleep 15
 
           IAM_TOKEN="$(yc iam create-token)"
           test -n "$IAM_TOKEN"
@@ -106,7 +115,19 @@ jobs:
           gh workflow run deploy-mcp-test.yml --repo "$GITHUB_REPOSITORY" --ref main
           echo 'test_deploy_dispatch=PASS'
 
-      - name: Cleanup ephemeral credential
+      - name: Cleanup temporary admin and credential
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json"
+        run: |
+          set +e
+          if [[ -n "${TEST_REGISTRY_ID:-}" && -n "${CI_SA_ID:-}" ]]; then
+            yc container registry remove-access-binding "$TEST_REGISTRY_ID" \
+              --role container-registry.admin \
+              --subject "serviceAccount:$CI_SA_ID" >/dev/null 2>&1 || true
+          fi
+          if [[ -n "${TEST_FOLDER_ID:-}" && -n "${CI_SA_ID:-}" ]]; then
+            yc resource-manager folder remove-access-binding "$TEST_FOLDER_ID" \
+              --role admin \
+              --service-account-id "$CI_SA_ID" >/dev/null 2>&1 || true
+          fi
+          rm -f "$RUNNER_TEMP/yc-service-account-key.json"
