@@ -33,7 +33,7 @@ resource "yandex_serverless_container" "orchestrator_worker" {
   count              = var.m24_worker_image_url == null ? 0 : 1
   folder_id          = yandex_resourcemanager_folder.birzha_test.id
   name               = "birzha-mcp-forecast-orchestrator"
-  description        = "Private autonomous M24 orchestration worker; no public API Gateway"
+  description        = "Private autonomous orchestration worker; no public API Gateway"
   memory             = 512
   cores              = 1
   concurrency        = 1
@@ -44,14 +44,27 @@ resource "yandex_serverless_container" "orchestrator_worker" {
     type = "http"
   }
 
+  dynamic "secrets" {
+    for_each = var.m25_market_mirror_bridge_url == null ? [] : [1]
+    content {
+      id                   = yandex_lockbox_secret.market_mirror.id
+      version_id           = yandex_lockbox_secret_version.market_mirror.id
+      key                  = "bridge_secret"
+      environment_variable = "BIRZHA_MARKET_MIRROR_BRIDGE_SECRET"
+    }
+  }
+
   image {
     url     = var.m24_worker_image_url
     command = ["python", "-m", "birzha.worker"]
     environment = {
-      BIRZHA_STATE_BACKEND       = "ydb"
-      BIRZHA_ORCHESTRATOR_WORKER = "true"
-      BIRZHA_SOURCE_COMMIT       = var.m24_worker_source_sha
-      YDB_CONNECTION_STRING      = yandex_ydb_database_serverless.state.ydb_full_endpoint
+      BIRZHA_STATE_BACKEND                 = "ydb"
+      BIRZHA_ORCHESTRATOR_WORKER           = "true"
+      BIRZHA_SOURCE_COMMIT                 = var.m24_worker_source_sha
+      YDB_CONNECTION_STRING                = yandex_ydb_database_serverless.state.ydb_full_endpoint
+      BIRZHA_MARKET_MIRROR_REQUIRED        = var.m25_market_mirror_required ? "true" : "false"
+      BIRZHA_MARKET_MIRROR_BRIDGE_URL      = coalesce(var.m25_market_mirror_bridge_url, "")
+      BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID  = var.m25_market_mirror_root_folder_id
     }
   }
 
@@ -60,9 +73,17 @@ resource "yandex_serverless_container" "orchestrator_worker" {
     source_sha = substr(var.m24_worker_source_sha, 0, 16)
   })
 
+  lifecycle {
+    precondition {
+      condition     = !var.m25_market_mirror_required || var.m25_market_mirror_bridge_url != null
+      error_message = "m25_market_mirror_bridge_url must be set before mandatory market mirror is enabled."
+    }
+  }
+
   depends_on = [
     yandex_ydb_database_iam_binding.runtime_editor,
     yandex_resourcemanager_folder_iam_member.runtime_registry_pull,
+    yandex_lockbox_secret_iam_member.runtime_market_mirror,
   ]
 }
 
@@ -77,7 +98,7 @@ resource "yandex_function_trigger" "orchestrator_timer" {
   count       = var.m24_worker_image_url == null ? 0 : 1
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
   name        = "birzha-mcp-forecast-orchestrator-timer"
-  description = "Invoke one safe autonomous M24 orchestration tick every minute"
+  description = "Invoke one safe autonomous orchestration tick every minute"
 
   timer {
     cron_expression = "* * ? * * *"
