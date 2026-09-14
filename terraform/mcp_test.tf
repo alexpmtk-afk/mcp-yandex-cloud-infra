@@ -14,6 +14,11 @@ locals {
     jsondecode(file(var.yc_service_account_key_file)).serviceAccountId,
     null,
   )
+
+  # Shared trust-provider only. The federation validates GitHub OIDC tokens;
+  # the Marketplaces publisher identity and its permissions remain isolated.
+  github_oidc_federation_id = "ajeccljd5pi9ive0i18u"
+  marketplaces_publisher_subject = "repo:alexpmtk-afk@309119594/marketplaces-mcp-ru@1349601380:ref:refs/heads/main"
 }
 
 resource "yandex_resourcemanager_folder" "mcp_test" {
@@ -41,10 +46,36 @@ resource "yandex_iam_service_account" "gateway" {
   description = "Identity used by API Gateway to invoke the private MCP container"
 }
 
+# Dedicated image-publishing identity. This account was first created during
+# recovery of the TEST Semantic Core image path and is imported into the
+# canonical Marketplaces Terraform state by the recovery workflow.
+resource "yandex_iam_service_account" "publisher" {
+  folder_id   = yandex_resourcemanager_folder.mcp_test.id
+  name        = "marketplaces-mcp-image-publisher"
+  description = "Dedicated TEST identity allowed only to publish Marketplaces MCP images"
+}
+
 resource "yandex_resourcemanager_folder_iam_member" "runtime_registry_pull" {
   folder_id = yandex_resourcemanager_folder.mcp_test.id
   role      = "container-registry.images.puller"
   member    = "serviceAccount:${yandex_iam_service_account.runtime.id}"
+}
+
+resource "yandex_resourcemanager_folder_iam_member" "publisher_registry_image_pusher" {
+  folder_id = yandex_resourcemanager_folder.mcp_test.id
+  role      = "container-registry.images.pusher"
+  member    = "serviceAccount:${yandex_iam_service_account.publisher.id}"
+}
+
+# The OIDC federation object is intentionally shared with the already-proven
+# GitHub trust provider from the isolated BIRZHA TEST folder. Yandex supports
+# linking a service account from another folder to a federation via CLI,
+# Terraform or API. The credential below is still unique to Marketplaces and
+# exact-match bound to marketplaces-mcp-ru/main.
+resource "yandex_iam_workload_identity_federated_credential" "publisher_github" {
+  service_account_id  = yandex_iam_service_account.publisher.id
+  federation_id       = local.github_oidc_federation_id
+  external_subject_id = local.marketplaces_publisher_subject
 }
 
 resource "yandex_resourcemanager_folder_iam_member" "runtime_lockbox_viewer" {
@@ -68,9 +99,9 @@ resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_ed
   member    = "serviceAccount:${local.terraform_deployer_service_account_id}"
 }
 
-# The GitHub Actions deployer builds the TEST image and pushes it to the TEST
-# Container Registry. Grant only the dedicated image-pusher role required for
-# that operation; runtime keeps the separate pull-only role above.
+# The legacy central deployer role is preserved during TEST recovery to avoid
+# coupling publisher migration with unrelated IAM cleanup. The dedicated WIF
+# publisher above is the new path for immutable Semantic Core image pushes.
 resource "yandex_resourcemanager_folder_iam_member" "deployer_registry_image_pusher" {
   count     = local.terraform_deployer_service_account_id == null ? 0 : 1
   folder_id = yandex_resourcemanager_folder.mcp_test.id
