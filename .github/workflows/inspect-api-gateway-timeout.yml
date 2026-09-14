@@ -1,0 +1,54 @@
+name: Inspect API Gateway Timeout
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/inspect-api-gateway-timeout.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Inspect live gateway
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create inspect-gateway || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          GATEWAY_ID="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].id//empty')"
+          test -n "$GATEWAY_ID"
+          timeout 45s yc serverless api-gateway get --id "$GATEWAY_ID" --format json --no-user-output > "$RUNNER_TEMP/gateway.json"
+          echo "GATEWAY_ID=$GATEWAY_ID"
+          echo "GATEWAY_NAME=$(jq -r '.name//""' "$RUNNER_TEMP/gateway.json")"
+          echo "EXECUTION_TIMEOUT=$(jq -r '.execution_timeout//.executionTimeout//"MISSING"' "$RUNNER_TEMP/gateway.json")"
+          echo "DOMAIN=$(jq -r '.domain//""' "$RUNNER_TEMP/gateway.json")"
+          jq '{id,name,domain,execution_timeout,executionTimeout,status,created_at}' "$RUNNER_TEMP/gateway.json"
+
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/gateway.json"
