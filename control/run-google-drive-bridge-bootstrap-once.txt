@@ -1,0 +1,2 @@
+Trigger Google Drive Apps Script bridge bootstrap once.
+Created 2026-09-14 after local gh TLS timeout during workflow_dispatch.
