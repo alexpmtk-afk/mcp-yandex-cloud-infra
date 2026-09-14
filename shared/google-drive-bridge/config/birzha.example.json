@@ -1,0 +1,12 @@
+{
+  "project_id": "birzha",
+  "bridge_protocol_version": 1,
+  "archive_root_id": "REPLACE_WITH_BIRZHA_ROOT_ID",
+  "archive_root_name": "Архив рыночных данных",
+  "capabilities": {
+    "drive_small_io": true,
+    "drive_resumable_upload": false,
+    "drive_large_download": false,
+    "google_sheets_chunked": true
+  }
+}
