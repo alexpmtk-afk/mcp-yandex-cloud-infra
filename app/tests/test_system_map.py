@@ -9,7 +9,7 @@ from core.system_map import ARCHITECTURE_VERSION, SYSTEM_INSTRUCTIONS, SYSTEM_MA
 
 
 def test_canonical_map_fixes_storage_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-14.v16"
+    assert ARCHITECTURE_VERSION == "2026-09-14.v17"
     assert SYSTEM_MAP["status"] == "CANONICAL"
     assert SYSTEM_MAP["runtime"]["cloud"] == "Yandex Cloud only"
     storage = SYSTEM_MAP["storage_policy"]
@@ -63,7 +63,35 @@ def test_archive_is_explicitly_multi_dataset_and_finance_is_partial():
     assert "stock-on-date history" in excluded
     assert "promotion/advertising metrics" in excluded
     assert SYSTEM_MAP["data_routing_policy"]["canonical_metric_router_tool"] == "marketplace_metric_route"
+    assert SYSTEM_MAP["data_routing_policy"]["canonical_business_query_tool"] == "marketplace_business_query"
     assert "orders are customer order events" in SYSTEM_MAP["data_routing_policy"]["orders_vs_realization"]
+
+
+def test_semantic_core_is_fail_closed_and_coverage_gated():
+    semantic = SYSTEM_MAP["semantic_core"]
+    assert semantic["status"] == "TEST_RUNTIME_WIRED"
+    assert semantic["runtime_entry"] == "marketplace_business_query"
+    assert semantic["current_archive_schema"].startswith("92 official-help-audited")
+    assert semantic["source_revision"].endswith("920f3f1458a1700ad350d43cf35178256e8e858f")
+    assert set(semantic["approved_archive_executors"]) == {
+        "penalties",
+        "storage_charge",
+        "acceptance_charge",
+        "sale_and_return_operations",
+        "logistics",
+        "deductions_and_adjustments",
+        "commission_and_wb_reward",
+        "acquiring_and_payment_processing",
+        "observed_fulfillment_method",
+        "warehouse_tariff_context",
+    }
+    assert "FULL_COVERAGE" in semantic["execution_gate"]
+    assert any("complete marketplace order flow" in item for item in semantic["fail_closed_for"])
+    assert any("current live warehouse tariff" in item for item in semantic["fail_closed_for"])
+    assert "agencyVat" in semantic["schema_drift_policy"]
+    assert "planned" in semantic["dlvPrc_policy"]
+    assert SYSTEM_MAP["change_control"]["bypass_semantic_guardrails"] == "FORBIDDEN"
+    assert SYSTEM_MAP["change_control"]["bypass_full_coverage_gate"] == "FORBIDDEN"
 
 
 def test_wb_advertising_m0_boundaries_are_preserved():
@@ -99,7 +127,13 @@ def test_server_instructions_contain_hard_boundaries():
     assert "Yandex Lockbox" in SYSTEM_INSTRUCTIONS
     assert "Google Cloud is not part" in SYSTEM_INSTRUCTIONS
     assert "MULTI-DATASET" in SYSTEM_INSTRUCTIONS
-    assert "NOT authoritative for customer orders" in SYSTEM_INSTRUCTIONS
+    assert "marketplace_business_query" in SYSTEM_INSTRUCTIONS
+    assert "Semantic Core" in SYSTEM_INSTRUCTIONS
+    assert "FULL_COVERAGE" in SYSTEM_INSTRUCTIONS
+    assert "orderDt/orderUid" in SYSTEM_INSTRUCTIONS
+    assert "dlvPrc" in SYSTEM_INSTRUCTIONS
+    assert "agencyVat" in SYSTEM_INSTRUCTIONS
+    assert "NOT authoritative for the complete customer-order flow" in SYSTEM_INSTRUCTIONS
     assert "marketplace_metric_route" in SYSTEM_INSTRUCTIONS
     assert "WB Advertising M0" in SYSTEM_INSTRUCTIONS
     assert "wb_ads" in SYSTEM_INSTRUCTIONS
