@@ -43,7 +43,7 @@ jobs:
           yc config profile create runtime-diagnostic || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Resolve TEST container
+      - name: Resolve TEST runtime endpoints
         id: resources
         shell: bash
         run: |
@@ -54,8 +54,40 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           CONTAINER_ID="$(timeout 45s yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$CONTAINER_ID"
+          CONTAINER_URL="$(timeout 45s yc serverless container get --id "$CONTAINER_ID" --format json --no-user-output | jq -r '.url//empty')"
+          GATEWAY_DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          test -n "$CONTAINER_URL"
+          test -n "$GATEWAY_DOMAIN"
           echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
-          echo 'test_container=RESOLVED'
+          echo "container_url=$CONTAINER_URL" >> "$GITHUB_OUTPUT"
+          echo "gateway_url=https://$GATEWAY_DOMAIN" >> "$GITHUB_OUTPUT"
+          echo 'test_runtime_endpoints=RESOLVED'
+
+      - name: Probe direct container vs API Gateway
+        shell: bash
+        env:
+          CONTAINER_URL: ${{ steps.resources.outputs.container_url }}
+          GATEWAY_URL: ${{ steps.resources.outputs.gateway_url }}
+        run: |
+          set -euo pipefail
+          IAM_TOKEN="$(timeout 45s yc iam create-token)"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          DIRECT_CODE="$(curl -sS --max-time 45 -o "$RUNNER_TEMP/direct-health" -w '%{http_code}' \
+            -H "Authorization: Bearer $IAM_TOKEN" "${CONTAINER_URL%/}/healthz" || true)"
+          GATEWAY_CODE="$(curl -sS --max-time 45 -o "$RUNNER_TEMP/gateway-health" -w '%{http_code}' \
+            "${GATEWAY_URL%/}/healthz" || true)"
+          echo "direct_container_health_status=$DIRECT_CODE"
+          echo "api_gateway_health_status=$GATEWAY_CODE"
+          if [[ "$DIRECT_CODE" == 200 && "$GATEWAY_CODE" == 200 ]]; then
+            echo 'HEALTH_PATH_CLASSIFICATION=BOTH_HEALTHY'
+          elif [[ "$DIRECT_CODE" == 200 ]]; then
+            echo 'HEALTH_PATH_CLASSIFICATION=GATEWAY_INTEGRATION_FAILURE'
+          elif [[ "$GATEWAY_CODE" == 200 ]]; then
+            echo 'HEALTH_PATH_CLASSIFICATION=DIRECT_AUTH_OR_INVOKE_ANOMALY'
+          else
+            echo 'HEALTH_PATH_CLASSIFICATION=CONTAINER_OR_SHARED_RUNTIME_FAILURE'
+          fi
 
       - name: Read and classify latest startup evidence
         shell: bash
@@ -64,7 +96,7 @@ jobs:
         run: |
           set -euo pipefail
           timeout 45s yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json" || printf '[]' > "$RUNNER_TEMP/revisions.json"
-          if timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '15m ago' --limit 1000 --format json > "$RUNNER_TEMP/logs.json"; then
+          if timeout 60s yc logging read --resource-ids="$CONTAINER_ID" --since '20m ago' --limit 1000 --format json > "$RUNNER_TEMP/logs.json"; then
             echo 'runtime_log_read=PASS'
           else
             printf '[]' > "$RUNNER_TEMP/logs.json"
@@ -131,4 +163,4 @@ jobs:
       - name: Cleanup diagnostic credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/logs.json"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/direct-health" "$RUNNER_TEMP/gateway-health"
