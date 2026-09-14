@@ -42,7 +42,18 @@ jobs:
         run: terraform -chdir=terraform validate
 
       - name: BIRZHA Terraform init without backend using committed lockfile
-        run: terraform -chdir=terraform/birzha_test init -backend=false -lockfile=readonly
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5; do
+            rm -rf terraform/birzha_test/.terraform
+            if terraform -chdir=terraform/birzha_test init -backend=false -lockfile=readonly; then
+              exit 0
+            fi
+            echo "BIRZHA provider init transient failure; retry $attempt/5"
+            [[ "$attempt" -lt 5 ]]
+            sleep $((attempt * 3))
+          done
 
       - name: BIRZHA Terraform validate
         run: terraform -chdir=terraform/birzha_test validate
