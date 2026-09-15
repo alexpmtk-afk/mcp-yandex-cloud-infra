@@ -56,7 +56,7 @@ jobs:
           grep -q 'PROJECT_ID: birzha' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'EXPECTED_BRIDGE_RELEASE: 1.0.0' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
-          grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
           grep -q 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'BIRZHA_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
