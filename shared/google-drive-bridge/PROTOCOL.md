@@ -154,3 +154,5 @@ The bridge MUST NOT hold a global ScriptLock over the entire `doPost()` lifecycl
 - Large download tickets are server-side bindings; arbitrary Drive operation names are not accepted from clients.
 - Large download URIs are accepted by the Python client only from HTTPS Google endpoints and are never logged.
 - Foreign-root negative tests are mandatory.
+
+> Security note (v1.0.0 hotfix): the final Google Drive content URL requires Google OAuth authorization. Bridge v1 never forwards `ScriptApp.getOAuthToken()` to Yandex clients. After `large_download_start` / `large_download_poll` report LRO readiness, bounded authenticated range chunks are fetched inside Apps Script via `large_download_poll` with `mode=range_chunk`. Exact final size and SHA256 remain mandatory.

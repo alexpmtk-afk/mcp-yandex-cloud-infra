@@ -332,6 +332,7 @@ function largeDownloadStart_(p, cfg) {
 }
 
 function largeDownloadPoll_(p, cfg) {
+  if (String(p.mode || '') === 'range_chunk') return largeDownloadChunk_(p, cfg);
   const ticket = cleanId_(p.download_ticket, 'download_ticket');
   const cache = CacheService.getScriptCache();
   const raw = cache.get(downloadTicketKey_(ticket));
@@ -364,6 +365,59 @@ function largeDownloadPoll_(p, cfg) {
   }
   cache.remove(downloadTicketKey_(ticket));
   return completedDownloadResult_(operation, meta, fileId, ticket);
+}
+
+function largeDownloadChunk_(p, cfg) {
+  const fileId = cleanId_(p.file_id, 'file_id');
+  assertFileInsideRoot_(fileId, cfg);
+  const meta = rawMetadata_(fileId);
+  validateLargeDownloadMeta_(meta);
+
+  const total = Number(meta.size);
+  const offset = Number(p.offset);
+  const requested = Number(p.length || (4 * 1024 * 1024));
+  const maxChunk = 4 * 1024 * 1024;
+  if (!Number.isInteger(offset) || offset < 0 || offset >= total) {
+    throw bridgeError_('INVALID_RANGE', 'large-download offset is outside file bounds', false);
+  }
+  if (!Number.isInteger(requested) || requested < 1 || requested > maxChunk) {
+    throw bridgeError_('INVALID_RANGE', 'large-download chunk length is invalid', false);
+  }
+  const end = Math.min(total - 1, offset + requested - 1);
+  const headers = {
+    Authorization: 'Bearer ' + ScriptApp.getOAuthToken(),
+    Accept: 'application/octet-stream',
+    Range: 'bytes=' + offset + '-' + end
+  };
+  if (meta.resourceKey) headers['X-Goog-Drive-Resource-Keys'] = fileId + '/' + String(meta.resourceKey);
+  const url = 'https://www.googleapis.com/drive/v3/files/' + encodeURIComponent(fileId) + '?alt=media';
+  const response = UrlFetchApp.fetch(url, {
+    method: 'get',
+    headers: headers,
+    muteHttpExceptions: true,
+    followRedirects: true
+  });
+  const code = response.getResponseCode();
+  if (code !== 200 && code !== 206) {
+    throw bridgeError_('LARGE_DOWNLOAD_CHUNK_FAILED', 'Drive range fetch failed with HTTP ' + code, retryableHttp_(code));
+  }
+  const bytes = response.getContent();
+  const expectedLength = end - offset + 1;
+  if (bytes.length !== expectedLength) {
+    throw bridgeError_('LARGE_DOWNLOAD_CHUNK_SIZE_MISMATCH', 'Drive range fetch returned unexpected byte count', true);
+  }
+  return {
+    mode: 'range_chunk',
+    file_id: fileId,
+    offset: offset,
+    next_offset: offset + bytes.length,
+    total_bytes: total,
+    eof: offset + bytes.length >= total,
+    content_base64: Utilities.base64Encode(bytes),
+    sha256: String(meta.sha256Checksum || '').toLowerCase(),
+    mime_type: String(meta.mimeType || ''),
+    modified_time: String(meta.modifiedTime || '')
+  };
 }
 
 function validateLargeDownloadMeta_(meta) {

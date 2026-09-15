@@ -236,12 +236,13 @@ class GoogleDriveBridgeClient:
         max_bytes: int = 512 * 1024 * 1024,
         max_polls: int = 30,
         poll_seconds: float = 2.0,
+        chunk_size: int = 4 * 1024 * 1024,
     ) -> tuple[dict[str, Any], bytes]:
-        """Download a Drive blob through a bridge-brokered Google download URI.
+        """Download a Drive blob without exposing the Apps Script OAuth token.
 
-        Apps Script authenticates and validates the fixed-root boundary, then brokers
-        Drive's files.download LRO. File bytes flow directly from the Google download
-        URI to this client. The URI is bearer-like and is never logged by this client.
+        Apps Script authenticates and validates the fixed-root boundary, brokers the
+        Drive files.download LRO, and fetches bounded authenticated byte ranges.
+        The Google OAuth credential never leaves Apps Script.
         """
         state = await self.large_download_start(file_id)
         for poll_index in range(max_polls + 1):
@@ -257,8 +258,6 @@ class GoogleDriveBridgeClient:
         else:
             raise BridgeError("LARGE_DOWNLOAD_NOT_READY", "Drive download operation did not become ready", retryable=True)
 
-        uri = str(state.get("download_uri") or "").strip()
-        _validate_google_download_uri(uri)
         expected_size = int(state.get("total_bytes") if state.get("total_bytes") is not None else -1)
         expected_sha = str(state.get("sha256") or "").strip().lower()
         if expected_size < 0:
@@ -268,40 +267,41 @@ class GoogleDriveBridgeClient:
         if not _is_sha256(expected_sha):
             raise BridgeError("SHA256_UNAVAILABLE", "bridge returned no valid large-download SHA256", retryable=False)
 
-        resource_key = str(state.get("resource_key") or "").strip()
-        headers: dict[str, str] = {"Accept": "application/octet-stream"}
-        if resource_key:
-            headers["X-Goog-Drive-Resource-Keys"] = f"{file_id}/{resource_key}"
-
         buffer = bytearray()
         hasher = hashlib.sha256()
-        try:
-            async with httpx.AsyncClient(timeout=self.config.timeout_seconds, follow_redirects=True) as direct:
-                async with direct.stream("GET", uri, headers=headers) as response:
-                    if response.status_code in {408, 425, 429, 500, 502, 503, 504}:
-                        raise BridgeError(
-                            "LARGE_DOWNLOAD_TRANSPORT_ERROR",
-                            f"Google download URI HTTP {response.status_code}",
-                            retryable=True,
-                        )
-                    response.raise_for_status()
-                    async for chunk in response.aiter_bytes():
-                        if not chunk:
-                            continue
-                        buffer.extend(chunk)
-                        hasher.update(chunk)
-                        if len(buffer) > expected_size:
-                            raise BridgeError("SIZE_MISMATCH", "large download exceeded expected Drive size", retryable=False)
-        except BridgeError:
-            raise
-        except httpx.HTTPError as exc:
-            raise BridgeError("LARGE_DOWNLOAD_TRANSPORT_ERROR", type(exc).__name__, retryable=True) from exc
+        offset = 0
+        per_chunk = max(1, min(int(chunk_size), 4 * 1024 * 1024))
+        while offset < expected_size:
+            length = min(per_chunk, expected_size - offset)
+            part = await self.call(
+                "large_download_poll",
+                {"mode": "range_chunk", "file_id": file_id, "offset": offset, "length": length},
+            )
+            if str(part.get("mode") or "") != "range_chunk":
+                raise BridgeError("INVALID_RESPONSE", "bridge returned invalid large-download chunk mode", retryable=False)
+            if int(part.get("offset") if part.get("offset") is not None else -1) != offset:
+                raise BridgeError("LARGE_DOWNLOAD_OFFSET_MISMATCH", "bridge returned unexpected chunk offset", retryable=False)
+            if int(part.get("total_bytes") if part.get("total_bytes") is not None else -1) != expected_size:
+                raise BridgeError("DOWNLOAD_SOURCE_CHANGED", "Drive file size changed during chunked download", retryable=True)
+            if str(part.get("sha256") or "").strip().lower() != expected_sha:
+                raise BridgeError("DOWNLOAD_SOURCE_CHANGED", "Drive file checksum changed during chunked download", retryable=True)
+            try:
+                chunk = base64.b64decode(str(part.get("content_base64") or ""), validate=True)
+            except Exception as exc:
+                raise BridgeError("INVALID_BASE64", "bridge returned invalid large-download chunk", retryable=False) from exc
+            next_offset = int(part.get("next_offset") if part.get("next_offset") is not None else -1)
+            if not chunk or next_offset != offset + len(chunk) or len(chunk) > length:
+                raise BridgeError("LARGE_DOWNLOAD_CHUNK_SIZE_MISMATCH", "bridge returned invalid chunk byte count", retryable=False)
+            buffer.extend(chunk)
+            hasher.update(chunk)
+            offset = next_offset
+            if len(buffer) > expected_size:
+                raise BridgeError("SIZE_MISMATCH", "large download exceeded expected Drive size", retryable=False)
 
         raw = bytes(buffer)
         if len(raw) != expected_size:
             raise BridgeError("SIZE_MISMATCH", f"large download size mismatch: {len(raw)} != {expected_size}", retryable=False)
-        actual_sha = hasher.hexdigest()
-        if actual_sha != expected_sha:
+        if hasher.hexdigest() != expected_sha:
             raise BridgeError("SHA256_MISMATCH", "large download SHA256 mismatch", retryable=False)
         metadata = {
             "id": file_id,
