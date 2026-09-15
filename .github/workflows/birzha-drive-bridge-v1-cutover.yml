@@ -1,0 +1,261 @@
+name: Birzha Drive Bridge v1 Actual Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact birzha-mcp-forecast main SHA already published as M25 image
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: birzha-m25-bridge-v1-cutover
+  cancel-in-progress: false
+
+env:
+  TF_DIR: terraform/birzha_test
+  BIRZHA_REPO: alexpmtk-afk/birzha-mcp-forecast
+  REGISTRY_ID: crpk5qvf4p7kcqil2u3v
+  LEGACY_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 35
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+
+      - name: Validate exact canonical Birzha source
+        id: source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          REMOTE_MAIN="$(git ls-remote "https://github.com/${BIRZHA_REPO}.git" refs/heads/main | awk '{print $1}')"
+          [[ "$SOURCE_SHA" == "$REMOTE_MAIN" ]] || { echo 'source_sha is not current Birzha main' >&2; exit 1; }
+          IMAGE="cr.yandex/${REGISTRY_ID}/birzha-mcp-forecast:m25-bridge-v1-git-${SOURCE_SHA}"
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo 'BIRZHA_CANONICAL_MAIN=PASS'
+
+      - name: Install Yandex Cloud CLI and authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"; chmod +x "$RUNNER_TEMP/yc/yc"; echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          KEY="$RUNNER_TEMP/yc-key.json"; umask 077; printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          yc config profile create birzha-v1-cutover >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+          TOKEN="$(yc iam create-token)"; test -n "$TOKEN"; echo "::add-mask::$TOKEN"; printf '%s' "$TOKEN" > "$RUNNER_TEMP/iam-token"
+
+      - name: Resolve isolated Birzha Lockbox and published image
+        id: runtime
+        shell: bash
+        env:
+          IMAGE: ${{ steps.source.outputs.image }}
+        run: |
+          set -euo pipefail
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-test")|.id'|head -1)"; test -n "$FOLDER_ID"; yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-test-auth")|.id'|head -1)"; test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"; test -n "$VERSION_ID"
+          yc container image list --registry-id "$REGISTRY_ID" --format json --no-user-output > "$RUNNER_TEMP/images.json"
+          TAG="m25-bridge-v1-git-${{ steps.source.outputs.sha }}"
+          jq -e --arg t "$TAG" '.[]|select((.tags//[])|index($t)!=null)' "$RUNNER_TEMP/images.json" >/dev/null
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo 'BIRZHA_V1_RUNTIME_INPUTS=PASS'
+
+      - name: Initialize protected Birzha Terraform state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir="$TF_DIR" validate
+
+      - name: Capture protected public runtime and worker identities
+        id: state
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
+          python - <<'PY' > "$RUNNER_TEMP/state.env"
+          import json,os,shlex
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
+          rs=s['values']['root_module']['resources']; by={r['address']:r['values'] for r in rs}
+          m=by['yandex_serverless_container.mcp[0]']; mi=m['image'][0]; me=mi.get('environment') or {}
+          w=by['yandex_serverless_container.orchestrator_worker[0]']; wi=w['image'][0]; we=wi.get('environment') or {}
+          t=by['yandex_function_trigger.orchestrator_timer[0]']
+          vals={
+            'PUBLIC_IMAGE':mi['url'],'PUBLIC_SHA':me['BIRZHA_SOURCE_COMMIT'],
+            'PUBLIC_HOSTS':me.get('MCP_ALLOWED_HOSTS',''),'PUBLIC_ORIGINS':me.get('MCP_ALLOWED_ORIGINS',''),
+            'WORKER_ID':w['id'],'TIMER_ID':t['id'],'CURRENT_BRIDGE_URL':we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL','')
+          }
+          for k,v in vals.items(): print(f'{k}={shlex.quote(str(v))}')
+          PY
+          cat "$RUNNER_TEMP/state.env" >> "$GITHUB_ENV"
+          echo 'BIRZHA_PROTECTED_STATE_CAPTURED=PASS'
+
+      - name: Plan isolated M25 Bridge v1 cutover
+        shell: bash
+        env:
+          BRIDGE_URL: ${{ vars.BIRZHA_GDRIVE_BRIDGE_V1_URL }}
+          SECRET_ID: ${{ steps.runtime.outputs.secret }}
+          VERSION_ID: ${{ steps.runtime.outputs.version }}
+          IMAGE: ${{ steps.source.outputs.image }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          test -n "$BRIDGE_URL"; [[ "$BRIDGE_URL" == https://script.google.com/macros/s/*/exec ]]
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          args=(
+            -var="mcp_image_url=${PUBLIC_IMAGE}"
+            -var="source_commit_sha=${PUBLIC_SHA}"
+            -var="mcp_allowed_hosts=${PUBLIC_HOSTS}"
+            -var="mcp_allowed_origins=${PUBLIC_ORIGINS}"
+            -var="m24_worker_image_url=${IMAGE}"
+            -var="m24_worker_source_sha=${SOURCE_SHA}"
+            -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}"
+            -var="m25_birzha_bridge_v1_required=true"
+            -var="m25_birzha_bridge_v1_secret_id=${SECRET_ID}"
+            -var="m25_birzha_bridge_v1_secret_version_id=${VERSION_ID}"
+            -var="m24_infra_oidc_bootstrap_enabled=false"
+            -var="m24_observability_probe_enabled=true"
+          )
+          if [[ -n "$CURRENT_BRIDGE_URL" && "$CURRENT_BRIDGE_URL" != "$BRIDGE_URL" ]]; then args+=( -var="m25_market_mirror_bridge_url=${CURRENT_BRIDGE_URL}" ); fi
+          terraform -chdir="$TF_DIR" plan -input=false -no-color -out="$RUNNER_TEMP/cutover.plan" "${args[@]}"
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/cutover.plan" > "$RUNNER_TEMP/cutover.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'cutover.json').read_text()); changes=[]
+          for r in p.get('resource_changes') or []:
+              a=(r.get('change') or {}).get('actions') or []
+              if a not in (['no-op'],['read']): changes.append((r.get('address'),a))
+          allowed={'yandex_serverless_container.orchestrator_worker[0]','yandex_lockbox_secret_iam_member.runtime_market_mirror_v1[0]'}
+          assert changes,changes
+          assert all(a in allowed for a,_ in changes),changes
+          assert any(a=='yandex_serverless_container.orchestrator_worker[0]' for a,_ in changes),changes
+          print('BIRZHA_M25_CUTOVER_PLAN=PASS',changes)
+          PY
+
+      - name: Apply exact saved cutover plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/cutover.plan"
+          echo 'BIRZHA_M25_CUTOVER_APPLY=PASS'
+
+      - name: Verify private worker starts on Bridge v1.0.0
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+          IMAGE: ${{ steps.source.outputs.image }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-after.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-after.json').read_text()); by={r['address']:r['values'] for r in s['values']['root_module']['resources']}
+          w=by['yandex_serverless_container.orchestrator_worker[0]']; i=w['image'][0]; e=i.get('environment') or {}; sec=w.get('secrets') or []
+          assert i['url']==os.environ['IMAGE']; assert e.get('BIRZHA_SOURCE_COMMIT')==os.environ['SOURCE_SHA']
+          assert e.get('BIRZHA_MARKET_MIRROR_REQUIRED')=='true'; assert e.get('BIRZHA_MARKET_MIRROR_PROJECT_ID')=='birzha'
+          assert e.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')==os.environ['BIRZHA_GDRIVE_BRIDGE_V1_URL']
+          assert any(x.get('key')=='gdrive_bridge_v1_secret' and x.get('environment_variable')=='BIRZHA_MARKET_MIRROR_BRIDGE_SECRET' for x in sec),sec
+          print('BIRZHA_M25_V1_STATE=PASS')
+          PY
+          URL="$(yc serverless container get "$WORKER_ID" --format json | jq -r '.url//empty')"; test -n "$URL"
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          for attempt in $(seq 1 15); do
+            CODE="$(curl -sS --max-time 30 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$URL/healthz" || true)"
+            [[ "$CODE" == 200 ]] && break
+            sleep 4
+          done
+          test "$CODE" = 200
+          jq -e '.status=="ok" and .market_mirror_required==true and .market_mirror_configured==true and .market_mirror_protocol==1 and .market_mirror_bridge_release=="1.0.0"' "$RUNNER_TEMP/health.json" >/dev/null
+          echo "WORKER_URL=$URL" >> "$GITHUB_ENV"
+          echo 'BIRZHA_M25_V1_HEALTH=PASS'
+
+      - name: Run one controlled orchestration tick
+        shell: bash
+        run: |
+          set -euo pipefail
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          CODE="$(curl -sS --max-time 115 -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -o "$RUNNER_TEMP/tick.json" -w '%{http_code}' "$WORKER_URL/tick" || true)"
+          test "$CODE" = 200
+          jq -e 'type=="object"' "$RUNNER_TEMP/tick.json" >/dev/null
+          echo 'BIRZHA_M25_CONTROLLED_TICK=PASS'
+
+      - name: Retire legacy Marketplaces secret access after v1 verification
+        shell: bash
+        env:
+          BRIDGE_URL: ${{ vars.BIRZHA_GDRIVE_BRIDGE_V1_URL }}
+          SECRET_ID: ${{ steps.runtime.outputs.secret }}
+          VERSION_ID: ${{ steps.runtime.outputs.version }}
+          IMAGE: ${{ steps.source.outputs.image }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          terraform -chdir="$TF_DIR" plan -input=false -no-color -out="$RUNNER_TEMP/cleanup.plan" \
+            -var="mcp_image_url=${PUBLIC_IMAGE}" -var="source_commit_sha=${PUBLIC_SHA}" \
+            -var="mcp_allowed_hosts=${PUBLIC_HOSTS}" -var="mcp_allowed_origins=${PUBLIC_ORIGINS}" \
+            -var="m24_worker_image_url=${IMAGE}" -var="m24_worker_source_sha=${SOURCE_SHA}" \
+            -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}" -var="m25_birzha_bridge_v1_required=true" \
+            -var="m25_birzha_bridge_v1_secret_id=${SECRET_ID}" -var="m25_birzha_bridge_v1_secret_version_id=${VERSION_ID}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" -var="m24_observability_probe_enabled=true"
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/cleanup.plan" > "$RUNNER_TEMP/cleanup.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'cleanup.json').read_text()); c=[]
+          for r in p.get('resource_changes') or []:
+              a=(r.get('change') or {}).get('actions') or []
+              if a not in (['no-op'],['read']): c.append((r.get('address'),a))
+          allowed={'yandex_lockbox_secret_iam_member.runtime_market_mirror[0]'}
+          assert all(a in allowed and acts==['delete'] for a,acts in c),c
+          print('BIRZHA_LEGACY_CLEANUP_PLAN=PASS',c)
+          PY
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/cleanup.plan"
+          echo 'BIRZHA_LEGACY_MARKETPLACES_ACCESS=RETIRED'
+
+      - name: Enable autonomous timer on verified v1 worker
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless trigger resume "$TIMER_ID"
+          yc serverless trigger get "$TIMER_ID" --format json > "$RUNNER_TEMP/timer.json"
+          jq -e '.status=="ACTIVE"' "$RUNNER_TEMP/timer.json" >/dev/null
+          echo 'BIRZHA_M25_TIMER=ACTIVE'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/images.json" "$RUNNER_TEMP/state-before.json" "$RUNNER_TEMP/state-after.json" "$RUNNER_TEMP/state.env" "$RUNNER_TEMP/cutover.plan" "$RUNNER_TEMP/cutover.json" "$RUNNER_TEMP/cleanup.plan" "$RUNNER_TEMP/cleanup.json" "$RUNNER_TEMP/health.json" "$RUNNER_TEMP/tick.json" "$RUNNER_TEMP/timer.json"
