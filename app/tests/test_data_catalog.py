@@ -5,7 +5,7 @@ import asyncio
 
 from mcp.server.fastmcp import FastMCP
 
-from core.data_catalog import DATA_CATALOG, register_data_catalog_tools, route_business_metric
+from core.data_catalog import DATA_CATALOG, DATA_CATALOG_VERSION, register_data_catalog_tools, route_business_metric
 
 
 def test_weekly_finance_is_first_dataset_not_complete_database():
@@ -16,6 +16,7 @@ def test_weekly_finance_is_first_dataset_not_complete_database():
     assert finance["archive_implemented"] is True
     assert "orders placed by customers" in finance["not_authoritative_for"]
     assert "stock balance on each date" in finance["not_authoritative_for"]
+    assert "advertising campaign statistics" in finance["not_authoritative_for"]
 
 
 def test_orders_route_away_from_weekly_finance():
@@ -26,11 +27,25 @@ def test_orders_route_away_from_weekly_finance():
     assert result["routes"]["wb"]["archive_implemented"] is False
 
 
-def test_stock_and_ad_metrics_route_to_separate_datasets():
+def test_wb_advertising_routes_to_implemented_archive_domain_but_ozon_remains_planned():
+    assert DATA_CATALOG_VERSION == "2026-09-15.v2"
+    wb = route_business_metric("расходы на рекламу", "wb")
+    ozon = route_business_metric("расходы на рекламу", "ozon")
+    assert wb["routes"]["wb"]["dataset"] == "wb_promotion"
+    assert wb["routes"]["wb"]["archive_implemented"] is True
+    assert wb["routes"]["wb"]["status"] == "ACTIVE_ARCHIVE_V1_WITH_LIMITATIONS"
+    assert ozon["routes"]["ozon"]["dataset"] == "ozon_promotion"
+    assert ozon["routes"]["ozon"]["archive_implemented"] is False
+    ads = DATA_CATALOG["datasets"]["wb_promotion"]
+    assert "dataset_coverage_registry.csv" in ads["coverage"]
+    assert ads["semantic_scope"] == "advertising_performance V1 = cabinet_total only"
+    assert "overall business profitability" in ads["not_authoritative_for"]
+
+
+def test_stock_routes_to_separate_dataset():
     stock = route_business_metric("остатки на дату", "wb")
-    ads = route_business_metric("расходы на рекламу", "ozon")
     assert stock["routes"]["wb"]["dataset"] == "wb_stock_snapshots_daily"
-    assert ads["routes"]["ozon"]["dataset"] == "ozon_promotion"
+    assert stock["routes"]["wb"]["archive_implemented"] is False
 
 
 def test_generic_sales_is_ambiguous_not_silently_finance():

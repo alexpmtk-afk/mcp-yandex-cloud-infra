@@ -65,6 +65,8 @@ jobs:
             app/tests/test_archive_drive_resumable_v16.py \
             app/tests/test_archive_resumable_worker.py \
             app/tests/test_archive_resumable_diagnostic.py \
+            app/tests/test_data_catalog.py \
+            app/tests/test_semantic_advertising.py \
             app/tests/test_semantic_core_runtime.py \
             app/tests/test_system_map.py -q
           python -m compileall -q app/core
@@ -73,7 +75,10 @@ jobs:
           grep -q 'promotion_attempted' app/core/archive_resumable_worker.py
           grep -q 'canonical_untouched' app/core/archive_resumable_worker.py
           grep -q 'sha256Checksum' app/core/archive_resumable_worker.py
-          grep -q 'marketplace_business_query' app/core/business_router.py
+          grep -q 'marketplace_business_query' app/core/semantic_business_router.py
+          grep -q 'advertising_performance' app/core/semantic_registry_extensions.yaml
+          grep -q 'ads_campaign_daily' app/core/semantic_registry_extensions.yaml
+          grep -q 'FULL_COVERAGE' app/core/semantic_advertising.py
           grep -q 'FULL_COVERAGE' app/core/semantic_execution.yaml
           grep -q 'agencyVat' app/core/semantic_registry.yaml
           grep -q 'source_not_suitable' app/core/errors.py
@@ -89,9 +94,13 @@ jobs:
           grep -q 'google_drive_bridge_secret' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'google_drive_oauth_json' .github/workflows/deploy-mcp-test.yml
-          grep -q '2026-09-14.v17' .github/workflows/deploy-mcp-test.yml
+          grep -q '2026-09-15.v17' .github/workflows/deploy-mcp-test.yml
           grep -q 'marketplace_business_query' .github/workflows/deploy-mcp-test.yml
           grep -q 'SEMANTIC_CORE_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'SEMANTIC_ADVERTISING_COVERAGE_GAP=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'SEMANTIC_ADVERTISING_PRODUCT_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'SEMANTIC_ADVERTISING_CAMPAIGN_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'SEMANTIC_ADVERTISING_CURRENT_DAY_BOUNDARY=PASS' .github/workflows/deploy-mcp-test.yml
           grep -q 'bridge_version.*>= 3' .github/workflows/deploy-mcp-test.yml
           grep -q 'ARCHIVE_GOOGLE_DRIVE_BRIDGE=PASS' .github/workflows/deploy-mcp-test.yml
           grep -q 'marketplace_archive_resumable_diagnostic_step' .github/workflows/deploy-mcp-test.yml
@@ -130,7 +139,7 @@ jobs:
           grep -q "BRIDGE_VERSION=3" docs/apps_script/marketplaces_drive_bridge_v3.gs
           grep -q 'script.external_request' docs/apps_script/appsscript.json
           grep -q '9137a621a41c00276a07949d5265cfea6175e616' app/.source-revision
-          grep -q '920f3f1458a1700ad350d43cf35178256e8e858f' app/.source-revision
+          grep -q '833eab826bfaa4691a05a21a5d00f1e8e0ba1b37' app/.source-revision
           echo 'ARCHIVE_SEMANTIC_RUNTIME_VALIDATE=PASS'
 
       - name: Probe live Apps Script bridge version and hardened capabilities (read only)

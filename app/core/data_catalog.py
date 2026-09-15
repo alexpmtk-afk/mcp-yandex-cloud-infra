@@ -12,7 +12,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-DATA_CATALOG_VERSION = "2026-09-14.v1"
+DATA_CATALOG_VERSION = "2026-09-15.v2"
 
 DATA_CATALOG: dict[str, Any] = {
     "version": DATA_CATALOG_VERSION,
@@ -78,11 +78,29 @@ DATA_CATALOG: dict[str, Any] = {
         },
         "wb_promotion": {
             "marketplace": "wb",
-            "status": "PLANNED_NOT_ARCHIVED",
-            "archive_implemented": False,
-            "purpose": "promotion/advertising campaign history and performance metrics",
-            "authoritative_for": ["ad spend", "campaign metrics", "promotion performance where provider API supports it"],
-            "storage_dataset_path": "WB/<cabinet>/<year>/promotion",
+            "status": "ACTIVE_ARCHIVE_V1_WITH_LIMITATIONS",
+            "archive_implemented": True,
+            "purpose": "closed-period Wildberries advertising attribution and campaign performance from the canonical Advertising Archive V1",
+            "provider_source": "WB Promotion API archived into canonical Google Drive advertising datasets",
+            "grain": "logical advertising domain; Semantic Advertising V1 executes cabinet totals from ads_campaign_daily with ads_campaign_roster_snapshots as coverage dependency",
+            "time_semantics": "closed historical calendar days only; current day/state remains live Promotion API",
+            "authoritative_for": [
+                "historical advertising views and clicks",
+                "advertising-attributed orders and order amount",
+                "advertising spend",
+                "CTR CPC CPO DRR ROAS under wb_ads_m0.v1",
+            ],
+            "not_authoritative_for": [
+                "complete seller orders",
+                "realized seller revenue",
+                "overall business profitability",
+                "current-day advertising state",
+                "product-level Semantic execution until ads_product_daily receives its own approved contract",
+                "campaign-scoped Semantic execution until selector/grouping contracts are approved",
+            ],
+            "coverage": "dataset_coverage_registry.csv plus roster/fullstats FULL_COVERAGE for every expected eligible campaign",
+            "semantic_scope": "advertising_performance V1 = cabinet_total only",
+            "storage_dataset_path": "WB/<cabinet>/<year>/advertising",
         },
         "wb_sales_funnel": {
             "marketplace": "wb",
