@@ -133,10 +133,11 @@ jobs:
           set -euo pipefail
           URL="$(yc serverless container get "$WORKER_ID" --format json | jq -r '.url//empty')"
           test -n "$URL"
+          BASE_URL="${URL%/}"
           TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
           CODE=000
           for attempt in $(seq 1 20); do
-            CODE="$(curl -sS --max-time 30 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$URL/healthz" || true)"
+            CODE="$(curl -sS --max-time 30 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/health.json" -w '%{http_code}' "$BASE_URL/healthz" || true)"
             [[ "$CODE" == 200 ]] && break
             sleep 4
           done
@@ -153,7 +154,7 @@ jobs:
             exit 1
           fi
           jq -e '.status=="ok" and .market_mirror_required==true and .market_mirror_configured==true and .market_mirror_protocol==1 and .market_mirror_bridge_release=="1.0.0"' "$RUNNER_TEMP/health.json" >/dev/null
-          echo "WORKER_URL=$URL" >> "$GITHUB_ENV"
+          echo "WORKER_URL=$BASE_URL" >> "$GITHUB_ENV"
           echo 'BIRZHA_M25_V1_HEALTH=PASS'
 
       - name: Run one controlled orchestration tick
