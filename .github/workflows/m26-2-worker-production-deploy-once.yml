@@ -93,6 +93,9 @@ jobs:
           assert we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')==os.environ['BRIDGE_URL'] and we.get('BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID')==os.environ['BRIDGE_ROOT']
           m=[x for x in (w.get('secrets') or []) if x.get('environment_variable')=='BIRZHA_MARKET_MIRROR_BRIDGE_SECRET']
           assert len(m)==1 and m[0].get('id')==os.environ['BRIDGE_SECRET_ID'] and m[0].get('version_id')==os.environ['BRIDGE_SECRET_VERSION']
+          auth=[x for x in (by['yandex_serverless_container.mcp[0]'].get('secrets') or []) if x.get('environment_variable')=='BIRZHA_MCP_BEARER_TOKEN']
+          assert len(auth)==1 and auth[0].get('id') and auth[0].get('version_id')
+          (Path(os.environ['RUNNER_TEMP'])/'mcp-secret-meta.json').write_text(json.dumps({'id':auth[0]['id'],'version_id':auth[0]['version_id']}))
           assert by['yandex_function_trigger.orchestrator_timer[0]']['id']==os.environ['TIMER_ID']
           print('M26_2_APPLIED_STATE=PASS')
           print('M26_2_WORKER_IMAGE_ACTIVE=PASS')
@@ -136,15 +139,22 @@ jobs:
           test "$rc" = 0 || { cat "$RUNNER_TEMP/zero.txt"; exit "$rc"; }
           echo 'M26_2_ZERO_DRIFT=PASS'
       - name: First real SBER forecast through production MCP
-        if: "${{ github.event.head_commit.message == 'ops: fix first forecast one-shot guard' }}"
+        if: "${{ github.event.head_commit.message == 'ops: use active MCP secret for first forecast' }}"
         shell: bash
         run: |
           set -euo pipefail
           python -m pip install --disable-pip-version-check 'mcp==2.1.1' >/dev/null
           T="$(cat "$RUNNER_TEMP/iam-token")"
+          read MCP_SECRET_ID MCP_SECRET_VERSION < <(python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'mcp-secret-meta.json').read_text())
+          print(d['id'],d['version_id'])
+          PY
+          )
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
             -H "Authorization: Bearer ${T}" \
-            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${BRIDGE_SECRET_ID}/payload?versionId=${BRIDGE_SECRET_VERSION}" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${MCP_SECRET_ID}/payload?versionId=${MCP_SECRET_VERSION}" \
             -o "$RUNNER_TEMP/mcp-secret.json"
           python - <<'PY'
           import json, os
@@ -215,4 +225,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/state.json" "$RUNNER_TEMP/timer.json" "$RUNNER_TEMP/zero.txt" "$RUNNER_TEMP/mcp-secret.json" "$RUNNER_TEMP/mcp-bearer"
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/state.json" "$RUNNER_TEMP/timer.json" "$RUNNER_TEMP/zero.txt" "$RUNNER_TEMP/mcp-secret-meta.json" "$RUNNER_TEMP/mcp-secret.json" "$RUNNER_TEMP/mcp-bearer"
