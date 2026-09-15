@@ -1,0 +1,106 @@
+name: Yandex Cloud runtime usage now
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/yandex-cloud-runtime-usage-now.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  usage:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 4
+    steps:
+      - name: Install YC CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+      - name: Authenticate and read Monitoring
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          yc config profile create runtime-audit || true
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          IAM_TOKEN="$(yc iam create-token)"
+          export IAM_TOKEN
+          python3 - <<'PY'
+          import json, os, urllib.request
+          from datetime import datetime, timedelta, timezone
+
+          token=os.environ['IAM_TOKEN']
+          specs=[
+            ('marketplaces','b1gnd0dqoq3ljod88i8t','bba6lj5ggejtop0jl5k8'),
+            ('birzha_main','b1g00gqb66tbnfoumnkv','bbavossdt8rp9op9q3rl'),
+            ('birzha_orchestrator','b1g00gqb66tbnfoumnkv','bbamdg0po6fkukhod2e9'),
+          ]
+          now=datetime.now(timezone.utc)
+
+          def read(folder, query, days):
+              payload={
+                'query':query,
+                'fromTime':(now-timedelta(days=days)).strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'toTime':now.strftime('%Y-%m-%dT%H:%M:%SZ'),
+                'downsampling':{'maxPoints':'2000','gridAggregation':'AVG','gapFilling':'NONE'}
+              }
+              req=urllib.request.Request(
+                f'https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId={folder}',
+                data=json.dumps(payload).encode(),
+                headers={'Authorization':f'Bearer {token}','Content-Type':'application/json'},
+                method='POST')
+              try:
+                  with urllib.request.urlopen(req, timeout=30) as r:
+                      return json.load(r)
+              except Exception as e:
+                  return {'error':repr(e)}
+
+          def vals(m):
+              ts=m.get('timeseries') or {}
+              v=ts.get('doubleValues')
+              if v is None or len(v)==0: v=ts.get('int64Values') or []
+              return [float(x) for x in v]
+
+          def counter_delta(doc):
+              total=0.0
+              if 'error' in doc: return None
+              for m in doc.get('metrics') or []:
+                  v=vals(m)
+                  if len(v)<2: continue
+                  prev=v[0]
+                  for cur in v[1:]:
+                      total += cur-prev if cur>=prev else max(cur,0)
+                      prev=cur
+              return total
+
+          out={}
+          for label,folder,cid in specs:
+              out[label]={}
+              for days in (2,7):
+                  qcount=f'"serverless.containers.execution_time_milliseconds_count"{{service="serverless-containers", container="{cid}"}}'
+                  qtime=f'"serverless.containers.execution_time_milliseconds_sum"{{service="serverless-containers", container="{cid}"}}'
+                  dc=read(folder,qcount,days); dt=read(folder,qtime,days)
+                  calls=counter_delta(dc); ms=counter_delta(dt)
+                  out[label][f'{days}d']={
+                    'invocations': None if calls is None else round(calls,3),
+                    'execution_ms': None if ms is None else round(ms,3),
+                    'execution_hours': None if ms is None else round(ms/3600000,6),
+                    'count_error': dc.get('error'),
+                    'time_error': dt.get('error')
+                  }
+          print('=== RUNTIME_USAGE ===')
+          print(json.dumps(out,ensure_ascii=False,indent=2))
+          PY
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
