@@ -1,0 +1,67 @@
+name: Audit orphan Marketplaces publisher
+
+on:
+  push:
+    branches:
+      - audit/orphan-marketplaces-publisher-20260915
+    paths:
+      - ".github/workflows/audit-orphan-marketplaces-publisher.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install yc
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+      - name: Authenticate deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id b1gi4pr9msenirafh2c7
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+      - name: Audit publisher identity and references
+        shell: bash
+        run: |
+          set -uo pipefail
+          SA=ajepo7pe5jcrufdf0mv0
+          FOLDER=b1gnd0dqoq3ljod88i8t
+          REGISTRY=crp6o36mbl2tqonu1qbi
+          echo '--- SERVICE_ACCOUNT ---'
+          yc iam service-account get "$SA" --format json --no-user-output || true
+          echo '--- FOLDER_BINDINGS ---'
+          yc resource-manager folder list-access-bindings "$FOLDER" --format json --no-user-output | jq -c --arg sa "$SA" '.[] | select(.subject.id==$sa)' || true
+          echo '--- REGISTRY_BINDINGS ---'
+          yc container registry list-access-bindings "$REGISTRY" --format json --no-user-output | jq -c --arg sa "$SA" '.[] | select(.subject.id==$sa)' || true
+          echo '--- DIRECT_SA_BINDINGS ---'
+          yc iam service-account list-access-bindings "$SA" --format json --no-user-output || true
+          echo '--- AUTHORIZED_KEYS ---'
+          yc iam key list --service-account-id "$SA" --format json --no-user-output || true
+          echo '--- STATIC_ACCESS_KEYS ---'
+          yc iam access-key list --service-account-id "$SA" --format json --no-user-output || true
+          echo '--- FEDERATED_CREDENTIALS ---'
+          yc iam workload-identity federated-credential list --service-account-id "$SA" --format json --no-user-output || true
+          echo 'ORPHAN_PUBLISHER_AUDIT=COMPLETE'
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
