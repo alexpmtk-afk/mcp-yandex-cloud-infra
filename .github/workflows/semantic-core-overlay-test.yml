@@ -1,11 +1,11 @@
 name: Semantic Core Overlay TEST
 
 on:
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/semantic-core-overlay-test.yml"
-  workflow_dispatch:
+      - .github/workflows/semantic-core-overlay-test.yml
 
 permissions:
   contents: read
@@ -18,7 +18,7 @@ env:
   CLOUD_ID: b1gi4pr9msenirafh2c7
   TEST_FOLDER_NAME: marketplaces-mcp-test
   REGISTRY_ID: crp6o36mbl2tqonu1qbi
-  BASE_IMAGE: cr.yandex/crp6o36mbl2tqonu1qbi/marketplaces-mcp:test-17debe3190caa575c270ecdd3484e1411410307e
+  BASE_IMAGE_DIGEST: sha256:7eb2c81e6d44e22cffa481d09222c3a0b940a0426e63289d7aad3482a0462ead
   SEMANTIC_SOURCE: 920f3f1458a1700ad350d43cf35178256e8e858f
   ARCHIVE_DRIVE_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
   DRIVE_BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
@@ -27,27 +27,26 @@ jobs:
   overlay:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 35
+    timeout-minutes: 30
     steps:
       - name: Checkout infrastructure snapshot
         uses: actions/checkout@v4
         with:
           persist-credentials: false
 
-      - name: Prove approved Semantic Core snapshot
+      - name: Prove approved TEST overlay source
         shell: bash
         run: |
           set -euo pipefail
           test -f app/.source-revision
-          grep -Fq "Semantic Core source: alexpmtk-afk/marketplaces-mcp-ru@${SEMANTIC_SOURCE}" app/.source-revision
-          for p in core wb_mcp ozon_mcp ozon_perf_mcp; do test -d "app/$p"; done
-          test -f app/core/semantic_registry.yaml
-          test -f app/core/semantic_intents.yaml
-          test -f app/core/semantic_execution.yaml
-          test -f app/core/semantic_resolver.py
-          test -f app/core/business_router.py
+          grep -Fqx "Semantic Core source: alexpmtk-afk/marketplaces-mcp-ru@${SEMANTIC_SOURCE}" app/.source-revision
+          test -f scripts/semantic_overlay_bootstrap.py
+          python -m py_compile scripts/semantic_overlay_bootstrap.py
+          for f in remote.py business_router.py semantic_archive.py semantic_registry.py semantic_resolver.py system_map.py semantic_execution.yaml semantic_intents.yaml semantic_registry.yaml; do
+            test -f "app/core/$f"
+          done
           python -m compileall -q app/core app/wb_mcp app/ozon_mcp app/ozon_perf_mcp
-          echo 'SEMANTIC_SNAPSHOT=PASS'
+          echo 'SEMANTIC_SOURCE_PROOF=PASS'
 
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -75,9 +74,9 @@ jobs:
           yc config set folder-id "$FOLDER_ID"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           echo "ARCHIVE_BUCKET=marketplaces-mcp-archive-${FOLDER_ID}" >> "$GITHUB_ENV"
+          echo 'YC_AUTH=PASS'
 
       - name: Resolve current TEST resources and rollback target
-        id: resources
         shell: bash
         run: |
           set -euo pipefail
@@ -91,7 +90,7 @@ jobs:
           yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
           VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("cabinets_json") != null)|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("redis_password") != null)|select((.payload_entry_keys // [])|index("google_drive_bridge_secret") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
           yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions-before.json"
-          PREVIOUS_ACTIVE_REVISION="$(jq -r '[.[]|select(.status=="ACTIVE")]|last|.id // empty' "$RUNNER_TEMP/revisions-before.json")"
+          PREVIOUS_ACTIVE_REVISION="$(jq -r '[.[]|select(.status=="ACTIVE")][0].id // empty' "$RUNNER_TEMP/revisions-before.json")"
           for v in CONTAINER_ID RUNTIME_SA NETWORK_ID CLUSTER_ID REDIS_HOST DOMAIN SECRET_ID VERSION_ID PREVIOUS_ACTIVE_REVISION; do test -n "${!v}"; done
           echo "CONTAINER_ID=$CONTAINER_ID" >> "$GITHUB_ENV"
           echo "RUNTIME_SA=$RUNTIME_SA" >> "$GITHUB_ENV"
@@ -101,7 +100,8 @@ jobs:
           echo "SECRET_ID=$SECRET_ID" >> "$GITHUB_ENV"
           echo "VERSION_ID=$VERSION_ID" >> "$GITHUB_ENV"
           echo "PREVIOUS_ACTIVE_REVISION=$PREVIOUS_ACTIVE_REVISION" >> "$GITHUB_ENV"
-          echo "previous_revision=$PREVIOUS_ACTIVE_REVISION" >> "$GITHUB_OUTPUT"
+          echo "BASE_IMAGE=cr.yandex/${REGISTRY_ID}/marketplaces-mcp@${BASE_IMAGE_DIGEST}" >> "$GITHUB_ENV"
+          echo "OVERLAY_BOOTSTRAP_URL=https://raw.githubusercontent.com/alexpmtk-afk/mcp-yandex-cloud-infra/${GITHUB_SHA}/scripts/semantic_overlay_bootstrap.py" >> "$GITHUB_ENV"
           echo 'TEST_RESOURCES=PASS'
 
       - name: Resolve MCP bearer for acceptance only
@@ -115,60 +115,29 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           chmod 600 "$RUNNER_TEMP/bearer"
 
-      - name: Upload immutable Semantic Core runtime overlay
-        shell: bash
-        run: |
-          set -euo pipefail
-          OVERLAY_DIR="$RUNNER_TEMP/semantic-overlay"
-          OVERLAY_PREFIX="semantic-overlays/${SEMANTIC_SOURCE}/${GITHUB_SHA}"
-          mkdir -p "$OVERLAY_DIR"
-          cp -a app/core app/wb_mcp app/ozon_mcp app/ozon_perf_mcp "$OVERLAY_DIR/"
-          find "$OVERLAY_DIR" -type d -name __pycache__ -prune -exec rm -rf {} +
-          find "$OVERLAY_DIR" -type f -name '*.pyc' -delete
-          printf '%s\n' "$SEMANTIC_SOURCE" > "$OVERLAY_DIR/SEMANTIC_SOURCE"
-          yc storage s3 cp "$OVERLAY_DIR/" "s3://${ARCHIVE_BUCKET}/${OVERLAY_PREFIX}/" --recursive
-          yc storage s3 cp "s3://${ARCHIVE_BUCKET}/${OVERLAY_PREFIX}/SEMANTIC_SOURCE" "$RUNNER_TEMP/semantic-source-proof"
-          test "$(cat "$RUNNER_TEMP/semantic-source-proof")" = "$SEMANTIC_SOURCE"
-          echo "OVERLAY_PREFIX=$OVERLAY_PREFIX" >> "$GITHUB_ENV"
-          echo 'OVERLAY_UPLOAD=PASS'
-
-      - name: Deploy TEST revision with read-only overlay mount
+      - name: Deploy TEST revision using immutable GitHub overlay source
         id: deploy
         shell: bash
         run: |
           set -euo pipefail
-          yc serverless container revision deploy \
+          BOOTSTRAP_CODE="import os; import urllib.request; exec(urllib.request.urlopen(os.environ['MARKETPLACE_MCP_OVERLAY_BOOTSTRAP_URL']).read())"
+          timeout 240s yc serverless container revision deploy \
             --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
             --image "$BASE_IMAGE" --memory 2048MB --cores 1 --execution-timeout 600s --concurrency 8 \
             --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
-            --command /bin/sh,-c --args 'cd /semantic && exec python -m core.remote' \
-            --mount "type=object-storage,mount-point=/semantic,bucket=${ARCHIVE_BUCKET},prefix=${OVERLAY_PREFIX},mode=ro" \
-            --environment "PYTHONPATH=/semantic:/app,MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID,MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL=$DRIVE_BRIDGE_URL" \
+            --command python,-c --args "$BOOTSTRAP_CODE" \
+            --environment "MARKETPLACE_MCP_OVERLAY_BOOTSTRAP_URL=$OVERLAY_BOOTSTRAP_URL,MARKETPLACE_MCP_OVERLAY_SOURCE_SHA=$GITHUB_SHA,MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID,MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL=$DRIVE_BRIDGE_URL" \
             --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
             --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET,id=$SECRET_ID,version-id=$VERSION_ID,key=google_drive_bridge_secret" \
-            --description "TEST Semantic Core ${SEMANTIC_SOURCE} via read-only Object Storage overlay" \
+            --description "TEST Semantic Core ${SEMANTIC_SOURCE} via immutable GitHub source overlay ${GITHUB_SHA}" \
             --format json --no-user-output > "$RUNNER_TEMP/revision.json"
           REVISION_ID="$(jq -r '.id // empty' "$RUNNER_TEMP/revision.json")"
           test -n "$REVISION_ID"
           echo "revision_id=$REVISION_ID" >> "$GITHUB_OUTPUT"
+          echo "NEW_REVISION_ID=$REVISION_ID" >> "$GITHUB_ENV"
           echo "OVERLAY_REVISION=$REVISION_ID"
-
-      - name: Authenticated TEST health acceptance
-        shell: bash
-        run: |
-          set -euo pipefail
-          BEARER="$(cat "$RUNNER_TEMP/bearer")"
-          CODE=000
-          for attempt in $(seq 1 24); do
-            CODE="$(curl -sS --max-time 30 -H "Authorization: Bearer $BEARER" -o "$RUNNER_TEMP/health" -w '%{http_code}' "https://${DOMAIN}/healthz" || true)"
-            if [[ "$CODE" == 200 ]]; then break; fi
-            echo "health attempt ${attempt}/24 status=${CODE}"
-            sleep 5
-          done
-          test "$CODE" = 200
-          echo 'AUTHENTICATED_TEST_HEALTH=PASS'
 
       - name: Live Semantic Core MCP acceptance
         shell: bash
@@ -179,7 +148,7 @@ jobs:
           export MCP_URL="https://${DOMAIN}/mcp"
           export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
           python -u - <<'PY'
-          import itertools, json, os
+          import itertools, json, os, time
           import httpx
 
           def unpack(r):
@@ -195,66 +164,70 @@ jobs:
               assert text is not None, result
               return json.loads(text)
 
-          h0 = {
-              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
-              'Accept': 'application/json, text/event-stream',
-              'Content-Type': 'application/json',
+          h0={
+              'Authorization':'Bearer '+os.environ['MCP_BEARER'],
+              'Accept':'application/json, text/event-stream',
+              'Content-Type':'application/json',
           }
-          ids = itertools.count(1)
-          timeout = httpx.Timeout(connect=10, read=90, write=30, pool=10)
-          with httpx.Client(timeout=timeout, follow_redirects=True) as c:
-              r = c.post(os.environ['MCP_URL'], headers=h0, json={
-                  'jsonrpc':'2.0','id':next(ids),'method':'initialize',
-                  'params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'semantic-overlay-e2e','version':'1'}}
-              })
-              init = unpack(r)
-              assert init and 'result' in init, init
-              h = dict(h0)
-              sid = r.headers.get('mcp-session-id')
-              if sid: h['Mcp-Session-Id'] = sid
-              h['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
-              n = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','method':'notifications/initialized'})
-              assert n.status_code in (200,202), n.status_code
-              print('MCP_INITIALIZE=PASS', flush=True)
+          ids=itertools.count(1)
+          timeout=httpx.Timeout(connect=10,read=90,write=30,pool=10)
+          with httpx.Client(timeout=timeout,follow_redirects=True) as c:
+              init_payload={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'semantic-overlay-e2e','version':'1'}}}
+              last=None
+              for attempt in range(1,25):
+                  r=c.post(os.environ['MCP_URL'],headers=h0,json=init_payload)
+                  last=(r.status_code,r.text[:500])
+                  if r.status_code==200:
+                      break
+                  print(f'initialize attempt={attempt} status={r.status_code}',flush=True)
+                  time.sleep(5)
+              assert r.status_code==200,last
+              init=unpack(r); assert init and 'result' in init,init
+              assert 'Semantic Core' in init['result'].get('instructions',''),init
+              h=dict(h0)
+              sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              n=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert n.status_code in (200,202),n.status_code
+              print('MCP_INITIALIZE=PASS',flush=True)
 
-              def rpc(method, params=None):
-                  rr = c.post(os.environ['MCP_URL'], headers=h, json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
-                  d = unpack(rr)
-                  assert d and 'result' in d, (method, d)
+              def rpc(method,params=None):
+                  rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  d=unpack(rr); assert d and 'result' in d,(method,d)
                   return d['result']
 
-              tools = rpc('tools/list').get('tools', [])
-              names = {t.get('name') for t in tools}
-              assert 'marketplace_business_query' in names, sorted(names)
-              assert 'marketplace_system_map' in names, sorted(names)
-              print(f'MCP_TOOLS_LIST=PASS count={len(names)}', flush=True)
+              names={x['name'] for x in rpc('tools/list')['tools']}
+              assert {'marketplace_business_query','marketplace_system_map','marketplace_archive_status'} <= names,names
+              print('SEMANTIC_TOOLS_LIST=PASS',flush=True)
 
-              system_map = tool_json(rpc('tools/call', {'name':'marketplace_system_map','arguments':{}}))
-              blob = json.dumps(system_map, ensure_ascii=False)
-              assert 'Semantic Core' in blob or 'semantic' in blob.lower(), blob[:2000]
-              print('SEMANTIC_SYSTEM_MAP=PASS', flush=True)
+              sm=tool_json(rpc('tools/call',{'name':'marketplace_system_map','arguments':{}}))
+              assert sm.get('architecture_version')=='2026-09-14.v17',sm
+              assert sm['semantic_core']['status']=='TEST_RUNTIME_WIRED',sm
+              print('SEMANTIC_SYSTEM_MAP=PASS',flush=True)
 
-              fail_closed = tool_json(rpc('tools/call', {'name':'marketplace_business_query','arguments':{
-                  'marketplace':'wb','seller':'wb_novokshenov','date_from':'2026-09-01','date_to':'2026-09-14',
-                  'question':'Какие остатки сейчас?'
+              fail=tool_json(rpc('tools/call',{'name':'marketplace_business_query','arguments':{
+                  'marketplace':'wb','seller':'wb_novokshenov','date_from':'2026-09-01','date_to':'2026-09-07',
+                  'question':'Какой актуальный коэффициент склада сейчас?'
               }}))
-              assert fail_closed.get('error'), fail_closed
-              details = fail_closed.get('details') or {}
-              assert details.get('semantic_resolution') or details.get('semantic_status'), fail_closed
-              print('SEMANTIC_FAIL_CLOSED=PASS', flush=True)
+              assert fail.get('ok') is False,fail
+              assert fail.get('error')=='source_not_suitable',fail
+              print('SEMANTIC_FAIL_CLOSED=PASS',flush=True)
 
-              supported = tool_json(rpc('tools/call', {'name':'marketplace_business_query','arguments':{
+              hist=tool_json(rpc('tools/call',{'name':'marketplace_business_query','arguments':{
                   'marketplace':'wb','seller':'wb_novokshenov','date_from':'2026-08-01','date_to':'2026-08-31',
-                  'question':'Сколько штрафов было у ИП Новокшенов в августе 2026?'
+                  'question':'Какие схемы отгрузки наблюдались за этот период?'
               }}))
-              resolution = supported.get('semantic_resolution') or ((supported.get('details') or {}).get('semantic_resolution') or {})
-              assert resolution.get('capability_id') == 'penalties', supported
-              if supported.get('error'):
-                  print('SEMANTIC_SUPPORTED_ROUTE=PASS_FAIL_CLOSED_AFTER_RESOLUTION', flush=True)
-                  print('supported_error=' + str(supported.get('error')), flush=True)
-              else:
-                  assert supported.get('route') == 'semantic_archive', supported
-                  print('SEMANTIC_SUPPORTED_ROUTE=PASS_EXECUTED', flush=True)
+              assert hist.get('ok') is True,hist
+              print('SEMANTIC_HISTORICAL_EXECUTION=PASS',flush=True)
+
+              archive=tool_json(rpc('tools/call',{'name':'marketplace_archive_status','arguments':{'year':2026}}))
+              assert archive.get('ok') is True,archive
+              storage=archive.get('storage') or {}
+              assert storage.get('backend')=='google_drive_primary',archive
+              assert storage.get('reachable') is True,archive
+              print('CANONICAL_GOOGLE_DRIVE_ARCHIVE=PASS',flush=True)
+              print('LIVE_SEMANTIC_CORE_OVERLAY_E2E=PASS',flush=True)
           PY
 
       - name: Roll back previous TEST revision on acceptance failure
@@ -266,9 +239,20 @@ jobs:
           yc serverless container rollback --id "$CONTAINER_ID" --revision-id "$PREVIOUS_ACTIVE_REVISION"
           echo 'TEST_ROLLBACK=PASS'
 
+      - name: Final TEST evidence
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision get "$NEW_REVISION_ID" --format json --no-user-output > "$RUNNER_TEMP/final-revision.json"
+          jq -c '{id,status,image,description,service_account_id,created_at}' "$RUNNER_TEMP/final-revision.json"
+          echo "SEMANTIC_CORE_SOURCE=${SEMANTIC_SOURCE}"
+          echo "OVERLAY_SOURCE_SHA=${GITHUB_SHA}"
+          echo "BASE_IMAGE_DIGEST=${BASE_IMAGE_DIGEST}"
+          echo 'SEMANTIC_CORE_TEST_OVERLAY_ROLLOUT=PASS'
+
       - name: Cleanup local credentials
         if: always()
         shell: bash
         run: |
-          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/revisions-before.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/semantic-source-proof"
-          rm -rf "$RUNNER_TEMP/semantic-overlay"
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/revisions-before.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/final-revision.json"
