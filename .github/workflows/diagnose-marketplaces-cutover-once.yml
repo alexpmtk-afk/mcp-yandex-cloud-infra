@@ -1,0 +1,98 @@
+name: Diagnose Marketplaces Cutover Once
+
+on:
+  workflow_dispatch:
+    inputs:
+      operation_id:
+        description: Yandex operation ID from Marketplaces cutover
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  diagnose:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate existing TEST deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY="$RUNNER_TEMP/yc-key.json"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          yc config profile create cutover-diag >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+
+      - name: Inspect existing deploy operation and container revisions
+        shell: bash
+        env:
+          OPERATION_ID: ${{ inputs.operation_id }}
+          CONTAINER_ID: bba6lj5ggejtop0jl5k8
+          EXPECTED_IMAGE: cr.yandex/crp6o36mbl2tqonu1qbi/marketplaces-mcp:bridge-v1-1c2afe28998fc8e6b22a4bc1f0dca5b9bf104507
+        run: |
+          set -u
+          echo '=== OPERATION ==='
+          if yc operation get "$OPERATION_ID" --format json --retry 0 > "$RUNNER_TEMP/op.json" 2>"$RUNNER_TEMP/op.err"; then
+            jq '{id,done,created_at,created_by,modified_at,error,response,metadata}' "$RUNNER_TEMP/op.json"
+            echo '=== OPERATION SUMMARY ==='
+            jq -r '["done="+((.done//false)|tostring), "has_error="+((.error!=null)|tostring), "error_code="+((.error.code//"")|tostring), "error_message="+(.error.message//""), "response_id="+(.response.id//.response.value.id//"")] | .[]' "$RUNNER_TEMP/op.json"
+          else
+            echo 'OPERATION_GET_FAILED'
+            cat "$RUNNER_TEMP/op.err"
+          fi
+
+          echo '=== CURRENT CONTAINER ==='
+          yc serverless container get "$CONTAINER_ID" --format json > "$RUNNER_TEMP/container.json" 2>"$RUNNER_TEMP/container.err" || true
+          if [[ -s "$RUNNER_TEMP/container.json" ]]; then
+            jq '{id,name,url,status,created_at}' "$RUNNER_TEMP/container.json"
+          else
+            cat "$RUNNER_TEMP/container.err"
+          fi
+
+          echo '=== LATEST REVISIONS ==='
+          yc serverless container revision list --container-id "$CONTAINER_ID" --format json > "$RUNNER_TEMP/revisions.json" 2>"$RUNNER_TEMP/revisions.err" || true
+          if [[ -s "$RUNNER_TEMP/revisions.json" ]]; then
+            jq -r --arg expected "$EXPECTED_IMAGE" '
+              sort_by(.created_at) | reverse | .[:8] | .[] |
+              {
+                id,
+                created_at,
+                status,
+                image: (.image.image_url // .image.url // ""),
+                expected_image: ((.image.image_url // .image.url // "") == $expected),
+                service_account_id,
+                concurrency,
+                execution_timeout
+              }' "$RUNNER_TEMP/revisions.json"
+            echo '=== EXPECTED IMAGE MATCHES ==='
+            jq -r --arg expected "$EXPECTED_IMAGE" '[.[]|select((.image.image_url // .image.url // "") == $expected)]|sort_by(.created_at)|reverse|.[:3]' "$RUNNER_TEMP/revisions.json"
+          else
+            cat "$RUNNER_TEMP/revisions.err"
+          fi
+
+          echo 'MARKETPLACES_CUTOVER_DIAGNOSTIC=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/op.json" "$RUNNER_TEMP/op.err" "$RUNNER_TEMP/container.json" "$RUNNER_TEMP/container.err" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/revisions.err"
