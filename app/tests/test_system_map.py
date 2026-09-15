@@ -101,7 +101,7 @@ def test_wb_advertising_live_and_archive_boundaries_are_explicit():
 def test_server_instructions_contain_hard_boundaries():
     assert ARCHITECTURE_VERSION in SYSTEM_INSTRUCTIONS
     for required in (
-        "Google Drive", "Apps Script", "resumable-session", "No Google OAuth refresh token",
+        "Google Drive", "Apps Script", "resumable-session", "no Google OAuth refresh token",
         "non-canonical staging filename", "size/SHA256", "byte-for-byte Yandex backup",
         "never blindly resends", "never logs the bearer-like session URI", "Yandex Object Storage",
         "temporary IAM token", "Yandex Lockbox", "Google Cloud is not part", "MULTI-DATASET",
