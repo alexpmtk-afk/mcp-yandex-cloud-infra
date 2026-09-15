@@ -28,7 +28,7 @@ jobs:
           curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
           echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
 
-      - name: Authenticate and print non-secret identity
+      - name: Authenticate and resolve scope
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -39,18 +39,18 @@ jobs:
           chmod 600 "$KEY_FILE"
           CURRENT_SA_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
           test -n "$CURRENT_SA_ID"
-          echo "CURRENT_SA_ID=$CURRENT_SA_ID" >> "$GITHUB_ENV"
-          echo "CURRENT_TEST_DEPLOYER_SA=$CURRENT_SA_ID"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
           CLOUD_ID=b1gi4pr9msenirafh2c7
           FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
+          echo "CURRENT_SA_ID=$CURRENT_SA_ID" >> "$GITHUB_ENV"
           echo "CLOUD_ID=$CLOUD_ID" >> "$GITHUB_ENV"
           echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
+          echo "CURRENT_TEST_DEPLOYER_SA=$CURRENT_SA_ID"
 
-      - name: Inspect TEST folder and cloud bindings
+      - name: Inspect ordinary IAM roles
         shell: bash
         run: |
           set -euo pipefail
@@ -60,10 +60,28 @@ jobs:
           jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/folder.json" | sort -u
           echo '--- DEPLOYER_CLOUD_ROLES ---'
           jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/cloud.json" | sort -u
-          echo '--- DEPLOYER_CLOUD_BINDINGS ---'
-          jq -c --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id)' "$RUNNER_TEMP/cloud.json"
 
-      - name: Inspect runtime SA and resource bindings
+      - name: Inspect access policy bindings exactly
+        shell: bash
+        run: |
+          set +e
+          echo '--- FOLDER_ACCESS_POLICY_BINDINGS ---'
+          yc resource-manager folder list-access-policy-bindings --id "$FOLDER_ID" --format json --no-user-output
+          echo "folder_policy_exit=$?"
+          echo '--- CLOUD_ACCESS_POLICY_BINDINGS ---'
+          yc resource-manager cloud list-access-policy-bindings --id "$CLOUD_ID" --format json --no-user-output
+          echo "cloud_policy_exit=$?"
+          echo '--- VISIBLE_ORGANIZATIONS ---'
+          yc organization-manager organization list --format json --no-user-output > "$RUNNER_TEMP/orgs.json"
+          jq -c '.[]|{id,name}' "$RUNNER_TEMP/orgs.json"
+          ORG_ID="$(jq -r '.[0].id // empty' "$RUNNER_TEMP/orgs.json")"
+          if [[ -n "$ORG_ID" ]]; then
+            echo '--- ORGANIZATION_ACCESS_POLICY_BINDINGS ---'
+            yc organization-manager organization list-access-policy-bindings --id "$ORG_ID" --format json --no-user-output
+            echo "org_policy_exit=$?"
+          fi
+
+      - name: Inspect runtime and registry direct bindings
         shell: bash
         run: |
           set -euo pipefail
@@ -84,30 +102,7 @@ jobs:
           test -n "$REPO_NAME"
           yc container repository list-access-bindings --name "$REPO_NAME" --format json --no-user-output || true
 
-      - name: Inspect organization scope and policy surfaces
-        shell: bash
-        run: |
-          set +e
-          echo '--- ORGANIZATIONS_VISIBLE ---'
-          yc organization-manager organization list --format json --no-user-output > "$RUNNER_TEMP/orgs.json"
-          jq -c '.[]|{id,name}' "$RUNNER_TEMP/orgs.json"
-          ORG_ID="$(jq -r '.[0].id // empty' "$RUNNER_TEMP/orgs.json")"
-          if [[ -n "$ORG_ID" ]]; then
-            echo "ORG_ID=$ORG_ID"
-            echo '--- DEPLOYER_ORG_ROLES ---'
-            yc organization-manager organization list-access-bindings "$ORG_ID" --format json --no-user-output > "$RUNNER_TEMP/org-bindings.json"
-            jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/org-bindings.json" | sort -u
-          fi
-          echo '--- IAM_ACCESS_POLICY_HELP ---'
-          yc iam access-policy --help 2>&1 | head -160 || true
-          echo '--- ORGANIZATION_POLICY_HELP ---'
-          yc organization-manager organization --help 2>&1 | grep -i -C3 policy || true
-          echo '--- CLOUD_POLICY_HELP ---'
-          yc resource-manager cloud --help 2>&1 | grep -i -C3 policy || true
-          echo '--- FOLDER_POLICY_HELP ---'
-          yc resource-manager folder --help 2>&1 | grep -i -C3 policy || true
-
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/folder.json" "$RUNNER_TEMP/cloud.json" "$RUNNER_TEMP/orgs.json" "$RUNNER_TEMP/org-bindings.json" "$RUNNER_TEMP/repos.json"
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/folder.json" "$RUNNER_TEMP/cloud.json" "$RUNNER_TEMP/orgs.json" "$RUNNER_TEMP/repos.json"
