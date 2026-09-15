@@ -1,0 +1,229 @@
+name: Retire historical Marketplaces Drive Bridge v1 Lockbox versions
+
+on:
+  push:
+    branches:
+      - fix/marketplaces-destroy-v1-lockbox-history
+    paths:
+      - '.github/workflows/marketplaces-destroy-historical-drive-bridge-v1-versions.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-retire-drive-bridge-v1-history
+  cancel-in-progress: false
+
+env:
+  CLOUD_ID: b1gi4pr9msenirafh2c7
+  FOLDER_NAME: marketplaces-mcp-test
+  LOCKBOX_NAME: marketplaces-mcp-api-credentials
+  CONTAINER_NAME: marketplaces-mcp-test
+  ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+  BRIDGE_URL: https://script.google.com/macros/s/AKfycbzgFDAQY4rcsblKhiAONfOI6315k8W3vwbSIEsczE3ycQtnJ8ctcVKjhzjgdTgfy0cvIA/exec
+  PENDING_PERIOD: 168h
+
+jobs:
+  retire-history:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and resolve Marketplaces-only resources
+        id: resolve
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY")"
+          test -n "$DEPLOYER_ID"
+          yc config profile create marketplaces-retire-v1-history >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r --arg n "$FOLDER_NAME" '.[]|select(.name==$n)|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$LOCKBOX_NAME" '.[]|select(.name==$n)|.id'|head -1)"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$CONTAINER_NAME" '.[]|select(.name==$n)|.id'|head -1)"
+          test -n "$SECRET_ID"; test -n "$CONTAINER_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions-before.json"
+          V3_VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("google_drive_bridge_secret")!=null)|select((.payload_entry_keys//[])|index("mcp_bearer_token")!=null)|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")==null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions-before.json")"
+          test -n "$V3_VERSION"
+          jq -r '.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)|.id' "$RUNNER_TEMP/versions-before.json" > "$RUNNER_TEMP/targets.txt"
+          echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "container_id=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "v3_version=$V3_VERSION" >> "$GITHUB_OUTPUT"
+          echo "deployer_id=$DEPLOYER_ID" >> "$GITHUB_OUTPUT"
+          echo "TARGET_COUNT=$(grep -c . "$RUNNER_TEMP/targets.txt" || true)"
+          echo "V3_ONLY_VERSION=$V3_VERSION"
+
+      - name: Fail closed unless live runtime is bound to V3-only version
+        shell: bash
+        env:
+          CONTAINER_ID: ${{ steps.resolve.outputs.container_id }}
+          V3_VERSION: ${{ steps.resolve.outputs.v3_version }}
+        run: |
+          set -euo pipefail
+          yc serverless container revision list --container-id "$CONTAINER_ID" --format json > "$RUNNER_TEMP/revisions.json"
+          REVISION_ID="$(jq -r '[.[]|select((.status//"")=="ACTIVE")]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/revisions.json")"
+          test -n "$REVISION_ID"
+          yc serverless container revision get "$REVISION_ID" --format json > "$RUNNER_TEMP/revision.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'revision.json').read_text())
+          env=(d.get('image') or {}).get('environment') or {}
+          blob=json.dumps(d)
+          assert env.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_URL') == os.environ['BRIDGE_URL']
+          assert env.get('MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID') == os.environ['ROOT_ID']
+          assert 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' in blob
+          assert 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_' not in blob
+          assert str(env.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_PROTOCOL') or '').lower() in ('','v3','3')
+          assert os.environ['V3_VERSION'] in blob, 'live revision is not pinned to the resolved V3-only Lockbox version'
+          print('PRECONDITION_LIVE_RUNTIME_PINNED_TO_V3_ONLY=PASS')
+          PY
+
+      - name: Verify V3 health before scheduling any destruction
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          V3_VERSION: ${{ steps.resolve.outputs.v3_version }}
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$V3_VERSION" --format json --no-user-output > "$RUNNER_TEMP/v3-payload.json"
+          BRIDGE_SECRET="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value//empty' "$RUNNER_TEMP/v3-payload.json")"
+          test -n "$BRIDGE_SECRET"
+          echo "::add-mask::$BRIDGE_SECRET"
+          export BRIDGE_SECRET
+          python - <<'PY'
+          import json, os, time, urllib.error, urllib.request
+          body=json.dumps({'secret':os.environ['BRIDGE_SECRET'],'action':'health'}).encode()
+          for attempt in range(1,4):
+              try:
+                  req=urllib.request.Request(os.environ['BRIDGE_URL'],data=body,headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
+                  with urllib.request.urlopen(req,timeout=60) as r: data=json.loads(r.read().decode())
+                  assert data.get('ok') is True, data
+                  assert int(data.get('version') or 0) == 3, data
+                  assert data.get('root_id') == os.environ['ROOT_ID'], data
+                  print('PRECONDITION_V3_HEALTH=PASS')
+                  break
+              except urllib.error.HTTPError as exc:
+                  if attempt < 3 and (exc.code in (404,408,425,429) or 500 <= exc.code < 600):
+                      time.sleep(0.75*attempt); continue
+                  raise
+          else:
+              raise RuntimeError('V3 health did not pass')
+          PY
+
+      - name: Grant temporary folder admin for Lockbox version scheduling
+        if: hashFiles(format('{0}/targets.txt', runner.temp)) != ''
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resolve.outputs.folder_id }}
+          DEPLOYER_ID: ${{ steps.resolve.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$RUNNER_TEMP/targets.txt" ]]; then
+            echo 'NO_V1_HISTORY_TO_RETIRE=PASS'
+            exit 0
+          fi
+          yc resource-manager folder add-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID"
+          sleep 15
+
+      - name: Schedule only historical V1-containing Marketplaces versions for destruction
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          V3_VERSION: ${{ steps.resolve.outputs.v3_version }}
+        run: |
+          set -euo pipefail
+          if [[ ! -s "$RUNNER_TEMP/targets.txt" ]]; then
+            echo 'NO_V1_HISTORY_TO_RETIRE=PASS'
+            exit 0
+          fi
+          while IFS= read -r VERSION_ID; do
+            test -n "$VERSION_ID"
+            [[ "$VERSION_ID" != "$V3_VERSION" ]]
+            echo "Scheduling historical Marketplaces V1 Lockbox version: $VERSION_ID"
+            yc lockbox secret schedule-version-destruction --id "$SECRET_ID" \
+              --version-id "$VERSION_ID" --pending-period "$PENDING_PERIOD" \
+              --format json --no-user-output > "$RUNNER_TEMP/schedule-$VERSION_ID.json"
+          done < "$RUNNER_TEMP/targets.txt"
+
+      - name: Verify scheduled state and V3-only survivor
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          V3_VERSION: ${{ steps.resolve.outputs.v3_version }}
+        run: |
+          set -euo pipefail
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions-after.json"
+          while IFS= read -r VERSION_ID; do
+            [[ -z "$VERSION_ID" ]] && continue
+            STATUS="$(jq -r --arg id "$VERSION_ID" '.[]|select(.id==$id)|.status//empty' "$RUNNER_TEMP/versions-after.json")"
+            [[ "$STATUS" == 'SCHEDULED_FOR_DESTRUCTION' ]]
+            echo "V1_HISTORY_VERSION_SCHEDULED=$VERSION_ID"
+          done < "$RUNNER_TEMP/targets.txt"
+          jq -e --arg id "$V3_VERSION" '.[]|select(.id==$id)|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("google_drive_bridge_secret")!=null)|select((.payload_entry_keys//[])|index("mcp_bearer_token")!=null)|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")==null)' "$RUNNER_TEMP/versions-after.json" >/dev/null
+          echo 'V3_ONLY_VERSION_STILL_ACTIVE=PASS'
+
+      - name: Verify V3 health after scheduling destruction
+        shell: bash
+        env:
+          SECRET_ID: ${{ steps.resolve.outputs.secret_id }}
+          V3_VERSION: ${{ steps.resolve.outputs.v3_version }}
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$V3_VERSION" --format json --no-user-output > "$RUNNER_TEMP/v3-payload-after.json"
+          BRIDGE_SECRET="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value//empty' "$RUNNER_TEMP/v3-payload-after.json")"
+          test -n "$BRIDGE_SECRET"
+          echo "::add-mask::$BRIDGE_SECRET"
+          export BRIDGE_SECRET
+          python - <<'PY'
+          import json, os, urllib.request
+          body=json.dumps({'secret':os.environ['BRIDGE_SECRET'],'action':'health'}).encode()
+          req=urllib.request.Request(os.environ['BRIDGE_URL'],data=body,headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
+          with urllib.request.urlopen(req,timeout=60) as r: data=json.loads(r.read().decode())
+          assert data.get('ok') is True, data
+          assert int(data.get('version') or 0) == 3, data
+          assert data.get('root_id') == os.environ['ROOT_ID'], data
+          print('POSTCONDITION_V3_HEALTH=PASS')
+          PY
+
+      - name: Revoke temporary folder admin
+        if: always()
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resolve.outputs.folder_id }}
+          DEPLOYER_ID: ${{ steps.resolve.outputs.deployer_id }}
+        run: |
+          if [[ -n "${FOLDER_ID:-}" && -n "${DEPLOYER_ID:-}" ]]; then
+            yc resource-manager folder remove-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID" || true
+          fi
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" \
+            "$RUNNER_TEMP/versions-before.json" "$RUNNER_TEMP/versions-after.json" \
+            "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/revision.json" \
+            "$RUNNER_TEMP/v3-payload.json" "$RUNNER_TEMP/v3-payload-after.json" \
+            "$RUNNER_TEMP/targets.txt" "$RUNNER_TEMP"/schedule-*.json
