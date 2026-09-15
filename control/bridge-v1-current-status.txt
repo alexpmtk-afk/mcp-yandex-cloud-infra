@@ -1,0 +1,7 @@
+CURRENT LIVE ACTIVATION STATUS (2026-09-15)
+- Apps Script API enabled by owner.
+- clasp OAuth owner login succeeds.
+- Marketplaces runtime authorization succeeds.
+- Live failure point: transient HTTP 404 on bootstrap Script Properties POST immediately after runtime authorization.
+- Code fix in this branch retries transient Apps Script transport failures across bootstrap install, final health, and bootstrap retirement.
+- Production cutover not yet completed.
