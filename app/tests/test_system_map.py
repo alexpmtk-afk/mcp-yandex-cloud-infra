@@ -107,7 +107,7 @@ def test_server_instructions_contain_hard_boundaries():
         "temporary IAM token", "Yandex Lockbox", "Google Cloud is not part", "MULTI-DATASET",
         "marketplace_business_query", "Semantic Core", "FULL_COVERAGE", "orderDt/orderUid",
         "dlvPrc", "agencyVat", "marketplace_metric_route", "Advertising Archive V1",
-        "wb_ads_m0.v1", "product/nm_id", "actual business profit", "fail closed",
+        "wb_ads_m0.v1", "Product/nm_id", "actual business profit", "fail closed",
     ):
         assert required in SYSTEM_INSTRUCTIONS
 
