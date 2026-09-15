@@ -348,7 +348,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'12'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'13'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
@@ -361,6 +361,8 @@ jobs:
               assert 'marketplace_business_query' in instructions, instructions
               assert 'Semantic Core' in instructions, instructions
               assert 'FULL_COVERAGE' in instructions, instructions
+              assert 'Advertising Archive V1' in instructions, instructions
+              assert 'wb_ads_m0.v1' in instructions, instructions
               print('initialize=PASS', flush=True)
               h = dict(headers0)
               sid = r.headers.get('mcp-session-id')
@@ -396,7 +398,7 @@ jobs:
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-14.v17', system_map
+              assert system_map.get('architecture_version') == '2026-09-15.v17', system_map
               assert system_map['storage_policy']['primary_archive_storage'] == 'Google Drive', system_map
               assert 'Apps Script' in system_map['storage_policy']['google_drive_auth'], system_map
               assert 'no Google OAuth refresh token' in system_map['storage_policy']['google_drive_auth'], system_map
@@ -408,20 +410,28 @@ jobs:
               assert 'never follow redirects' in large['redirect_rule'], system_map
               assert system_map['archive_policy']['multi_dataset'] is True, system_map
               assert system_map['archive_policy']['no_single_report_is_complete_database'] is True, system_map
+              assert system_map['archive_policy']['wb_advertising_v1']['status'] == 'CANONICAL_ARCHIVE_IMPLEMENTED', system_map
               semantic = system_map['semantic_core']
               assert semantic['status'] == 'TEST_RUNTIME_WIRED', semantic
               assert semantic['runtime_entry'] == 'marketplace_business_query', semantic
+              assert semantic['source_revision'].endswith('833eab826bfaa4691a05a21a5d00f1e8e0ba1b37'), semantic
+              assert 'advertising_performance' in semantic['approved_archive_executors'], semantic
               assert 'FULL_COVERAGE' in semantic['execution_gate'], semantic
+              assert 'dataset_coverage_registry.csv' in semantic['execution_gate'], semantic
               assert 'agencyVat' in semantic['schema_drift_policy'], semantic
               print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
-              print('SYSTEM_MAP_SEMANTIC_CORE=PASS', flush=True)
+              print('SYSTEM_MAP_SEMANTIC_ADVERTISING=PASS', flush=True)
 
               catalog = call('marketplace_data_catalog', {})
-              assert catalog.get('version') == '2026-09-14.v1', catalog
+              assert catalog.get('version') == '2026-09-15.v2', catalog
               assert catalog['principles']['multi_dataset_archive'] is True, catalog
               assert catalog['principles']['no_single_report_is_complete_database'] is True, catalog
               finance = catalog['datasets']['wb_weekly_finance_main']
               assert 'orders placed by customers' in finance['not_authoritative_for'], finance
+              ads_dataset = catalog['datasets']['wb_promotion']
+              assert ads_dataset['archive_implemented'] is True, ads_dataset
+              assert ads_dataset['status'] == 'ACTIVE_ARCHIVE_V1_WITH_LIMITATIONS', ads_dataset
+              assert 'dataset_coverage_registry.csv' in ads_dataset['coverage'], ads_dataset
               print('DATA_CATALOG=PASS', flush=True)
 
               orders_route = call('marketplace_metric_route', {'metric':'заказанные единицы','marketplace':'wb'})
@@ -429,6 +439,10 @@ jobs:
               assert orders_route.get('business_metric') == 'ordered_units', orders_route
               assert orders_route['routes']['wb']['dataset'] == 'wb_orders_daily', orders_route
               assert orders_route['routes']['wb']['archive_implemented'] is False, orders_route
+              ad_route = call('marketplace_metric_route', {'metric':'расходы на рекламу','marketplace':'wb'})
+              assert ad_route.get('ok') is True, ad_route
+              assert ad_route['routes']['wb']['dataset'] == 'wb_promotion', ad_route
+              assert ad_route['routes']['wb']['archive_implemented'] is True, ad_route
               sales_route = call('marketplace_metric_route', {'metric':'продажи за 2025 год','marketplace':'wb'})
               assert sales_route.get('ok') is False, sales_route
               assert sales_route.get('status') == 'AMBIGUOUS', sales_route
@@ -447,6 +461,57 @@ jobs:
               assert resolution.get('route_id') == 'current_warehouse_tariff', semantic_fail
               assert resolution.get('resolution_type') == 'NOT_COVERED', semantic_fail
               print('SEMANTIC_CORE_FAIL_CLOSED=PASS', flush=True)
+
+              ads_gap = call('marketplace_business_query', {
+                  'marketplace':'wb',
+                  'seller':'wb_novokshenov',
+                  'date_from':'2026-09-01',
+                  'date_to':'2026-09-07',
+                  'question':'Сколько потратили на рекламу и какой был ROAS?'
+              })
+              assert ads_gap.get('ok') is False, ads_gap
+              assert ads_gap.get('error') == 'coverage_gap', ads_gap
+              ads_resolution = (ads_gap.get('details') or {}).get('semantic_resolution') or {}
+              assert ads_resolution.get('capability_id') == 'advertising_performance', ads_gap
+              print('SEMANTIC_ADVERTISING_COVERAGE_GAP=PASS', flush=True)
+
+              ads_product = call('marketplace_business_query', {
+                  'marketplace':'wb',
+                  'seller':'wb_novokshenov',
+                  'date_from':'2026-09-01',
+                  'date_to':'2026-09-07',
+                  'question':'Какой ДРР был у этого товара?',
+                  'nm_ids':[12345]
+              })
+              assert ads_product.get('ok') is False, ads_product
+              assert ads_product.get('error') == 'source_not_suitable', ads_product
+              assert 'ads_product_daily' in ads_product.get('message',''), ads_product
+              print('SEMANTIC_ADVERTISING_PRODUCT_FAIL_CLOSED=PASS', flush=True)
+
+              ads_campaign = call('marketplace_business_query', {
+                  'marketplace':'wb',
+                  'seller':'wb_novokshenov',
+                  'date_from':'2026-09-01',
+                  'date_to':'2026-09-07',
+                  'question':'Какой ДРР был у кампании 12345?'
+              })
+              assert ads_campaign.get('ok') is False, ads_campaign
+              assert ads_campaign.get('error') == 'source_not_suitable', ads_campaign
+              assert 'Campaign-filtered' in ads_campaign.get('message',''), ads_campaign
+              print('SEMANTIC_ADVERTISING_CAMPAIGN_FAIL_CLOSED=PASS', flush=True)
+
+              today = datetime.date.today().isoformat()
+              ads_today = call('marketplace_business_query', {
+                  'marketplace':'wb',
+                  'seller':'wb_novokshenov',
+                  'date_from':today,
+                  'date_to':today,
+                  'question':'Какой ДРР по рекламе сегодня?'
+              })
+              assert ads_today.get('ok') is False, ads_today
+              assert ads_today.get('error') == 'source_not_suitable', ads_today
+              assert 'closed historical days' in ads_today.get('message',''), ads_today
+              print('SEMANTIC_ADVERTISING_CURRENT_DAY_BOUNDARY=PASS', flush=True)
 
               archive = call('marketplace_archive_status', {'year':datetime.date.today().year})
               assert archive.get('ok') is True, archive
