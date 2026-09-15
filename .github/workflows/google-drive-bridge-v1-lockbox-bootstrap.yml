@@ -170,8 +170,33 @@ jobs:
           echo 'required=true' >> "$GITHUB_OUTPUT"
           echo 'create=false' >> "$GITHUB_OUTPUT"
 
+      - name: Check dedicated secret reader binding
+        id: binding
+        shell: bash
+        env:
+          CREATE_IF_MISSING: ${{ steps.project.outputs.create_if_missing }}
+          CREATE_NEW: ${{ steps.change.outputs.create }}
+          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          DEPLOYER_ID: ${{ steps.lockbox.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          if [[ "$CREATE_IF_MISSING" != true ]]; then
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ "$CREATE_NEW" == true || -z "$SECRET_ID" ]]; then
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/access-before.json"
+          if jq -e --arg id "$DEPLOYER_ID" '.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/access-before.json" >/dev/null; then
+            echo 'required=false' >> "$GITHUB_OUTPUT"
+          else
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Grant temporary folder admin for secret write
-        if: steps.change.outputs.required == 'true'
+        if: steps.change.outputs.required == 'true' || steps.binding.outputs.required == 'true'
         shell: bash
         env:
           FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
@@ -207,19 +232,47 @@ jobs:
               < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new-secret.json"
             FINAL_SECRET_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/new-secret.json")"
             test -n "$FINAL_SECRET_ID"
-            yc lockbox secret list-versions --id "$FINAL_SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/new-versions.json"
-            VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/new-versions.json")"
+            VERSION=''
+            for attempt in $(seq 1 20); do
+              yc lockbox secret list-versions --id "$FINAL_SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/new-versions.json"
+              VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/new-versions.json")"
+              [[ -n "$VERSION" ]] && break
+              sleep 2
+            done
           else
             test -n "$FINAL_SECRET_ID"
-            test -n "$BASE_VERSION"
-            yc lockbox secret add-version --id "$FINAL_SECRET_ID" --base-version-id "$BASE_VERSION" \
-              --description 'Google Drive Bridge Protocol v1 project-isolated credential' \
-              --payload - --format json --no-user-output < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new.json"
+            if [[ -n "$BASE_VERSION" ]]; then
+              yc lockbox secret add-version --id "$FINAL_SECRET_ID" --base-version-id "$BASE_VERSION" \
+                --description 'Google Drive Bridge Protocol v1 project-isolated credential' \
+                --payload - --format json --no-user-output < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new.json"
+            else
+              yc lockbox secret add-version --id "$FINAL_SECRET_ID" \
+                --description 'Google Drive Bridge Protocol v1 project-isolated credential' \
+                --payload - --format json --no-user-output < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new.json"
+            fi
             VERSION="$(jq -r '.id//.response.id//empty' "$RUNNER_TEMP/new.json")"
           fi
           test -n "$VERSION"
           echo "secret_id=$FINAL_SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Ensure dedicated Birzha deployer payload access
+        if: steps.project.outputs.create_if_missing == 'true' && steps.binding.outputs.required == 'true'
+        shell: bash
+        env:
+          EXISTING_SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          NEW_SECRET_ID: ${{ steps.version.outputs.secret_id }}
+          DEPLOYER_ID: ${{ steps.lockbox.outputs.deployer_id }}
+        run: |
+          set -euo pipefail
+          SECRET_ID="$EXISTING_SECRET_ID"
+          [[ -n "$NEW_SECRET_ID" ]] && SECRET_ID="$NEW_SECRET_ID"
+          test -n "$SECRET_ID"
+          yc lockbox secret add-access-binding --id "$SECRET_ID" \
+            --service-account-id "$DEPLOYER_ID" --role lockbox.payloadViewer
+          yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/access-after.json"
+          jq -e --arg id "$DEPLOYER_ID" '.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/access-after.json" >/dev/null
+          echo 'BIRZHA_BRIDGE_V1_DEPLOYER_PAYLOAD_VIEWER=PASS'
 
       - name: Verify final Lockbox v1 key
         shell: bash
@@ -234,7 +287,7 @@ jobs:
           SECRET_ID="$EXISTING_SECRET_ID"
           VERSION="$EXISTING_VERSION"
           if [[ "$REQUIRED" == true ]]; then
-            SECRET_ID="$NEW_SECRET_ID"
+            [[ -n "$NEW_SECRET_ID" ]] && SECRET_ID="$NEW_SECRET_ID"
             VERSION="$NEW_VERSION"
           fi
           test -n "$SECRET_ID"
@@ -247,7 +300,7 @@ jobs:
           echo 'BRIDGE_V1_LOCKBOX_BOOTSTRAP=PASS'
 
       - name: Revoke temporary folder admin
-        if: always() && steps.change.outputs.required == 'true'
+        if: always() && (steps.change.outputs.required == 'true' || steps.binding.outputs.required == 'true')
         shell: bash
         env:
           FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
@@ -257,4 +310,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json" "$RUNNER_TEMP/new-secret.json" "$RUNNER_TEMP/new-versions.json"
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json" "$RUNNER_TEMP/new-secret.json" "$RUNNER_TEMP/new-versions.json" "$RUNNER_TEMP/access-before.json" "$RUNNER_TEMP/access-after.json"
