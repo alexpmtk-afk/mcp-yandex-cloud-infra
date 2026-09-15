@@ -75,7 +75,7 @@ jobs:
             chmod 600 "$output_file"
           }
           resolve_key marketplaces-mcp-test marketplaces-mcp-api-credentials "$RUNNER_TEMP/marketplaces-secret"
-          resolve_key birzha-mcp-forecast-test birzha-mcp-forecast-test-auth "$RUNNER_TEMP/birzha-secret"
+          resolve_key birzha-mcp-forecast-test birzha-mcp-forecast-drive-bridge-v1 "$RUNNER_TEMP/birzha-secret"
           echo 'CROSS_PROJECT_CREDENTIAL_RESOLUTION=PASS'
 
       - name: Run concurrent isolation acceptance
