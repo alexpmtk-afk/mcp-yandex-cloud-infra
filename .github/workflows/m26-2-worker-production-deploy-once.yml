@@ -25,6 +25,7 @@ env:
   PUBLIC_SHA: b6ce037915ee993f2758f2ff6b29341f15554308
   PUBLIC_HOSTS: d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net,d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net:*
   PUBLIC_ORIGINS: https://chatgpt.com
+  MCP_URL: https://d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net/mcp
   WORKER_ID: bbamdg0po6fkukhod2e9
   TIMER_ID: a1s4ho32v7dha59aeu60
   BRIDGE_URL: https://script.google.com/macros/s/AKfycbxRqmudGWqwCSgEuikPi23pe9YjqK5wfSk4syldQQmI9cDMxcYfKz6DzftRnSgGm69H9g/exec
@@ -37,7 +38,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 20
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -134,7 +135,84 @@ jobs:
           rc=$?; set -e
           test "$rc" = 0 || { cat "$RUNNER_TEMP/zero.txt"; exit "$rc"; }
           echo 'M26_2_ZERO_DRIFT=PASS'
+      - name: First real SBER forecast through production MCP
+        if: github.event.head_commit.message == 'ops: create first real SBER forecast once'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check 'mcp==2.1.1' >/dev/null
+          T="$(cat "$RUNNER_TEMP/iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${T}" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${BRIDGE_SECRET_ID}/payload?versionId=${BRIDGE_SECRET_VERSION}" \
+            -o "$RUNNER_TEMP/mcp-secret.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'mcp-secret.json'
+          d=json.loads(p.read_text())
+          values={str(e.get('key')):e.get('textValue') for e in d.get('entries',[])}
+          token=values.get('bearer_token')
+          assert token and len(token) >= 32
+          print(f'::add-mask::{token}')
+          (Path(os.environ['RUNNER_TEMP'])/'mcp-bearer').write_text(token)
+          PY
+          python - <<'PY'
+          import asyncio, json, os
+          from pathlib import Path
+          import httpx2
+          from mcp import ClientSession
+          from mcp.client.streamable_http import streamable_http_client
+
+          def unpack(result):
+              if bool(getattr(result, 'isError', False) or getattr(result, 'is_error', False)):
+                  raise RuntimeError(f'MCP tool error: {result}')
+              structured=getattr(result,'structuredContent',None)
+              if structured is None:
+                  structured=getattr(result,'structured_content',None)
+              if structured is not None:
+                  return structured
+              for item in getattr(result,'content',[]) or []:
+                  text=getattr(item,'text',None)
+                  if text:
+                      try: return json.loads(text)
+                      except json.JSONDecodeError: pass
+              raise RuntimeError('MCP tool returned no structured JSON')
+
+          async def main():
+              token=(Path(os.environ['RUNNER_TEMP'])/'mcp-bearer').read_text()
+              async with httpx2.AsyncClient(
+                  headers={'Authorization':f'Bearer {token}','Origin':'https://chatgpt.com'},
+                  timeout=httpx2.Timeout(30.0, read=120.0),
+              ) as http_client:
+                  async with streamable_http_client(os.environ['MCP_URL'], http_client=http_client) as (read_stream, write_stream):
+                      async with ClientSession(read_stream, write_stream) as session:
+                          init=await session.initialize()
+                          print('FIRST_MCP_SERVER='+json.dumps({'name':init.serverInfo.name,'version':init.serverInfo.version},sort_keys=True))
+                          snap=unpack(await session.call_tool('market.snapshot',arguments={'symbol':'SBER'}))
+                          summary={
+                              'symbol':snap.get('symbol'),'secid':snap.get('secid'),'as_of':snap.get('as_of'),
+                              'data_quality':snap.get('data_quality'),'warnings':snap.get('warnings') or [],
+                              'quality_contract':snap.get('quality_contract') or {},
+                          }
+                          print('FIRST_REAL_SNAPSHOT='+json.dumps(summary,ensure_ascii=False,sort_keys=True))
+                          if snap.get('data_quality') != 'PASS' or (snap.get('quality_contract') or {}).get('status') != 'PASS':
+                              print('FIRST_REAL_FORECAST_CREATE=SKIPPED_DEGRADED_DATA')
+                              return
+                          created=unpack(await session.call_tool('forecast.create',arguments={'symbol':'SBER'}))
+                          fc=created['forecast']; journal=created['journal']
+                          assert created.get('storage_scope')=='distributed'
+                          assert journal.get('status') in {'APPENDED','DUPLICATE_IDENTICAL'}
+                          assert fc.get('validation_status')=='UNVALIDATED_BASELINE'
+                          got=unpack(await session.call_tool('forecast.get',arguments={'forecast_id':fc['forecast_id']}))
+                          assert got.get('forecast_id')==fc['forecast_id']
+                          assert got==fc
+                          print('FIRST_REAL_FORECAST='+json.dumps(fc,ensure_ascii=False,sort_keys=True))
+                          print('FIRST_REAL_FORECAST_JOURNAL='+json.dumps(journal,sort_keys=True))
+                          print('FIRST_REAL_FORECAST_READBACK=PASS')
+          asyncio.run(main())
+          PY
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/state.json" "$RUNNER_TEMP/timer.json" "$RUNNER_TEMP/zero.txt"
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/state.json" "$RUNNER_TEMP/timer.json" "$RUNNER_TEMP/zero.txt" "$RUNNER_TEMP/mcp-secret.json" "$RUNNER_TEMP/mcp-bearer"
