@@ -1,0 +1,63 @@
+name: Inspect Yandex Access Policy Chain
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/inspect-yandex-access-policy-chain.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+      - name: Inspect folder cloud organization policy bindings
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          CLOUD_JSON="$(yc resource-manager cloud get "$CLOUD_ID" --format json --no-user-output)"
+          echo "$CLOUD_JSON" > "$RUNNER_TEMP/cloud.json"
+          ORG_ID="$(jq -r '.organization_id // .organizationId // empty' "$RUNNER_TEMP/cloud.json")"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          echo "cloud=$CLOUD_ID folder=$FOLDER_ID organization=${ORG_ID:-UNKNOWN}"
+          echo '--- FOLDER_ACCESS_POLICIES ---'
+          yc resource-manager folder list-access-policy-bindings "$FOLDER_ID" --format json --no-user-output || true
+          echo '--- CLOUD_ACCESS_POLICIES ---'
+          yc resource-manager cloud list-access-policy-bindings "$CLOUD_ID" --format json --no-user-output || true
+          echo '--- ORGANIZATION_ACCESS_POLICIES ---'
+          if [[ -n "$ORG_ID" ]]; then
+            yc organization-manager organization list-access-policy-bindings "$ORG_ID" --format json --no-user-output || true
+          else
+            yc organization-manager organization list --format json --no-user-output || true
+          fi
+          echo '--- RELEVANT_SUPPORTED_POLICY_TEMPLATES ---'
+          yc iam access-policy-template list --format json --no-user-output 2>/dev/null \
+            | jq '[.[] | select(((.id//"")|ascii_downcase|test("storage|container|registry|mutation|write|network")))]' || true
+          echo 'ACCESS_POLICY_CHAIN_DIAGNOSTIC=PASS'
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/cloud.json"
