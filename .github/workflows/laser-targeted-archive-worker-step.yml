@@ -1,0 +1,178 @@
+name: Laser Master Targeted Archive Worker Step
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/control/run-laser-targeted-worker-step.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-archive-queue-worker
+  cancel-in-progress: false
+
+jobs:
+  targeted-step:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+
+      - name: Authenticate and resolve live MCP
+        id: live
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          yc config profile create laser-targeted-worker || true
+          yc config set service-account-key "$KEY"
+
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          test -n "$SECRET_ID"
+          test -n "$VERSION_ID"
+          test -n "$DOMAIN"
+
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Verify checkpoint, process exactly one targeted step, verify no WB call
+        shell: bash
+        timeout-minutes: 10
+        env:
+          MCP_URL: ${{ steps.live.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -u - <<'PY'
+          import itertools
+          import json
+          import os
+          import httpx
+
+          JOB_ID = 'wb-finance-wb_laser_master-2026'
+          EXPECTED_REPORT_ID = 743994450
+          EXPECTED_COMPLETED = 23
+
+          def unpack(response):
+              response.raise_for_status()
+              for line in response.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return response.json() if response.text.strip() else None
+
+          timeout = httpx.Timeout(connect=15.0, read=540.0, write=30.0, pool=15.0)
+          headers0 = {
+              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+          ids = itertools.count(1)
+          with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+              response = client.post(os.environ['MCP_URL'], headers=headers0, json={
+                  'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
+                      'protocolVersion': '2025-06-18', 'capabilities': {},
+                      'clientInfo': {'name': 'laser-targeted-archive-worker-step', 'version': '1'}
+                  }
+              })
+              init = unpack(response)
+              assert init and 'result' in init, init
+              headers = dict(headers0)
+              sid = response.headers.get('mcp-session-id')
+              if sid:
+                  headers['Mcp-Session-Id'] = sid
+              headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion', '2025-06-18')
+              ready = client.post(os.environ['MCP_URL'], headers=headers, json={
+                  'jsonrpc': '2.0', 'method': 'notifications/initialized'
+              })
+              assert ready.status_code in (200, 202), ready.status_code
+
+              def tool(name, arguments):
+                  response = client.post(os.environ['MCP_URL'], headers=headers, json={
+                      'jsonrpc': '2.0', 'id': next(ids), 'method': 'tools/call',
+                      'params': {'name': name, 'arguments': arguments}
+                  })
+                  data = unpack(response)
+                  assert data and 'result' in data, (name, data)
+                  result = data['result']
+                  if result.get('isError'):
+                      raise RuntimeError(f'{name} failed: {result}')
+                  text = next((item.get('text') for item in result.get('content', []) if item.get('type') == 'text'), None)
+                  if text is None:
+                      raise RuntimeError(f'{name} returned no text')
+                  return json.loads(text)
+
+              before = tool('marketplace_archive_job_status', {'job_id': JOB_ID})
+              completed_before = len(before.get('completed_report_ids') or [])
+              assert before.get('ok') is True, before
+              assert before.get('job_id') == JOB_ID, before
+              assert int(before.get('report_index') or -1) == EXPECTED_COMPLETED, before
+              assert completed_before == EXPECTED_COMPLETED, before
+              assert str(before.get('finalize_phase') or '') == 'UPLOAD_ANNUAL', before
+              assert int(before.get('finalize_report_id') or 0) == EXPECTED_REPORT_ID, before
+              assert not before.get('last_error'), before
+              provider_calls_before = int(before.get('provider_calls') or 0)
+              print('CHECKPOINT=PASS'
+                    + ' completed=' + str(completed_before)
+                    + ' report=' + str(before.get('finalize_report_id'))
+                    + ' finalize=' + str(before.get('finalize_phase'))
+                    + ' provider_calls=' + str(provider_calls_before), flush=True)
+
+              step = tool('marketplace_archive_worker_step', {'job_id': JOB_ID})
+              assert step.get('ok') is True, step
+              assert step.get('job_id') == JOB_ID, step
+              print('TARGET_STEP_ACTION=' + str(step.get('action', '')), flush=True)
+              print('TARGET_STEP_STATUS=' + str(step.get('status', '')), flush=True)
+              print('TARGET_STEP_CONFIRMED_BYTES=' + str(step.get('confirmed_bytes', '')), flush=True)
+              print('TARGET_STEP_ANNUAL_BYTES=' + str(step.get('annual_bytes', '')), flush=True)
+              print('TARGET_STEP_PROGRESS=' + str(step.get('progress_percent', '')), flush=True)
+
+              after = tool('marketplace_archive_job_status', {'job_id': JOB_ID})
+              assert after.get('ok') is True, after
+              provider_calls_after = int(after.get('provider_calls') or 0)
+              assert provider_calls_after == provider_calls_before, (
+                  'provider_calls changed during UPLOAD_ANNUAL targeted step',
+                  provider_calls_before,
+                  provider_calls_after,
+              )
+              completed_after = len(after.get('completed_report_ids') or [])
+              print('POST_STATUS=' + str(after.get('status')), flush=True)
+              print('POST_COMPLETED=' + str(completed_after), flush=True)
+              print('POST_REPORT_INDEX=' + str(after.get('report_index')), flush=True)
+              print('POST_FINALIZE=' + str(after.get('finalize_phase')), flush=True)
+              print('POST_FINALIZE_REPORT=' + str(after.get('finalize_report_id')), flush=True)
+              print('POST_PROVIDER_CALLS=' + str(provider_calls_after), flush=True)
+              print('POST_LAST_ERROR=' + str(after.get('last_error')), flush=True)
+          PY
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bearer"
