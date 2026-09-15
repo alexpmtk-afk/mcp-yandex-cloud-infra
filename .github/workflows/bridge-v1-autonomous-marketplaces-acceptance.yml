@@ -1,0 +1,41 @@
+name: Bridge v1 autonomous Marketplaces acceptance
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bridge-v1-autonomous-marketplaces-acceptance.yml'
+
+permissions:
+  contents: read
+  actions: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 40
+    env:
+      GH_TOKEN: ${{ github.token }}
+      BRIDGE_URL: ${{ vars.MARKETPLACES_GDRIVE_BRIDGE_V1_URL }}
+    steps:
+      - name: Dispatch and watch Marketplaces acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -n "$BRIDGE_URL"
+          [[ "$BRIDGE_URL" == https://script.google.com/macros/s/*/exec ]]
+          REPO="$GITHUB_REPOSITORY"
+          WF='marketplaces-drive-bridge-v1-acceptance.yml'
+          BEFORE="$(gh run list --repo "$REPO" --workflow "$WF" --event workflow_dispatch --limit 20 --json databaseId --jq 'map(.databaseId)|max // 0')"
+          gh workflow run "$WF" --repo "$REPO" --ref main -f "bridge_url=$BRIDGE_URL"
+          RUN_ID=''
+          for attempt in $(seq 1 60); do
+            RUN_ID="$(gh run list --repo "$REPO" --workflow "$WF" --event workflow_dispatch --limit 20 --json databaseId --jq --argjson before "$BEFORE" '[.[]|select(.databaseId > $before)]|map(.databaseId)|max // empty')"
+            [[ -n "$RUN_ID" ]] && break
+            sleep 2
+          done
+          test -n "$RUN_ID"
+          echo "MARKETPLACES_ACCEPTANCE_RUN_ID=$RUN_ID"
+          gh run watch "$RUN_ID" --repo "$REPO" --exit-status
+          echo 'AUTONOMOUS_MARKETPLACES_ACCEPTANCE=PASS'
