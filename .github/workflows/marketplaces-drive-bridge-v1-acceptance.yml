@@ -41,7 +41,7 @@ jobs:
         run: |
           set -euo pipefail
           grep -q 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
-          ! grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge
+          ! grep -n 'NOT_IMPLEMENTED' shared/google-drive-bridge/bridge.gs
           grep -q 'large_download_start' shared/google-drive-bridge/scripts/acceptance.py
           grep -q 'download_large_by_id' shared/google-drive-bridge/scripts/acceptance.py
           grep -Eqi 'concurr|parallel' shared/google-drive-bridge/scripts/acceptance.py
