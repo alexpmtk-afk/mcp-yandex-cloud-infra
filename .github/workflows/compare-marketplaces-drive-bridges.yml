@@ -7,11 +7,6 @@ on:
     paths:
       - '.github/workflows/compare-marketplaces-drive-bridges.yml'
       - 'shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3.py'
-  pull_request:
-    branches: [main]
-    paths:
-      - '.github/workflows/compare-marketplaces-drive-bridges.yml'
-      - 'shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3.py'
   workflow_dispatch:
 
 permissions:
@@ -42,6 +37,9 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet 'httpx>=0.27,<1'
           mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tgz" || \
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
             https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
             -o "$RUNNER_TEMP/yc.tgz"
