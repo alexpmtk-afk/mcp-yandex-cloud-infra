@@ -10,7 +10,7 @@ env:
   PROJECT_ID: birzha
   EXPECTED_ROOT_ID: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
   EXPECTED_BRIDGE_RELEASE: 1.0.0
-  LOCKBOX_NAME: birzha-mcp-forecast-test-auth
+  LOCKBOX_NAME: birzha-mcp-forecast-drive-bridge-v1
   LOCKBOX_KEY: gdrive_bridge_v1_secret
 
 jobs:
@@ -37,14 +37,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          for f in \
-            .github/workflows/birzha-drive-bridge-v1-bootstrap.yml \
-            .github/workflows/birzha-drive-bridge-v1-acceptance.yml; do
-            test -f "$f"
-            grep -q 'workflow_dispatch:' "$f"
-            grep -q "LOCKBOX_NAME: $LOCKBOX_NAME" "$f"
-            grep -q "LOCKBOX_KEY: $LOCKBOX_KEY" "$f"
-          done
+          test -f .github/workflows/google-drive-bridge-v1-lockbox-bootstrap.yml
+          test -f .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -q 'workflow_dispatch:' .github/workflows/google-drive-bridge-v1-lockbox-bootstrap.yml
+          grep -q "LOCKBOX_NAME='birzha-mcp-forecast-drive-bridge-v1'" .github/workflows/google-drive-bridge-v1-lockbox-bootstrap.yml
+          grep -q "LOCKBOX_NAME: $LOCKBOX_NAME" .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -q "LOCKBOX_KEY: $LOCKBOX_KEY" .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q "EXPECTED_BRIDGE_RELEASE: $EXPECTED_BRIDGE_RELEASE" .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           echo 'BIRZHA_READINESS_WORKFLOW_ISOLATION=PASS'
 
@@ -54,7 +52,7 @@ jobs:
           set -euo pipefail
           grep -q 'gdrive_bridge_v1_secret' terraform/birzha_test/m24_autonomous_worker.tf
           grep -q 'm25_birzha_bridge_v1_url' terraform/birzha_test/m24_autonomous_worker.tf
-          grep -q 'project Lockbox' terraform/birzha_test/m25_market_mirror.tf
+          grep -q 'Dedicated Birzha Lockbox secret id' terraform/birzha_test/m25_market_mirror.tf
           echo 'BIRZHA_V1_RUNTIME_BINDING=PASS'
 
       - name: Verify complete Sheets acceptance is a hard prerequisite
