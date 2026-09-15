@@ -1,0 +1,266 @@
+name: M26 Worker Production Deploy Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m26-worker-production-deploy-once.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: birzha-m26-worker-production-deploy-once
+  cancel-in-progress: false
+
+env:
+  TF_DIR: terraform/birzha_test
+  DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+  TARGET_APP_SHA: bca9de131e806b1a77253a1c1249bd60e634b741
+  TARGET_WORKER_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:70cf6255213807a6e1446c3057867fc8827277f9112efc0d783995680b644dca
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+
+      - name: Mint Yandex IAM token
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
+          R="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          python - "$J" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('ref')=='refs/heads/main'
+          assert c.get('environment')=='test'
+          print('M26_DEPLOY_OIDC=PASS')
+          PY
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth-grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          test -n "$T"; echo "::add-mask::$T"; umask 077; printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
+
+      - name: Install yc and initialize Terraform
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tar.gz"
+          tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir="$TF_DIR" validate
+
+      - name: Read and protect current production configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'state-before.json'
+          s=json.loads(p.read_text())
+          resources=s['values']['root_module']['resources']
+          by={r['address']:r['values'] for r in resources}
+          public=by['yandex_serverless_container.mcp[0]']
+          worker=by['yandex_serverless_container.orchestrator_worker[0]']
+          timer=by['yandex_function_trigger.orchestrator_timer[0]']
+          pi=public['image'][0]; pe=pi.get('environment') or {}
+          wi=worker['image'][0]; we=wi.get('environment') or {}
+          assert we.get('BIRZHA_MARKET_MIRROR_REQUIRED')=='true'
+          assert we.get('BIRZHA_MARKET_MIRROR_PROJECT_ID')=='birzha'
+          assert we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')
+          assert we.get('BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID')
+          assert 1 <= int(we.get('BIRZHA_MARKET_MIRROR_CHUNK_ROWS') or '0') <= 1000
+          secrets=worker.get('secrets') or []
+          matches=[x for x in secrets if x.get('environment_variable')=='BIRZHA_MARKET_MIRROR_BRIDGE_SECRET']
+          assert len(matches)==1, matches
+          sec=matches[0]
+          assert sec.get('id') and sec.get('version_id')
+          assert 'yandex_lockbox_secret_iam_member.runtime_market_mirror_v1[0]' in by
+          assert 'yandex_lockbox_secret_iam_member.runtime_market_mirror[0]' not in by
+          assert 'yandex_resourcemanager_folder_iam_member.m24_observability_logging_reader[0]' not in by
+          assert 'yandex_resourcemanager_folder_iam_member.m24_observability_monitoring_viewer[0]' not in by
+          vals={
+            'PUBLIC_IMAGE':pi['url'],
+            'PUBLIC_SHA':pe['BIRZHA_SOURCE_COMMIT'],
+            'PUBLIC_HOSTS':pe.get('MCP_ALLOWED_HOSTS',''),
+            'PUBLIC_ORIGINS':pe.get('MCP_ALLOWED_ORIGINS',''),
+            'WORKER_ID':worker['id'],
+            'TIMER_ID':timer['id'],
+            'OLD_WORKER_IMAGE':wi['url'],
+            'OLD_WORKER_SHA':we['BIRZHA_SOURCE_COMMIT'],
+            'BRIDGE_URL':we['BIRZHA_MARKET_MIRROR_BRIDGE_URL'],
+            'BRIDGE_ROOT':we['BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID'],
+            'BRIDGE_CHUNK_ROWS':we['BIRZHA_MARKET_MIRROR_CHUNK_ROWS'],
+            'BRIDGE_SECRET_ID':sec['id'],
+            'BRIDGE_SECRET_VERSION':sec['version_id'],
+          }
+          for k,v in vals.items():
+            v=str(v)
+            assert '\n' not in v and '\r' not in v
+            with open(os.environ['GITHUB_ENV'],'a',encoding='utf-8') as f: f.write(f'{k}={v}\n')
+          print('M26_CURRENT_PRODUCTION_PROTECTED=PASS')
+          print('M26_BRIDGE_V1_ISOLATED=PASS')
+          PY
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless trigger get "$TIMER_ID" --format=json > "$RUNNER_TEMP/timer-before.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'timer-before.json').read_text())
+          assert d.get('status')=='ACTIVE', d.get('status')
+          assert d.get('id')==os.environ['TIMER_ID']
+          assert os.environ['WORKER_ID'] in json.dumps(d)
+          print('M26_TIMER_ACTIVE_BEFORE=PASS')
+          PY
+
+      - name: Strict worker-only plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          terraform -chdir="$TF_DIR" plan -input=false -no-color -out="$RUNNER_TEMP/plan" \
+            -var="mcp_image_url=${PUBLIC_IMAGE}" \
+            -var="source_commit_sha=${PUBLIC_SHA}" \
+            -var="mcp_allowed_hosts=${PUBLIC_HOSTS}" \
+            -var="mcp_allowed_origins=${PUBLIC_ORIGINS}" \
+            -var="m24_worker_image_url=${TARGET_WORKER_IMAGE}" \
+            -var="m24_worker_source_sha=${TARGET_APP_SHA}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" \
+            -var="m24_observability_probe_enabled=false" \
+            -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}" \
+            -var="m25_birzha_bridge_v1_required=true" \
+            -var="m25_birzha_bridge_v1_root_folder_id=${BRIDGE_ROOT}" \
+            -var="m25_birzha_bridge_v1_secret_id=${BRIDGE_SECRET_ID}" \
+            -var="m25_birzha_bridge_v1_secret_version_id=${BRIDGE_SECRET_VERSION}" \
+            -var="m25_birzha_bridge_v1_chunk_rows=${BRIDGE_CHUNK_ROWS}"
+          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/plan" > "$RUNNER_TEMP/plan.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'plan.json').read_text())
+          changed=[]
+          for r in p.get('resource_changes') or []:
+              a=(r.get('change') or {}).get('actions') or []
+              if a not in (['no-op'],['read']): changed.append((r.get('address'),a))
+          expected=[('yandex_serverless_container.orchestrator_worker[0]',['update'])]
+          assert changed==expected, changed
+          print('M26_STRICT_WORKER_ONLY_PLAN=PASS')
+          PY
+
+      - name: Apply saved worker-only plan
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/plan"
+          echo 'M26_WORKER_DEPLOY_APPLY=PASS'
+
+      - name: Verify new worker and protected services
+        shell: bash
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-after.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-after.json').read_text())
+          rs=s['values']['root_module']['resources']; by={r['address']:r['values'] for r in rs}
+          public=by['yandex_serverless_container.mcp[0]']; pi=public['image'][0]; pe=pi.get('environment') or {}
+          worker=by['yandex_serverless_container.orchestrator_worker[0]']; wi=worker['image'][0]; we=wi.get('environment') or {}
+          assert worker['id']==os.environ['WORKER_ID']
+          assert wi['url']==os.environ['TARGET_WORKER_IMAGE']
+          assert we['BIRZHA_SOURCE_COMMIT']==os.environ['TARGET_APP_SHA']
+          assert we.get('BIRZHA_MARKET_MIRROR_REQUIRED')=='true'
+          assert we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')==os.environ['BRIDGE_URL']
+          assert we.get('BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID')==os.environ['BRIDGE_ROOT']
+          assert we.get('BIRZHA_MARKET_MIRROR_PROJECT_ID')=='birzha'
+          assert we.get('BIRZHA_MARKET_MIRROR_CHUNK_ROWS')==os.environ['BRIDGE_CHUNK_ROWS']
+          secrets=worker.get('secrets') or []
+          m=[x for x in secrets if x.get('environment_variable')=='BIRZHA_MARKET_MIRROR_BRIDGE_SECRET']
+          assert len(m)==1 and m[0].get('id')==os.environ['BRIDGE_SECRET_ID'] and m[0].get('version_id')==os.environ['BRIDGE_SECRET_VERSION']
+          assert pi['url']==os.environ['PUBLIC_IMAGE']
+          assert pe['BIRZHA_SOURCE_COMMIT']==os.environ['PUBLIC_SHA']
+          assert pe.get('MCP_ALLOWED_HOSTS','')==os.environ['PUBLIC_HOSTS']
+          assert pe.get('MCP_ALLOWED_ORIGINS','')==os.environ['PUBLIC_ORIGINS']
+          assert by['yandex_function_trigger.orchestrator_timer[0]']['id']==os.environ['TIMER_ID']
+          assert 'yandex_lockbox_secret_iam_member.runtime_market_mirror[0]' not in by
+          print('M26_WORKER_IMAGE_ACTIVE_IN_STATE=PASS')
+          print('M26_PUBLIC_MCP_UNCHANGED=PASS')
+          print('M26_BRIDGE_V1_UNCHANGED=PASS')
+          PY
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless trigger get "$TIMER_ID" --format=json > "$RUNNER_TEMP/timer-after.json"
+          YC_IAM_TOKEN="$TOKEN" "$RUNNER_TEMP/yc/yc" serverless container revision list --container-id="$WORKER_ID" --format=json > "$RUNNER_TEMP/revisions.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          base=Path(os.environ['RUNNER_TEMP'])
+          t=json.loads((base/'timer-after.json').read_text())
+          assert t.get('status')=='ACTIVE'
+          assert os.environ['WORKER_ID'] in json.dumps(t)
+          d=json.loads((base/'revisions.json').read_text()); rows=d if isinstance(d,list) else (d.get('revisions') or d.get('containerRevisions') or [])
+          rows=[r for r in rows if isinstance(r,dict)]
+          assert rows
+          rows.sort(key=lambda r:str(r.get('created_at') or r.get('createdAt') or ''), reverse=True)
+          assert str(rows[0].get('status') or '')=='ACTIVE', rows[0].get('status')
+          print('M26_TIMER_ACTIVE_AFTER=PASS')
+          print('M26_NEW_WORKER_REVISION_ACTIVE=PASS')
+          PY
+
+      - name: Verify zero drift
+        shell: bash
+        run: |
+          set -euo pipefail
+          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
+          set +e
+          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color \
+            -var="mcp_image_url=${PUBLIC_IMAGE}" \
+            -var="source_commit_sha=${PUBLIC_SHA}" \
+            -var="mcp_allowed_hosts=${PUBLIC_HOSTS}" \
+            -var="mcp_allowed_origins=${PUBLIC_ORIGINS}" \
+            -var="m24_worker_image_url=${TARGET_WORKER_IMAGE}" \
+            -var="m24_worker_source_sha=${TARGET_APP_SHA}" \
+            -var="m24_infra_oidc_bootstrap_enabled=false" \
+            -var="m24_observability_probe_enabled=false" \
+            -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}" \
+            -var="m25_birzha_bridge_v1_required=true" \
+            -var="m25_birzha_bridge_v1_root_folder_id=${BRIDGE_ROOT}" \
+            -var="m25_birzha_bridge_v1_secret_id=${BRIDGE_SECRET_ID}" \
+            -var="m25_birzha_bridge_v1_secret_version_id=${BRIDGE_SECRET_VERSION}" \
+            -var="m25_birzha_bridge_v1_chunk_rows=${BRIDGE_CHUNK_ROWS}" > "$RUNNER_TEMP/zero.txt"
+          rc=$?; set -e
+          test "$rc" = 0 || { cat "$RUNNER_TEMP/zero.txt"; exit "$rc"; }
+          echo 'M26_ZERO_DRIFT=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/state-before.json" "$RUNNER_TEMP/state-after.json" "$RUNNER_TEMP/timer-before.json" "$RUNNER_TEMP/timer-after.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/plan" "$RUNNER_TEMP/plan.json" "$RUNNER_TEMP/zero.txt"
