@@ -11,6 +11,8 @@ on:
   push:
     branches:
       - bridge-v1-one-command-finish
+      - bridge-v1-windows-exec-fix
+      - bridge-v1-windows-exec-fix-v2
     paths:
       - 'tools/finish_bridge_v1.py'
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
@@ -53,6 +55,9 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
       - name: Parse owner command
         shell: pwsh
         run: |
@@ -68,3 +73,7 @@ jobs:
             exit 1
           }
           'BRIDGE_V1_OWNER_COMMAND_PARSE=PASS'
+      - name: Prove Python can execute Windows command shims
+        shell: pwsh
+        run: |
+          python -c "import sys; sys.path.insert(0, 'tools'); import finish_bridge_v1 as f; p=f.portable_run(['npx','--version'], capture=True); assert p.returncode == 0 and p.stdout.strip(); print('BRIDGE_V1_WINDOWS_NPX_EXEC=PASS')"

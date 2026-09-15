@@ -30,6 +30,42 @@ def die(message: str) -> None:
     raise RuntimeError(message)
 
 
+def portable_run(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    input_text: str | None = None,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Run external tools through their resolved executable path.
+
+    This is required on Windows where tools installed as command shims (notably
+    npx.cmd) may be discoverable by shutil.which / PowerShell Get-Command but a
+    direct subprocess CreateProcess('npx', ...) still raises WinError 2.
+    """
+    if not args:
+        die("Cannot run an empty command")
+    executable = shutil.which(str(args[0]))
+    if not executable:
+        die(f"Required executable is not available in PATH: {args[0]}")
+    resolved = [executable, *[str(x) for x in args[1:]]]
+    return subprocess.run(
+        resolved,
+        cwd=str(cwd) if cwd else None,
+        input=input_text,
+        text=True,
+        check=check,
+        capture_output=capture,
+    )
+
+
+# All helper calls in bootstrap_bridge_v1_apps_script.py resolve the module-level
+# run() dynamically. Replacing it here makes clasp/npx/gh execution portable on
+# Windows while preserving the same behavior on Linux/macOS.
+base.run = portable_run
+
+
 def gh(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
     return base.run_gh(args, capture=capture)
 
@@ -148,6 +184,7 @@ def main() -> int:
     runs: dict[str, int] = {}
     source_shas: dict[str, str] = {}
     temp_secret_names = [str(p["bootstrap_secret"]) for p in base.PROJECTS.values()]
+    created_temp_secret_names: set[str] = set()
     work_root = Path(tempfile.mkdtemp(prefix="bridge-v1-finish-"))
 
     try:
@@ -158,7 +195,9 @@ def main() -> int:
             records[project_id] = base.deploy_project(repo_root, work_root, project_id, project)
 
         for project_id, project in base.PROJECTS.items():
-            base.set_temp_secret(str(project["bootstrap_secret"]), records[project_id]["secret"])
+            secret_name = str(project["bootstrap_secret"])
+            base.set_temp_secret(secret_name, records[project_id]["secret"])
+            created_temp_secret_names.add(secret_name)
             base.set_environment_variable(
                 f"{project_id.upper()}_GDRIVE_BRIDGE_V1_URL",
                 records[project_id]["url"],
@@ -226,6 +265,8 @@ def main() -> int:
         return 0
     finally:
         for name in temp_secret_names:
+            if name not in created_temp_secret_names:
+                continue
             try:
                 base.delete_temp_secret(name)
                 print(f"Temporary GitHub secret {name}: DELETED")
