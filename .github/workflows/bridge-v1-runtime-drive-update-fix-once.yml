@@ -1,0 +1,50 @@
+name: Bridge v1 runtime Drive update fix once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/bridge-v1-runtime-drive-update-fix-once.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Patch Advanced Drive update signatures
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('shared/google-drive-bridge/bridge.gs')
+          s=p.read_text(encoding='utf-8')
+          reps={
+            "Drive.Files.update({trashed: true}, id, {fields: 'id,trashed'})":"Drive.Files.update({trashed: true}, id, null, {fields: 'id,trashed'})",
+            "Drive.Files.update({name: canonicalName}, fileId, {fields: 'id,name'})":"Drive.Files.update({name: canonicalName}, fileId, null, {fields: 'id,name'})",
+            "Drive.Files.update({trashed: true}, oldId, {fields: 'id,trashed'})":"Drive.Files.update({trashed: true}, oldId, null, {fields: 'id,trashed'})",
+          }
+          for old,new in reps.items():
+              if old not in s:
+                  raise SystemExit(f'expected pattern missing: {old}')
+              s=s.replace(old,new)
+          p.write_text(s,encoding='utf-8')
+          PY
+          grep -Fq "Drive.Files.update({trashed: true}, id, null, {fields: 'id,trashed'})" shared/google-drive-bridge/bridge.gs
+          grep -Fq "Drive.Files.update({name: canonicalName}, fileId, null, {fields: 'id,name'})" shared/google-drive-bridge/bridge.gs
+          grep -Fq "Drive.Files.update({trashed: true}, oldId, null, {fields: 'id,trashed'})" shared/google-drive-bridge/bridge.gs
+      - name: Commit runtime fix
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add shared/google-drive-bridge/bridge.gs
+          git diff --cached --quiet && exit 0
+          git commit -m 'Bridge v1: fix Advanced Drive update optional args'
+          git push origin HEAD:main
