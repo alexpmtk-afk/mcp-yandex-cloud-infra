@@ -5,6 +5,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
+$env:PYTHONUNBUFFERED = '1'
 
 $repo = 'alexpmtk-afk/mcp-yandex-cloud-infra'
 $tempRoot = Join-Path ([System.IO.Path]::GetTempPath()) ("bridge-v1-owner-" + [guid]::NewGuid().ToString('N'))
