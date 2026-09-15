@@ -170,6 +170,25 @@ def test_advertising_executor_fails_closed_on_partial_campaign_coverage(monkeypa
         ))
 
 
+def test_business_router_classifies_partial_advertising_coverage(monkeypatch):
+    monkeypatch.setattr(advertising, "_moscow_today", lambda: __import__("datetime").date(2026, 9, 15))
+    store = _seed_store(complete_campaign_coverage=False)
+    result = asyncio.run(execute_business_query(
+        {"_archive_store": store},
+        marketplace="wb",
+        seller="wb_novokshenov",
+        date_from="2026-09-01",
+        date_to="2026-09-02",
+        question="Сколько потратили на рекламу и какой был ROAS?",
+    ))
+    assert result["ok"] is False
+    assert result["error"] == "coverage_gap"
+    assert result["error_type"] == "coverage_gap"
+    assert result["retryable"] is False
+    resolution = (result.get("details") or {}).get("semantic_resolution") or {}
+    assert resolution.get("capability_id") == "advertising_performance"
+
+
 def test_advertising_executor_refuses_product_substitution(monkeypatch):
     monkeypatch.setattr(advertising, "_moscow_today", lambda: __import__("datetime").date(2026, 9, 15))
     store = _seed_store()
