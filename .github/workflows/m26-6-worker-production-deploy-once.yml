@@ -20,7 +20,7 @@ env:
   OIDC_AUDIENCE: https://github.com/alexpmtk-afk
   EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
   TARGET_APP_SHA: 301f4880f555b4d6fd7cbdc509fa8e99af19ff33
-  TARGET_WORKER_IMAGE: cr.yandex/crpp9oa07iqrm3kq22c0/birzha-forecast-worker@sha256:30eff4d01296cf9525c2d0f42572d8c24a16b597765e6b10468f9e027bb1f04f
+  TARGET_WORKER_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:d6dad1f3efc8687cb93f7a745bd480eddff8dbefabab384ff785b57cdae8823c
   PUBLIC_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:5db7e3b1bbd69ee0c797d1d9a5a9289633914ef9f360f3d0f45187cb219113fc
   PUBLIC_SHA: b6ce037915ee993f2758f2ff6b29341f15554308
   PUBLIC_HOSTS: d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net,d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net:*
