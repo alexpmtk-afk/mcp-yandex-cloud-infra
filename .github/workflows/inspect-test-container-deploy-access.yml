@@ -1,0 +1,53 @@
+name: Inspect TEST Container Deploy Access
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/inspect-test-container-deploy-access.yml"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install yc
+        run: |
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+      - name: Inspect access
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          chmod 600 "$KEY"
+          CI_SA="$(jq -r '.service_account_id // .serviceAccountId' "$KEY")"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID=b1gnd0dqoq3ljod88i8t
+          CONTAINER_ID=bba6lj5ggejtop0jl5k8
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          yc config set folder-id "$FOLDER_ID"
+          echo "CI_SA=$CI_SA"
+          echo '--- FOLDER ---'
+          yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json --no-user-output | jq --arg s "$CI_SA" '[.[]|select(.subject.id==$s)]'
+          echo '--- CLOUD ---'
+          yc resource-manager cloud list-access-bindings "$CLOUD_ID" --format json --no-user-output | jq --arg s "$CI_SA" '[.[]|select(.subject.id==$s)]'
+          echo '--- CONTAINER ---'
+          yc serverless container list-access-bindings --id "$CONTAINER_ID" --format json --no-user-output | jq --arg s "$CI_SA" '[.[]|select(.subject.id==$s)]' || true
+          echo '--- CONTAINER_METADATA ---'
+          yc serverless container get --id "$CONTAINER_ID" --format json --no-user-output | jq '{id,name,folder_id,status,created_at}'
+          echo 'CONTAINER_ACCESS_INSPECTION=PASS'
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/key.json"
