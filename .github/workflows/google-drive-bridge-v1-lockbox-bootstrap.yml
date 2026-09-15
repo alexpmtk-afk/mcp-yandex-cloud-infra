@@ -157,8 +157,8 @@ jobs:
           if [[ -n "$BASE_VERSION" ]]; then
             KEYS="$(jq -r --arg id "$BASE_VERSION" '.[]|select(.id==$id)|(.payload_entry_keys//[])[]?' "$RUNNER_TEMP/versions.json")"
             if grep -Fxq gdrive_bridge_v1_secret <<< "$KEYS"; then
-              CURRENT="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --no-user-output)"
-              echo "::add-mask::$CURRENT"
+              CURRENT="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --no-user-output 2>/dev/null || true)"
+              [[ -n "$CURRENT" ]] && echo "::add-mask::$CURRENT"
               if [[ -n "$CURRENT" && "$CURRENT" == "$TARGET" ]]; then
                 echo 'required=false' >> "$GITHUB_OUTPUT"
                 echo 'create=false' >> "$GITHUB_OUTPUT"
@@ -188,8 +188,8 @@ jobs:
             echo 'required=true' >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/access-before.json"
-          if jq -e --arg id "$DEPLOYER_ID" '.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/access-before.json" >/dev/null; then
+          if yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/access-before.json" 2>/dev/null \
+             && jq -e --arg id "$DEPLOYER_ID" '.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)' "$RUNNER_TEMP/access-before.json" >/dev/null; then
             echo 'required=false' >> "$GITHUB_OUTPUT"
           else
             echo 'required=true' >> "$GITHUB_OUTPUT"
