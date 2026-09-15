@@ -13,6 +13,7 @@ on:
       - bridge-v1-one-command-finish
       - bridge-v1-windows-exec-fix
       - bridge-v1-windows-exec-fix-v2
+      - bridge-v1-clasp-auth-fix
     paths:
       - 'tools/finish_bridge_v1.py'
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
@@ -32,6 +33,28 @@ jobs:
       - name: Compile end-to-end scripts
         run: |
           python -m py_compile tools/bootstrap_bridge_v1_apps_script.py tools/finish_bridge_v1.py
+      - name: Validate clasp named-user auth is fail-closed
+        shell: bash
+        run: |
+          python - <<'PY'
+          import json, subprocess, sys
+          sys.path.insert(0, 'tools')
+          import finish_bridge_v1 as f
+
+          no_auth = subprocess.CompletedProcess([], 0, stdout=json.dumps({'loggedIn': False, 'clientType': 'google-provided'}), stderr='')
+          assert f._clasp_login_state(no_auth) == (False, '')
+          yes_auth = subprocess.CompletedProcess([], 0, stdout=json.dumps({'loggedIn': True, 'email': 'owner@example.invalid'}), stderr='')
+          assert f._clasp_login_state(yes_auth) == (True, 'owner@example.invalid')
+
+          seen = {}
+          def fake_run(args, **kwargs):
+              seen['args'] = args
+              return subprocess.CompletedProcess(args, 0, stdout='', stderr='')
+          f.portable_run = fake_run
+          f.portable_clasp(['show-authorized-user', '--json'], capture=True, check=False)
+          assert seen['args'] == ['npx', '-y', f.base.CLASP_PACKAGE, 'show-authorized-user', '--user', f.base.CLASP_USER, '--json'], seen
+          print('BRIDGE_V1_CLASP_AUTH_FAIL_CLOSED=PASS')
+          PY
       - name: Validate final workflow chain
         shell: bash
         run: |
