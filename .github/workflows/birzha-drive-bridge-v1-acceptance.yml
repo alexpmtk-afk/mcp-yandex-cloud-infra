@@ -20,7 +20,7 @@ env:
   PROJECT_ID: birzha
   EXPECTED_ROOT_ID: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
   EXPECTED_BRIDGE_RELEASE: 1.0.0
-  LOCKBOX_NAME: birzha-mcp-forecast-test-auth
+  LOCKBOX_NAME: birzha-mcp-forecast-drive-bridge-v1
   LOCKBOX_KEY: gdrive_bridge_v1_secret
 
 concurrency:
