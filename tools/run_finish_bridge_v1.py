@@ -27,6 +27,7 @@ _original_bridge_health = finisher.base.bridge_health
 _original_prove_bootstrap_removed = finisher.base.prove_bootstrap_removed
 
 _TRANSIENT_HTTP_CODES = {404, 408, 425, 429, 500, 502, 503, 504}
+_PROPAGATION_TIMEOUT_SECONDS = 600
 
 
 def _is_transient_transport(exc: Exception) -> bool:
@@ -35,7 +36,7 @@ def _is_transient_transport(exc: Exception) -> bool:
     return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
 
 
-def _retry_transient_transport(call, *, label: str, project_id: str, timeout_seconds: int = 180):
+def _retry_transient_transport(call, *, label: str, project_id: str, timeout_seconds: int = _PROPAGATION_TIMEOUT_SECONDS):
     deadline = time.monotonic() + timeout_seconds
     attempt = 0
     last_exc: Exception | None = None
@@ -64,7 +65,7 @@ def install_script_properties_with_retry(
     token: str,
     project_id: str,
     secret: str,
-    timeout_seconds: int = 180,
+    timeout_seconds: int = _PROPAGATION_TIMEOUT_SECONDS,
 ):
     return _retry_transient_transport(
         lambda: _original_install_script_properties(url, token, project_id, secret),
@@ -78,7 +79,7 @@ def bridge_health_with_propagation_retry(
     url: str,
     project_id: str,
     secret: str,
-    timeout_seconds: int = 180,
+    timeout_seconds: int = _PROPAGATION_TIMEOUT_SECONDS,
 ):
     deadline = time.monotonic() + timeout_seconds
     last_exc: Exception | None = None
@@ -103,7 +104,7 @@ def bridge_health_with_propagation_retry(
 def prove_bootstrap_removed_with_retry(
     url: str,
     project_id: str,
-    timeout_seconds: int = 180,
+    timeout_seconds: int = _PROPAGATION_TIMEOUT_SECONDS,
 ):
     deadline = time.monotonic() + timeout_seconds
     last_exc: Exception | None = None
