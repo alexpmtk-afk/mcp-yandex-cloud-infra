@@ -213,7 +213,7 @@ function trashById_(p, cfg) {
   const id = cleanId_(p.file_id, 'file_id');
   const meta = rawMetadata_(id);
   if (!meta.trashed) assertFileInsideRoot_(id, cfg);
-  if (!meta.trashed) Drive.Files.update({trashed: true}, id, {fields: 'id,trashed'});
+  if (!meta.trashed) Drive.Files.update({trashed: true}, id, null, {fields: 'id,trashed'});
   return {file_id: id, trashed: true};
 }
 
@@ -285,13 +285,13 @@ function promoteFile_(folder, fileId, stageName, canonicalName, expectedBytes, e
     }
   }
 
-  if (m.name !== canonicalName) Drive.Files.update({name: canonicalName}, fileId, {fields: 'id,name'});
+  if (m.name !== canonicalName) Drive.Files.update({name: canonicalName}, fileId, null, {fields: 'id,name'});
   let previousTrashed = !oldId || oldId === fileId;
   if (oldId && oldId !== fileId) {
     const oldMeta = rawMetadata_(oldId);
     if (!oldMeta.trashed) {
       assertFileInsideRoot_(oldId, cfg);
-      Drive.Files.update({trashed: true}, oldId, {fields: 'id,trashed'});
+      Drive.Files.update({trashed: true}, oldId, null, {fields: 'id,trashed'});
     }
     previousTrashed = true;
   }
