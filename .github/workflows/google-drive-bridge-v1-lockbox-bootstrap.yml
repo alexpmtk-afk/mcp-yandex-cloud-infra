@@ -82,17 +82,49 @@ jobs:
           SECRET="$(cat "$RUNNER_TEMP/bridge-secret")"
           export SECRET
           python - <<'PY'
-          import json,os,urllib.request,uuid
-          body={'secret':os.environ['SECRET'],'project_id':os.environ['PROJECT'],'request_id':str(uuid.uuid4()),'action':'health','payload':{}}
-          req=urllib.request.Request(os.environ['BRIDGE_URL'],data=json.dumps(body).encode(),headers={'Content-Type':'application/json','Accept':'application/json'},method='POST')
-          with urllib.request.urlopen(req,timeout=60) as r: data=json.loads(r.read().decode())
-          assert data.get('ok') is True,data
-          assert int(data.get('protocol_version') or 0)==1,data
-          assert data.get('project_id')==os.environ['PROJECT'],data
-          result=data.get('result') or {}
-          assert result.get('bridge_release')=='1.0.0',data
-          assert result.get('root_id')==os.environ['ROOT_ID'],data
-          print('BRIDGE_V1_IDENTITY=PASS')
+          import json, os, socket, time, urllib.error, urllib.request, uuid
+
+          deadline = time.monotonic() + 180
+          attempt = 0
+          while True:
+              attempt += 1
+              body = {
+                  'secret': os.environ['SECRET'],
+                  'project_id': os.environ['PROJECT'],
+                  'request_id': str(uuid.uuid4()),
+                  'action': 'health',
+                  'payload': {},
+              }
+              req = urllib.request.Request(
+                  os.environ['BRIDGE_URL'],
+                  data=json.dumps(body).encode(),
+                  headers={'Content-Type': 'application/json', 'Accept': 'application/json'},
+                  method='POST',
+              )
+              try:
+                  with urllib.request.urlopen(req, timeout=60) as r:
+                      data = json.loads(r.read().decode())
+                  assert data.get('ok') is True, data
+                  assert int(data.get('protocol_version') or 0) == 1, data
+                  assert data.get('project_id') == os.environ['PROJECT'], data
+                  result = data.get('result') or {}
+                  assert result.get('bridge_release') == '1.0.0', data
+                  assert result.get('root_id') == os.environ['ROOT_ID'], data
+                  print('BRIDGE_V1_IDENTITY=PASS')
+                  break
+              except urllib.error.HTTPError as exc:
+                  transient = exc.code in (404, 408, 425, 429) or 500 <= exc.code < 600
+                  if not transient or time.monotonic() >= deadline:
+                      raise
+                  remaining = max(0, int(deadline - time.monotonic()))
+                  print(f'Bridge identity endpoint still propagating (attempt {attempt}, HTTP {exc.code}); waiting, {remaining}s left...')
+                  time.sleep(min(12, 2 + attempt))
+              except (urllib.error.URLError, TimeoutError, socket.timeout, ConnectionError) as exc:
+                  if time.monotonic() >= deadline:
+                      raise
+                  remaining = max(0, int(deadline - time.monotonic()))
+                  print(f'Bridge identity endpoint still propagating (attempt {attempt}, {type(exc).__name__}); waiting, {remaining}s left...')
+                  time.sleep(min(12, 2 + attempt))
           PY
 
       - name: Install Yandex Cloud CLI
