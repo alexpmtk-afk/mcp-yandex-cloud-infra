@@ -3,13 +3,8 @@
 
 Apps Script web-app deployments can briefly return HTTP 404/5xx while a new
 version propagates. This wrapper makes every deployment-bound transition
-resilient without weakening semantic checks:
-- bootstrap Script Properties installation retries only transient transport
-  failures and remains idempotent;
-- final Bridge health retries transient transport and short-lived previous
-  deployment responses;
-- bootstrap-removal proof retries while the previous deployment may still be
-  served.
+resilient without weakening semantic checks and reuses the exact deployment
+URL already recorded for each project after a downstream failure.
 """
 from __future__ import annotations
 
@@ -19,6 +14,7 @@ import time
 import urllib.error
 
 import finish_bridge_v1 as finisher
+import resume_bridge_v1_apps_script as resume
 
 _original_install_script_properties = finisher.base.install_script_properties
 _original_bridge_health = finisher.base.bridge_health
@@ -64,8 +60,6 @@ def install_script_properties_with_retry(
     secret: str,
     timeout_seconds: int = 180,
 ):
-    # bootstrap_install is idempotent for the exact same secret/project/root,
-    # so retrying a transport-level failure cannot create a divergent config.
     return _retry_transient_transport(
         lambda: _original_install_script_properties(url, token, project_id, secret),
         label="bootstrap install",
@@ -88,9 +82,6 @@ def bridge_health_with_propagation_retry(
         try:
             return _original_bridge_health(url, project_id, secret)
         except Exception as exc:
-            # During redeploy the previous bootstrap version can still answer
-            # valid JSON that fails final Bridge semantic checks. Health is
-            # read-only, so bounded retry of any failure is safe here.
             last_exc = exc
             remaining = max(0, int(deadline - time.monotonic()))
             print(
@@ -116,8 +107,6 @@ def prove_bootstrap_removed_with_retry(
         try:
             return _original_prove_bootstrap_removed(url, project_id)
         except Exception as exc:
-            # This check is read-only. A semantic mismatch can simply mean the
-            # old bootstrap deployment is still being served.
             last_exc = exc
             remaining = max(0, int(deadline - time.monotonic()))
             print(
@@ -133,6 +122,9 @@ def prove_bootstrap_removed_with_retry(
 finisher.base.install_script_properties = install_script_properties_with_retry
 finisher.base.bridge_health = bridge_health_with_propagation_retry
 finisher.base.prove_bootstrap_removed = prove_bootstrap_removed_with_retry
+# Resume uses the recorded GitHub environment URL to find the exact existing
+# script/deployment and rotates only the secret on the same project identity.
+finisher.base.deploy_project = resume.deploy_or_reuse_project
 
 
 if __name__ == "__main__":
