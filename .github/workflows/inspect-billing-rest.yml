@@ -1,0 +1,80 @@
+name: Inspect Billing REST
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/inspect-billing-rest.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          IAM_TOKEN="$(yc iam create-token)"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          printf '%s' "$IAM_TOKEN" > "$RUNNER_TEMP/iam-token"
+          chmod 600 "$RUNNER_TEMP/iam-token"
+
+      - name: List billing accounts through official REST API
+        shell: bash
+        run: |
+          set +e
+          IAM_TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          HTTP="$(curl --proto '=https' --tlsv1.2 -sS -o "$RUNNER_TEMP/billing.json" -w '%{http_code}' \
+            -H "Authorization: Bearer $IAM_TOKEN" \
+            'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts?pageSize=1000')"
+          echo "billing_http=$HTTP"
+          if [[ "$HTTP" == 200 ]]; then
+            jq -c '.billingAccounts[]? | {id,name,active,balance,countryCode,currency,createdAt}' "$RUNNER_TEMP/billing.json"
+          else
+            jq -c '.' "$RUNNER_TEMP/billing.json" 2>/dev/null || cat "$RUNNER_TEMP/billing.json"
+          fi
+
+      - name: Inspect visible billing-account cloud bindings through REST
+        shell: bash
+        run: |
+          set +e
+          IAM_TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          jq -r '.billingAccounts[]?.id' "$RUNNER_TEMP/billing.json" 2>/dev/null | while read -r bid; do
+            echo "--- BILLING_ACCOUNT=$bid ---"
+            HTTP="$(curl --proto '=https' --tlsv1.2 -sS -o "$RUNNER_TEMP/account-${bid}.json" -w '%{http_code}' \
+              -H "Authorization: Bearer $IAM_TOKEN" \
+              "https://billing.api.cloud.yandex.net/billing/v1/billingAccounts/${bid}:listAccessBindings?pageSize=1000")"
+            echo "bindings_http=$HTTP"
+            jq -c '.' "$RUNNER_TEMP/account-${bid}.json" 2>/dev/null || true
+          done
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/billing.json" "$RUNNER_TEMP"/account-*.json
