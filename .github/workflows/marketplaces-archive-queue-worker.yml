@@ -6,8 +6,11 @@ on:
     branches: [main]
     paths:
       - .github/workflows/control/run-marketplaces-archive-queue-worker.txt
-  schedule:
-    - cron: '*/5 * * * *'
+
+# Temporary recovery guard: scheduled drain is paused while Laser Master report
+# 743994450 is advanced through the verified 23 -> 24 checkpoint. Manual drain
+# remains available and uses the same concurrency group. Restore the schedule
+# only after targeted checkpoint acceptance is complete.
 
 permissions:
   contents: read
