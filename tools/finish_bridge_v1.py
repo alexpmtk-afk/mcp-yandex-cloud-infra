@@ -66,6 +66,81 @@ def portable_run(
 base.run = portable_run
 
 
+def portable_clasp(
+    args: list[str],
+    *,
+    cwd: Path | None = None,
+    capture: bool = False,
+    check: bool = True,
+) -> subprocess.CompletedProcess[str]:
+    """Invoke clasp v3 with the documented named-user argument order."""
+    if not args:
+        die("clasp command is required")
+    command, *rest = args
+    return portable_run(
+        ["npx", "-y", base.CLASP_PACKAGE, command, "--user", base.CLASP_USER, *rest],
+        cwd=cwd,
+        capture=capture,
+        check=check,
+    )
+
+
+def _clasp_login_state(probe: subprocess.CompletedProcess[str]) -> tuple[bool, str]:
+    """Return only persisted clasp auth state, never truthiness of arbitrary JSON."""
+    if probe.returncode != 0:
+        return False, ""
+    try:
+        data = json.loads(probe.stdout or "{}")
+    except json.JSONDecodeError:
+        return False, ""
+    if not isinstance(data, dict) or data.get("loggedIn") is not True:
+        return False, ""
+    return True, str(data.get("email") or "").strip()
+
+
+def ensure_owner_login(*, force: bool = False) -> None:
+    probe = portable_clasp(["show-authorized-user", "--json"], capture=True, check=False)
+    logged_in, email = _clasp_login_state(probe)
+    if logged_in and not force:
+        suffix = f" ({email})" if email else ""
+        print(f"Google clasp owner session: READY{suffix}")
+        return
+
+    if force:
+        # Delete only the disposable named profile used by this bootstrap.
+        portable_clasp(["logout"], capture=True, check=False)
+
+    print("Открываю официальный Google clasp OAuth. Подтвердите доступ в браузере.")
+    portable_clasp(["login"])
+    probe = portable_clasp(["show-authorized-user", "--json"], capture=True, check=False)
+    logged_in, email = _clasp_login_state(probe)
+    if not logged_in:
+        detail = ((probe.stdout or "") + "\n" + (probe.stderr or ""))[-1200:]
+        die(f"clasp login completed without persisted credentials: {detail}")
+    suffix = f" ({email})" if email else ""
+    print(f"Google clasp owner session: PASS{suffix}")
+
+
+base.clasp = portable_clasp
+base.ensure_clasp_login = ensure_owner_login
+_original_create_script = base.create_script
+
+
+def resilient_create_script(project_dir: Path, project: dict[str, Any]) -> str:
+    """Recover once if clasp reports missing credentials during project create."""
+    try:
+        return _original_create_script(project_dir, project)
+    except RuntimeError as exc:
+        if "No credentials found" not in str(exc):
+            raise
+        print("clasp credentials missing at create-script; re-authorizing owner profile once.")
+        ensure_owner_login(force=True)
+        return _original_create_script(project_dir, project)
+
+
+base.create_script = resilient_create_script
+
+
 def gh(args: list[str], *, capture: bool = False) -> subprocess.CompletedProcess[str]:
     return base.run_gh(args, capture=capture)
 
