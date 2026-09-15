@@ -11,12 +11,14 @@ from __future__ import annotations
 
 import json
 import re
+import secrets
 from pathlib import Path
 from typing import Any
 
 import bootstrap_bridge_v1_apps_script as base
 
 REPO = "alexpmtk-afk/mcp-yandex-cloud-infra"
+_original_deploy_project = base.deploy_project
 
 
 def _json_list(text: str) -> list[dict[str, Any]]:
@@ -122,14 +124,13 @@ def deploy_or_reuse_project(
     existing = find_recorded_project(project_id, project)
     if not existing:
         print(f"No reusable recorded Apps Script found for {project_id}; creating canonical deployment.")
-        return base.deploy_project(repo_root, work_root, project_id, project)
+        return _original_deploy_project(repo_root, work_root, project_id, project)
 
     script_id, deployment_id, url = existing
     print(f"Reusing recorded Apps Script deployment for {project_id}: {deployment_id[:12]}...")
     project_dir = work_root / project_id
     _write_clasp_project(project_dir, script_id)
 
-    import secrets
     token = secrets.token_urlsafe(48)
     secret = secrets.token_urlsafe(64)
 
