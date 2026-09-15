@@ -58,7 +58,7 @@ jobs:
           yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
           VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("google_drive_bridge_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
           test -n "$VERSION_ID"
-          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key google_drive_bridge_secret --format json --no-user-output > "$RUNNER_TEMP/v3.json"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/v3.json"
           BRIDGE_SECRET="$(jq -r '.entries[]|select(.key=="google_drive_bridge_secret")|.text_value//empty' "$RUNNER_TEMP/v3.json")"
           test -n "$BRIDGE_SECRET"
           echo "::add-mask::$BRIDGE_SECRET"
