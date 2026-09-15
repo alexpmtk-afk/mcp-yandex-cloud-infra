@@ -1,0 +1,78 @@
+name: Probe Object Storage PUT
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/probe-object-storage-put.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+      - name: Exact IAM-token PUT probe
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          yc config set folder-id "$FOLDER_ID"
+          BUCKET="marketplaces-mcp-archive-${FOLDER_ID}"
+          IAM_TOKEN="$(yc iam create-token)"
+          echo "::add-mask::$IAM_TOKEN"
+          FILE="$RUNNER_TEMP/probe.txt"
+          printf 'marketplaces-object-storage-put-probe-%s\n' "$GITHUB_SHA" > "$FILE"
+          OBJECT="diagnostics/object-storage-put/${GITHUB_SHA}.txt"
+          URL="https://storage.yandexcloud.net/${BUCKET}/${OBJECT}"
+          set +e
+          STATUS="$(curl --silent --show-error \
+            --request PUT \
+            --header "Authorization: Bearer ${IAM_TOKEN}" \
+            --upload-file "$FILE" \
+            --dump-header "$RUNNER_TEMP/headers.txt" \
+            --output "$RUNNER_TEMP/body.txt" \
+            --write-out '%{http_code}' \
+            "$URL")"
+          RC=$?
+          set -e
+          echo "curl_rc=$RC http_status=$STATUS"
+          echo '--- RESPONSE_HEADERS_SAFE ---'
+          grep -Ei '^(HTTP/|server:|date:|content-type:|content-length:|x-amz-request-id:|x-request-id:|x-yacloud-|etag:|location:)' "$RUNNER_TEMP/headers.txt" || true
+          echo '--- RESPONSE_BODY ---'
+          cat "$RUNNER_TEMP/body.txt" || true
+          if [[ "$STATUS" == 200 ]]; then
+            echo 'OFFICIAL_IAM_PUT=PASS'
+            DELETE_STATUS="$(curl --silent --show-error --request DELETE --header "Authorization: Bearer ${IAM_TOKEN}" --output "$RUNNER_TEMP/delete-body.txt" --write-out '%{http_code}' "$URL")"
+            echo "cleanup_delete_status=$DELETE_STATUS"
+            [[ "$DELETE_STATUS" == 204 || "$DELETE_STATUS" == 200 ]]
+          else
+            echo 'OFFICIAL_IAM_PUT=DENIED'
+            exit 1
+          fi
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/probe.txt" "$RUNNER_TEMP/headers.txt" "$RUNNER_TEMP/body.txt" "$RUNNER_TEMP/delete-body.txt"
