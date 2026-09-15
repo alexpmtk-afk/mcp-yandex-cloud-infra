@@ -83,8 +83,7 @@ jobs:
           yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
           VERSION_ID="$(jq -r --arg k "$LOCKBOX_KEY" '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index($k) != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
           test -n "$VERSION_ID"
-          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key "$LOCKBOX_KEY" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
-          BRIDGE_SECRET="$(jq -r --arg k "$LOCKBOX_KEY" '.entries[]|select(.key==$k)|.text_value // empty' "$RUNNER_TEMP/payload.json")"
+          BRIDGE_SECRET="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --key "$LOCKBOX_KEY" --no-user-output)"
           test -n "$BRIDGE_SECRET"
           echo "::add-mask::$BRIDGE_SECRET"
           printf '%s' "$BRIDGE_SECRET" > "$RUNNER_TEMP/bridge-secret"
@@ -161,4 +160,4 @@ jobs:
       - name: Cleanup credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bridge-secret"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/bridge-secret"
