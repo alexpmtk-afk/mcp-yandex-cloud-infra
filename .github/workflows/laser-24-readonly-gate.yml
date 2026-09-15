@@ -1,0 +1,138 @@
+name: Laser 24 Read-only Gate
+
+on:
+  push:
+    branches:
+      - fix/marketplaces-destroy-v1-lockbox-history
+    paths:
+      - '.github/workflows/laser-24-readonly-gate.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-archive-queue-worker
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+
+      - name: Resolve live MCP and verify V3-only runtime
+        id: live
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY="$RUNNER_TEMP/yc-key.json"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          yc config profile create laser-24-gate >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("google_drive_bridge_secret")!=null)|select((.payload_entry_keys//[])|index("mcp_bearer_token")!=null)|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")==null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          test "$VERSION_ID" = 'e6qnvjc1fpqj2osspbtt'
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          test -n "$DOMAIN"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value//empty' "$RUNNER_TEMP/payload.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+          echo 'V3_ONLY_LOCKBOX=PASS'
+
+      - name: Verify exact Laser 24 checkpoint without mutations
+        shell: bash
+        env:
+          MCP_URL: ${{ steps.live.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -u - <<'PY'
+          import itertools, json, os, httpx
+          JOB_ID='wb-finance-wb_laser_master-2026'
+          CLOSED_REPORT=743994450
+          EXPECTED_COMPLETED=24
+          EXPECTED_PROVIDER_CALLS=49
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+          h0={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          ids=itertools.count(1)
+          with httpx.Client(timeout=httpx.Timeout(connect=15,read=90,write=30,pool=15),follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=h0,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'laser-24-readonly-gate','version':'1'}}})
+              init=unpack(r); assert init and 'result' in init, init
+              h=dict(h0); sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert rr.status_code in (200,202), rr.status_code
+              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'tools/call','params':{'name':'marketplace_archive_job_status','arguments':{'job_id':JOB_ID}}})
+              d=unpack(r); assert d and 'result' in d, d
+              result=d['result']; assert not result.get('isError'), result
+              text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None)
+              assert text, result
+              p=json.loads(text)
+          completed=[int(v) for v in (p.get('completed_report_ids') or [])]
+          assert p.get('ok') is True, p
+          assert p.get('job_id') == JOB_ID, p
+          assert int(p.get('reports_total') or 0) == 38, p
+          assert int(p.get('report_index') or -1) == EXPECTED_COMPLETED, p
+          assert len(completed) == EXPECTED_COMPLETED, p
+          assert CLOSED_REPORT in completed, p
+          assert int(p.get('provider_calls') or -1) == EXPECTED_PROVIDER_CALLS, p
+          assert str(p.get('finalize_phase') or '') == '', p
+          assert int(p.get('finalize_report_id') or 0) == 0, p
+          assert int(p.get('current_rrd_id') or 0) == 0, p
+          assert not p.get('last_error'), p
+          print('LASER_24_GATE=PASS')
+          print('REPORT_INDEX='+str(p.get('report_index')))
+          print('COMPLETED_COUNT='+str(len(completed)))
+          print('PROVIDER_CALLS='+str(p.get('provider_calls')))
+          print('FINALIZE_PHASE='+str(p.get('finalize_phase')))
+          print('CURRENT_RRD_ID='+str(p.get('current_rrd_id')))
+          print('LAST_ERROR='+str(p.get('last_error')))
+          print('NEXT_REPORT_POSITION=25')
+          PY
+
+      - name: Verify archive queue schedule remains disabled in canonical workflow
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl -fsSL https://raw.githubusercontent.com/alexpmtk-afk/mcp-yandex-cloud-infra/main/.github/workflows/marketplaces-archive-queue-worker.yml -o "$RUNNER_TEMP/queue-worker.yml"
+          if grep -Eq '^[[:space:]]*schedule:' "$RUNNER_TEMP/queue-worker.yml"; then
+            echo 'ARCHIVE_CRON_OFF=FAIL'
+            exit 1
+          fi
+          echo 'ARCHIVE_CRON_OFF=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/queue-worker.yml"
