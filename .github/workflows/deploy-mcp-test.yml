@@ -521,7 +521,7 @@ jobs:
               assert storage.get('root_folder_id') == os.environ['ARCHIVE_DRIVE_ROOT_ID'], archive
               assert storage.get('root_name') == 'MCP архив базы данных', archive
               canonical = storage.get('canonical') or {}
-              assert canonical.get('backend') == 'google_drive_apps_script_bridge', archive
+              assert canonical.get('backend') == 'google_drive_apps_script_bridge_v3', archive
               assert int(canonical.get('bridge_version') or 0) >= 3, archive
               queue_storage = storage.get('queue_and_staging') or {}
               assert queue_storage.get('backend') == 'yandex_object_storage', archive
