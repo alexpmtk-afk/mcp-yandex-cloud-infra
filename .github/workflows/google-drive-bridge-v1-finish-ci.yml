@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - 'tools/finish_bridge_v1.py'
+      - 'tools/run_finish_bridge_v1.py'
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
       - '.github/workflows/google-drive-bridge-v1-finish-ci.yml'
       - '.github/workflows/marketplaces-drive-bridge-v1-cutover.yml'
@@ -14,8 +15,10 @@ on:
       - bridge-v1-windows-exec-fix
       - bridge-v1-windows-exec-fix-v2
       - bridge-v1-clasp-auth-fix
+      - bridge-v1-appsscript-redeploy-retry
     paths:
       - 'tools/finish_bridge_v1.py'
+      - 'tools/run_finish_bridge_v1.py'
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
       - '.github/workflows/google-drive-bridge-v1-finish-ci.yml'
 
@@ -32,7 +35,7 @@ jobs:
           python-version: '3.12'
       - name: Compile end-to-end scripts
         run: |
-          python -m py_compile tools/bootstrap_bridge_v1_apps_script.py tools/finish_bridge_v1.py
+          python -m py_compile tools/bootstrap_bridge_v1_apps_script.py tools/finish_bridge_v1.py tools/run_finish_bridge_v1.py
       - name: Validate clasp named-user auth is fail-closed
         shell: bash
         run: |
@@ -55,6 +58,30 @@ jobs:
           assert seen['args'] == ['npx', '-y', f.base.CLASP_PACKAGE, 'show-authorized-user', '--user', f.base.CLASP_USER, '--json'], seen
           print('BRIDGE_V1_CLASP_AUTH_FAIL_CLOSED=PASS')
           PY
+      - name: Validate Apps Script redeploy propagation retry
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'tools')
+          import run_finish_bridge_v1 as r
+          calls={'n':0}
+          def flaky(url, project_id, secret):
+              calls['n'] += 1
+              if calls['n'] < 3:
+                  raise RuntimeError('temporary Apps Script propagation state')
+              return {'ok': True}
+          r._original_bridge_health = flaky
+          original_sleep = r.time.sleep
+          r.time.sleep = lambda _: None
+          try:
+              result = r.bridge_health_with_propagation_retry('https://example.invalid/exec','birzha','secret',timeout_seconds=5)
+          finally:
+              r.time.sleep = original_sleep
+          assert result == {'ok': True}
+          assert calls['n'] == 3
+          print('BRIDGE_V1_APPS_SCRIPT_REDEPLOY_RETRY=PASS')
+          PY
       - name: Validate final workflow chain
         shell: bash
         run: |
@@ -68,7 +95,7 @@ jobs:
           grep -Fq 'publish-m25-worker-image.yml' "$f"
           grep -Fq 'birzha-drive-bridge-v1-cutover.yml' "$f"
           grep -Fq 'BRIDGE_V1_END_TO_END_PRODUCTION_PASS' "$f"
-          grep -Fq 'finish_bridge_v1.py' tools/run_bridge_v1_owner_bootstrap.ps1
+          grep -Fq 'run_finish_bridge_v1.py' tools/run_bridge_v1_owner_bootstrap.ps1
           grep -Fq 'BRIDGE_V1_END_TO_END_PRODUCTION=PASS' tools/run_bridge_v1_owner_bootstrap.ps1
           test -f .github/workflows/marketplaces-drive-bridge-v1-cutover.yml
           test -f .github/workflows/birzha-drive-bridge-v1-cutover.yml
