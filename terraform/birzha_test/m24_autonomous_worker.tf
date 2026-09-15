@@ -112,7 +112,7 @@ resource "yandex_function_trigger" "orchestrator_timer" {
   count       = var.m24_worker_image_url == null ? 0 : 1
   folder_id   = yandex_resourcemanager_folder.birzha_test.id
   name        = "birzha-mcp-forecast-orchestrator-timer"
-  description = "Invoke one safe autonomous orchestration tick every minute"
+  description = "Invoke one safe autonomous M24 orchestration tick every minute"
 
   timer {
     cron_expression = "* * ? * * *"
