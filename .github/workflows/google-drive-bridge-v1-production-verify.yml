@@ -122,6 +122,7 @@ jobs:
               with urllib.request.urlopen(req,timeout=90) as r:
                   if r.headers.get('mcp-session-id'): sid=r.headers.get('mcp-session-id')
                   text=r.read().decode()
+              if not text.strip(): return {}
               for line in text.splitlines():
                   if line.startswith('data:'): return json.loads(line[5:].strip())
               return json.loads(text)
