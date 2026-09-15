@@ -106,9 +106,18 @@ jobs:
                       data = json.loads(r.read().decode())
                   assert data.get('ok') is True, data
                   assert int(data.get('protocol_version') or 0) == 1, data
+                  assert data.get('bridge_release') == '1.0.0', data
                   assert data.get('project_id') == os.environ['PROJECT'], data
-                  result = data.get('result') or {}
+                  result = data.get('result')
+                  if not isinstance(result, dict) or not result.get('root_id'):
+                      if time.monotonic() >= deadline:
+                          raise RuntimeError('bridge identity never returned authenticated health result')
+                      remaining = max(0, int(deadline - time.monotonic()))
+                      print(f'Bridge identity endpoint returned liveness-only response (attempt {attempt}); waiting, {remaining}s left...')
+                      time.sleep(min(12, 2 + attempt))
+                      continue
                   assert result.get('bridge_release') == '1.0.0', data
+                  assert result.get('project_id') == os.environ['PROJECT'], data
                   assert result.get('root_id') == os.environ['ROOT_ID'], data
                   print('BRIDGE_V1_IDENTITY=PASS')
                   break
