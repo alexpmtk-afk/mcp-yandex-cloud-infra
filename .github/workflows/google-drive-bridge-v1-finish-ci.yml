@@ -13,6 +13,8 @@ on:
       - '.github/workflows/marketplaces-drive-bridge-v1-acceptance.yml'
       - '.github/workflows/birzha-drive-bridge-v1-acceptance.yml'
       - '.github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml'
+      - '.github/workflows/marketplaces-drive-bridge-v1-cutover-gate.yml'
+      - '.github/workflows/birzha-drive-bridge-v1-cutover-gate.yml'
       - '.github/workflows/marketplaces-drive-bridge-v1-cutover.yml'
       - '.github/workflows/birzha-drive-bridge-v1-cutover.yml'
   push:
@@ -35,6 +37,8 @@ on:
       - '.github/workflows/marketplaces-drive-bridge-v1-acceptance.yml'
       - '.github/workflows/birzha-drive-bridge-v1-acceptance.yml'
       - '.github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml'
+      - '.github/workflows/marketplaces-drive-bridge-v1-cutover-gate.yml'
+      - '.github/workflows/birzha-drive-bridge-v1-cutover-gate.yml'
       - '.github/workflows/marketplaces-drive-bridge-v1-cutover.yml'
       - '.github/workflows/birzha-drive-bridge-v1-cutover.yml'
 
@@ -189,6 +193,24 @@ jobs:
             fi
           done
           echo 'BRIDGE_V1_LOCKBOX_SINGLE_KEY_RAW=PASS'
+      - name: Reject recursive runtime stub scans over docs and tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+            .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+            .github/workflows/marketplaces-drive-bridge-v1-cutover-gate.yml
+            .github/workflows/birzha-drive-bridge-v1-cutover-gate.yml
+          )
+          for f in "${files[@]}"; do
+            if grep -Fq "grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge" "$f"; then
+              echo "Runtime stub check must target executable source, not docs/tests: $f" >&2
+              exit 1
+            fi
+            grep -Fq "grep -n 'NOT_IMPLEMENTED' shared/google-drive-bridge/bridge.gs" "$f"
+          done
+          echo 'BRIDGE_V1_RUNTIME_STUB_CHECK_SCOPE=PASS'
       - name: Validate resumable bootstrap secret rotation remains identity-locked
         shell: bash
         run: |
