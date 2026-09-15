@@ -138,8 +138,8 @@ jobs:
           TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$TARGET"
           KEYS="$(jq -r --arg id "$BASE_VERSION" '.[]|select(.id==$id)|(.payload_entry_keys//[])[]?' "$RUNNER_TEMP/versions.json")"
           if grep -Fxq gdrive_bridge_v1_secret <<< "$KEYS"; then
-            yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --format json --no-user-output > "$RUNNER_TEMP/current.json"
-            CURRENT="$(jq -r '.entries[]|select(.key=="gdrive_bridge_v1_secret")|.text_value//empty' "$RUNNER_TEMP/current.json")"; echo "::add-mask::$CURRENT"
+            CURRENT="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --no-user-output)"
+            echo "::add-mask::$CURRENT"
             if [[ -n "$CURRENT" && "$CURRENT" == "$TARGET" ]]; then
               echo 'required=false' >> "$GITHUB_OUTPUT"; echo "version=$BASE_VERSION" >> "$GITHUB_OUTPUT"; exit 0
             fi
@@ -189,8 +189,7 @@ jobs:
         run: |
           set -euo pipefail
           VERSION="$EXISTING_VERSION"; [[ "$REQUIRED" == true ]] && VERSION="$NEW_VERSION"; test -n "$VERSION"
-          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION" --key gdrive_bridge_v1_secret --format json --no-user-output > "$RUNNER_TEMP/final.json"
-          ACTUAL="$(jq -r '.entries[]|select(.key=="gdrive_bridge_v1_secret")|.text_value//empty' "$RUNNER_TEMP/final.json")"
+          ACTUAL="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION" --key gdrive_bridge_v1_secret --no-user-output)"
           TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$ACTUAL"
           [[ "$ACTUAL" == "$TARGET" ]]
           echo "BRIDGE_V1_LOCKBOX_VERSION_ID=$VERSION"
@@ -207,4 +206,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/current.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json" "$RUNNER_TEMP/final.json"
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json"
