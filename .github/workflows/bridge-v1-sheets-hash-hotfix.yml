@@ -59,7 +59,7 @@ jobs:
               t += '''\n\ndef test_sheet_chunk_hash_normalizes_integral_float_like_json_stringify() -> None:\n    import json\n    values = [[1, 100.0, 101.5, -0.0]]\n    canonical = json.dumps(_normalize_js_json(values), ensure_ascii=False, separators=(\",\", \":\"))\n    assert canonical == \"[[1,100,101.5,0]]\"\n'''
               test.write_text(t, encoding='utf-8')
           PY
-          python -m pip install -q pytest
+          python -m pip install -q pytest 'httpx>=0.27,<1'
           python -m pytest -q shared/google-drive-bridge/tests
           git diff --check
           git config user.name 'github-actions[bot]'
