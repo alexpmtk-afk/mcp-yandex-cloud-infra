@@ -1,6 +1,12 @@
 name: Compare Marketplaces Drive Bridge v1 vs v3
 
 on:
+  push:
+    branches:
+      - 'diag/bridge-v1-v3-comparison'
+    paths:
+      - '.github/workflows/compare-marketplaces-drive-bridges.yml'
+      - 'shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3.py'
   pull_request:
     branches: [main]
     paths:
