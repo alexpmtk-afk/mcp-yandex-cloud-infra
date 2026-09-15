@@ -1,4 +1,0 @@
-Purpose: trigger the canonical Deploy Marketplaces MCP TEST workflow after the 2026-09-15 infrastructure recovery checkpoint.
-Functional runtime change: NONE.
-Approved Semantic Core source remains 920f3f1458a1700ad350d43cf35178256e8e858f.
-This marker is temporary and should be removed in the post-validation cleanup.
