@@ -138,7 +138,7 @@ jobs:
           test -f docs/MARKETPLACES_SEMANTIC_CORE_TEST_V17.md
           grep -q "BRIDGE_VERSION=3" docs/apps_script/marketplaces_drive_bridge_v3.gs
           grep -q 'script.external_request' docs/apps_script/appsscript.json
-          grep -q '9137a621a41c00276a07949d5265cfea6175e616' app/.source-revision
+          grep -q '616a156cde2b0a1f1e50251726c728e7a1b24448' app/.source-revision
           grep -q '833eab826bfaa4691a05a21a5d00f1e8e0ba1b37' app/.source-revision
           echo 'ARCHIVE_SEMANTIC_RUNTIME_VALIDATE=PASS'
 

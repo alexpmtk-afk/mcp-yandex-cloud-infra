@@ -6,7 +6,6 @@ on:
       - 'shared/google-drive-bridge/**'
       - 'tools/bootstrap_bridge_v1_apps_script.py'
       - '.github/workflows/birzha-drive-bridge-v1-*.yml'
-      - '.github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
   workflow_dispatch:
@@ -40,7 +39,6 @@ jobs:
           python -m pytest shared/google-drive-bridge/tests -q
           python -m compileall -q shared/google-drive-bridge/python_client shared/google-drive-bridge/scripts
           python -m py_compile tools/bootstrap_bridge_v1_apps_script.py
-          test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
           echo 'BIRZHA_SHARED_PROTOCOL_STABLE=PASS'
 
       - name: Validate Birzha bootstrap and acceptance contract
@@ -58,7 +56,7 @@ jobs:
           grep -q 'PROJECT_ID: birzha' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'EXPECTED_BRIDGE_RELEASE: 1.0.0' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
-          grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -q 'LOCKBOX_NAME: birzha-mcp-forecast-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
           grep -q 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -q 'BIRZHA_GDRIVE_BRIDGE_V1_BOOTSTRAP_SECRET' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml

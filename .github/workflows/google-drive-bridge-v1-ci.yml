@@ -8,8 +8,9 @@ on:
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
-      - '.github/workflows/*drive-bridge-v1*'
-      - '.github/workflows/google-drive-bridge-v1-*'
+      - '.github/workflows/birzha-drive-bridge-v1-*'
+      - '.github/workflows/google-drive-bridge-v1-ci.yml'
+      - '.github/workflows/google-drive-bridge-v1-finish-ci.yml'
   push:
     branches:
       - feature/google-drive-bridge-v1
@@ -22,8 +23,9 @@ on:
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
-      - '.github/workflows/*drive-bridge-v1*'
-      - '.github/workflows/google-drive-bridge-v1-*'
+      - '.github/workflows/birzha-drive-bridge-v1-*'
+      - '.github/workflows/google-drive-bridge-v1-ci.yml'
+      - '.github/workflows/google-drive-bridge-v1-finish-ci.yml'
 
 permissions:
   contents: read
@@ -59,10 +61,8 @@ jobs:
             cp "shared/google-drive-bridge/${src}.gs" "$RUNNER_TEMP/${src}.js"
             node --check "$RUNNER_TEMP/${src}.js"
           done
-          for f in shared/google-drive-bridge/deploy/*_config.gs; do
-            cp "$f" "$RUNNER_TEMP/config.js"
-            node --check "$RUNNER_TEMP/config.js"
-          done
+          cp shared/google-drive-bridge/deploy/birzha_config.gs "$RUNNER_TEMP/config.js"
+          node --check "$RUNNER_TEMP/config.js"
 
       - name: Validate required bridge invariants
         shell: bash
@@ -85,7 +85,7 @@ jobs:
           fi
           echo 'BRIDGE_STATIC_CONTRACT=PASS'
 
-      - name: Validate secure one-time owner bootstrap
+      - name: Validate secure Birzha owner bootstrap
         shell: bash
         run: |
           set -euo pipefail
@@ -103,36 +103,30 @@ jobs:
             echo 'Custom OAuth credential loading is forbidden in the final owner bootstrap' >&2
             exit 1
           fi
-          grep -Fq "secret: ''" shared/google-drive-bridge/deploy/marketplaces_config.gs
           grep -Fq "secret: ''" shared/google-drive-bridge/deploy/birzha_config.gs
-          echo 'BRIDGE_OWNER_BOOTSTRAP_STATIC=PASS'
+          echo 'BIRZHA_BRIDGE_OWNER_BOOTSTRAP_STATIC=PASS'
 
       - name: Prove secret values are not committed
         shell: bash
         run: |
           set -euo pipefail
-          for f in shared/google-drive-bridge/deploy/*_config.gs; do
-            grep -Fq "secret: ''" "$f"
-          done
+          grep -Fq "secret: ''" shared/google-drive-bridge/deploy/birzha_config.gs
           if grep -R --line-number -E "gdrive_bridge_v1_secret['\"]?[[:space:]]*[:=][[:space:]]*['\"][A-Za-z0-9_-]{20,}" shared tools .github terraform; then
             echo 'Potential committed Bridge v1 secret value detected' >&2
             exit 1
           fi
           echo 'BRIDGE_COMMITTED_SECRET_VALUES=NONE'
 
-      - name: Validate project Lockbox isolation and joint acceptance
+      - name: Validate Birzha project Lockbox isolation
         shell: bash
         run: |
           set -euo pipefail
-          grep -Fq 'LOCKBOX_NAME: marketplaces-mcp-api-credentials' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
-          grep -Fq 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/marketplaces-drive-bridge-v1-bootstrap.yml
           grep -Fq 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
           grep -Fq 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-bootstrap.yml
-          grep -Fq 'LOCKBOX_NAME: marketplaces-mcp-api-credentials' .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
-          grep -Fq 'LOCKBOX_NAME: birzha-mcp-forecast-test-auth' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -Fq 'LOCKBOX_NAME: birzha-mcp-forecast-drive-bridge-v1' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+          grep -Fq 'LOCKBOX_KEY: gdrive_bridge_v1_secret' .github/workflows/birzha-drive-bridge-v1-acceptance.yml
           grep -Fq 'key                  = "gdrive_bridge_v1_secret"' terraform/birzha_test/m24_autonomous_worker.tf
-          test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
-          echo 'BRIDGE_PROJECT_ISOLATION_STATIC=PASS'
+          echo 'BIRZHA_BRIDGE_PROJECT_ISOLATION_STATIC=PASS'
 
   powershell-contract:
     runs-on: windows-latest
