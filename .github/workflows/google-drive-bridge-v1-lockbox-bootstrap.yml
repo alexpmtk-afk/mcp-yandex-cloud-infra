@@ -47,13 +47,15 @@ jobs:
               ROOT_NAME='MCP архив базы данных'
               FOLDER_NAME='marketplaces-mcp-test'
               LOCKBOX_NAME='marketplaces-mcp-api-credentials'
+              CREATE_IF_MISSING='false'
               BOOTSTRAP_SECRET="$MARKETPLACES_SECRET"
               ;;
             birzha)
               ROOT_ID='1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2'
               ROOT_NAME='Архив рыночных данных'
               FOLDER_NAME='birzha-mcp-forecast-test'
-              LOCKBOX_NAME='birzha-mcp-forecast-test-auth'
+              LOCKBOX_NAME='birzha-mcp-forecast-drive-bridge-v1'
+              CREATE_IF_MISSING='true'
               BOOTSTRAP_SECRET="$BIRZHA_SECRET"
               ;;
             *) echo 'invalid project' >&2; exit 2 ;;
@@ -66,6 +68,7 @@ jobs:
           echo "root_name=$ROOT_NAME" >> "$GITHUB_OUTPUT"
           echo "folder_name=$FOLDER_NAME" >> "$GITHUB_OUTPUT"
           echo "lockbox_name=$LOCKBOX_NAME" >> "$GITHUB_OUTPUT"
+          echo "create_if_missing=$CREATE_IF_MISSING" >> "$GITHUB_OUTPUT"
           echo 'BRIDGE_V1_STABLE_CONTRACT=PASS'
 
       - name: Validate isolated Bridge identity
@@ -110,6 +113,7 @@ jobs:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
           FOLDER_NAME: ${{ steps.project.outputs.folder_name }}
           LOCKBOX_NAME: ${{ steps.project.outputs.lockbox_name }}
+          CREATE_IF_MISSING: ${{ steps.project.outputs.create_if_missing }}
         run: |
           set -euo pipefail
           test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
@@ -119,9 +123,18 @@ jobs:
           yc config set service-account-key "$KEY"
           FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r --arg n "$FOLDER_NAME" '.[]|select(.name==$n)|.id'|head -1)"; test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
-          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$LOCKBOX_NAME" '.[]|select(.name==$n)|.id'|head -1)"; test -n "$SECRET_ID"
-          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
-          BASE_VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"; test -n "$BASE_VERSION"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$LOCKBOX_NAME" '.[]|select(.name==$n)|.id'|head -1)"
+          if [[ -z "$SECRET_ID" && "$CREATE_IF_MISSING" != true ]]; then
+            echo "Required project Lockbox does not exist: $LOCKBOX_NAME" >&2
+            exit 1
+          fi
+          BASE_VERSION=''
+          if [[ -n "$SECRET_ID" ]]; then
+            yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+            BASE_VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
+          else
+            printf '[]\n' > "$RUNNER_TEMP/versions.json"
+          fi
           echo "folder_id=$FOLDER_ID" >> "$GITHUB_OUTPUT"
           echo "secret_id=$SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "base_version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
@@ -136,17 +149,28 @@ jobs:
         run: |
           set -euo pipefail
           TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$TARGET"
-          KEYS="$(jq -r --arg id "$BASE_VERSION" '.[]|select(.id==$id)|(.payload_entry_keys//[])[]?' "$RUNNER_TEMP/versions.json")"
-          if grep -Fxq gdrive_bridge_v1_secret <<< "$KEYS"; then
-            CURRENT="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --no-user-output)"
-            echo "::add-mask::$CURRENT"
-            if [[ -n "$CURRENT" && "$CURRENT" == "$TARGET" ]]; then
-              echo 'required=false' >> "$GITHUB_OUTPUT"; echo "version=$BASE_VERSION" >> "$GITHUB_OUTPUT"; exit 0
+          if [[ -z "$SECRET_ID" ]]; then
+            echo 'required=true' >> "$GITHUB_OUTPUT"
+            echo 'create=true' >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          if [[ -n "$BASE_VERSION" ]]; then
+            KEYS="$(jq -r --arg id "$BASE_VERSION" '.[]|select(.id==$id)|(.payload_entry_keys//[])[]?' "$RUNNER_TEMP/versions.json")"
+            if grep -Fxq gdrive_bridge_v1_secret <<< "$KEYS"; then
+              CURRENT="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$BASE_VERSION" --key gdrive_bridge_v1_secret --no-user-output)"
+              echo "::add-mask::$CURRENT"
+              if [[ -n "$CURRENT" && "$CURRENT" == "$TARGET" ]]; then
+                echo 'required=false' >> "$GITHUB_OUTPUT"
+                echo 'create=false' >> "$GITHUB_OUTPUT"
+                echo "version=$BASE_VERSION" >> "$GITHUB_OUTPUT"
+                exit 0
+              fi
             fi
           fi
           echo 'required=true' >> "$GITHUB_OUTPUT"
+          echo 'create=false' >> "$GITHUB_OUTPUT"
 
-      - name: Grant temporary folder admin for version write
+      - name: Grant temporary folder admin for secret write
         if: steps.change.outputs.required == 'true'
         shell: bash
         env:
@@ -157,13 +181,16 @@ jobs:
           yc resource-manager folder add-access-binding "$FOLDER_ID" --role admin --service-account-id "$DEPLOYER_ID"
           sleep 15
 
-      - name: Add isolated v1 key preserving all existing keys
+      - name: Create or update isolated v1 credential
         if: steps.change.outputs.required == 'true'
         id: version
         shell: bash
         env:
+          FOLDER_ID: ${{ steps.lockbox.outputs.folder_id }}
           SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
           BASE_VERSION: ${{ steps.lockbox.outputs.base_version }}
+          LOCKBOX_NAME: ${{ steps.project.outputs.lockbox_name }}
+          CREATE_NEW: ${{ steps.change.outputs.create }}
         run: |
           set -euo pipefail
           TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$TARGET"; export TARGET
@@ -172,26 +199,50 @@ jobs:
           print(json.dumps([{'key':'gdrive_bridge_v1_secret','text_value':os.environ['TARGET']}],separators=(',',':')))
           PY
           chmod 600 "$RUNNER_TEMP/change.json"
-          yc lockbox secret add-version --id "$SECRET_ID" --base-version-id "$BASE_VERSION" \
-            --description 'Google Drive Bridge Protocol v1 project-isolated credential' \
-            --payload - --format json --no-user-output < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new.json"
-          VERSION="$(jq -r '.id//.response.id//empty' "$RUNNER_TEMP/new.json")"; test -n "$VERSION"
+          FINAL_SECRET_ID="$SECRET_ID"
+          if [[ "$CREATE_NEW" == true ]]; then
+            yc lockbox secret create --folder-id "$FOLDER_ID" --name "$LOCKBOX_NAME" \
+              --description 'Dedicated Google Drive Bridge Protocol v1 credential' \
+              --deletion-protection --payload - --format json --no-user-output \
+              < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new-secret.json"
+            FINAL_SECRET_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/new-secret.json")"
+            test -n "$FINAL_SECRET_ID"
+            yc lockbox secret list-versions --id "$FINAL_SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/new-versions.json"
+            VERSION="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/new-versions.json")"
+          else
+            test -n "$FINAL_SECRET_ID"
+            test -n "$BASE_VERSION"
+            yc lockbox secret add-version --id "$FINAL_SECRET_ID" --base-version-id "$BASE_VERSION" \
+              --description 'Google Drive Bridge Protocol v1 project-isolated credential' \
+              --payload - --format json --no-user-output < "$RUNNER_TEMP/change.json" > "$RUNNER_TEMP/new.json"
+            VERSION="$(jq -r '.id//.response.id//empty' "$RUNNER_TEMP/new.json")"
+          fi
+          test -n "$VERSION"
+          echo "secret_id=$FINAL_SECRET_ID" >> "$GITHUB_OUTPUT"
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
 
       - name: Verify final Lockbox v1 key
         shell: bash
         env:
-          SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
-          BASE_VERSION: ${{ steps.lockbox.outputs.base_version }}
+          EXISTING_SECRET_ID: ${{ steps.lockbox.outputs.secret_id }}
+          NEW_SECRET_ID: ${{ steps.version.outputs.secret_id }}
           NEW_VERSION: ${{ steps.version.outputs.version }}
           EXISTING_VERSION: ${{ steps.change.outputs.version }}
           REQUIRED: ${{ steps.change.outputs.required }}
         run: |
           set -euo pipefail
-          VERSION="$EXISTING_VERSION"; [[ "$REQUIRED" == true ]] && VERSION="$NEW_VERSION"; test -n "$VERSION"
+          SECRET_ID="$EXISTING_SECRET_ID"
+          VERSION="$EXISTING_VERSION"
+          if [[ "$REQUIRED" == true ]]; then
+            SECRET_ID="$NEW_SECRET_ID"
+            VERSION="$NEW_VERSION"
+          fi
+          test -n "$SECRET_ID"
+          test -n "$VERSION"
           ACTUAL="$(yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION" --key gdrive_bridge_v1_secret --no-user-output)"
           TARGET="$(cat "$RUNNER_TEMP/bridge-secret")"; echo "::add-mask::$ACTUAL"
           [[ "$ACTUAL" == "$TARGET" ]]
+          echo "BRIDGE_V1_LOCKBOX_SECRET_ID=$SECRET_ID"
           echo "BRIDGE_V1_LOCKBOX_VERSION_ID=$VERSION"
           echo 'BRIDGE_V1_LOCKBOX_BOOTSTRAP=PASS'
 
@@ -206,4 +257,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json"
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/bridge-secret" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/change.json" "$RUNNER_TEMP/new.json" "$RUNNER_TEMP/new-secret.json" "$RUNNER_TEMP/new-versions.json"
