@@ -1,0 +1,1 @@
+Latest owner run reached Google runtime authorization marketplaces PASS and then received HTTP 404 on the idempotent Script Properties bootstrap POST. This branch covers that exact transition with bounded transient retry.
