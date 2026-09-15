@@ -43,45 +43,71 @@ jobs:
           echo "CURRENT_TEST_DEPLOYER_SA=$CURRENT_SA_ID"
           yc config profile create github-ci || true
           yc config set service-account-key "$KEY_FILE"
-          FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           test -n "$FOLDER_ID"
-          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
           yc config set folder-id "$FOLDER_ID"
+          echo "CLOUD_ID=$CLOUD_ID" >> "$GITHUB_ENV"
+          echo "FOLDER_ID=$FOLDER_ID" >> "$GITHUB_ENV"
 
-      - name: Inspect TEST folder bindings for current and historical deployers
+      - name: Inspect TEST folder and cloud bindings
         shell: bash
         run: |
           set -euo pipefail
-          HISTORICAL_SA_ID=ajecdjjrkdo1t3itpl9k
-          yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/folder-bindings.json"
-          echo '--- CURRENT_DEPLOYER_FOLDER_ROLES ---'
-          jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // "") == $id or (.subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/folder-bindings.json" | sort -u
-          echo '--- HISTORICAL_DEPLOYER_FOLDER_ROLES ---'
-          jq -r --arg id "$HISTORICAL_SA_ID" '.[]? | select((.subject.id // .subjectId // "") == $id or (.subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/folder-bindings.json" | sort -u
-          echo '--- DEPLOYER_BINDING_RECORDS ---'
-          jq -c --arg cur "$CURRENT_SA_ID" --arg old "$HISTORICAL_SA_ID" '.[]? | select(((.subject.id // .subjectId // .subject_id // "") == $cur) or ((.subject.id // .subjectId // .subject_id // "") == $old))' "$RUNNER_TEMP/folder-bindings.json"
+          yc resource-manager folder list-access-bindings "$FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/folder.json"
+          yc resource-manager cloud list-access-bindings "$CLOUD_ID" --format json --no-user-output > "$RUNNER_TEMP/cloud.json"
+          echo '--- DEPLOYER_FOLDER_ROLES ---'
+          jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/folder.json" | sort -u
+          echo '--- DEPLOYER_CLOUD_ROLES ---'
+          jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/cloud.json" | sort -u
+          echo '--- DEPLOYER_CLOUD_BINDINGS ---'
+          jq -c --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id)' "$RUNNER_TEMP/cloud.json"
 
-      - name: Inspect container and runtime-SA bindings
+      - name: Inspect runtime SA and resource bindings
         shell: bash
         run: |
           set -euo pipefail
           CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
           RUNTIME_SA_ID="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
+          REGISTRY_ID=crp6o36mbl2tqonu1qbi
           echo "CONTAINER_ID=$CONTAINER_ID"
           echo "RUNTIME_SA_ID=$RUNTIME_SA_ID"
-          echo '--- CONTAINER_BINDINGS ---'
-          yc serverless container list-access-bindings --id "$CONTAINER_ID" --format json --no-user-output || true
           echo '--- RUNTIME_SA_BINDINGS ---'
           yc iam service-account list-access-bindings --id "$RUNTIME_SA_ID" --format json --no-user-output || true
+          echo '--- CONTAINER_BINDINGS ---'
+          yc serverless container list-access-bindings --id "$CONTAINER_ID" --format json --no-user-output || true
+          echo '--- REGISTRY_BINDINGS ---'
+          yc container registry list-access-bindings "$REGISTRY_ID" --format json --no-user-output || true
+          echo '--- REPOSITORY_BINDINGS ---'
+          yc container repository list --registry-id "$REGISTRY_ID" --format json --no-user-output > "$RUNNER_TEMP/repos.json"
+          REPO_NAME="$(jq -r '.[]|select(.name|endswith("/marketplaces-mcp"))|.name' "$RUNNER_TEMP/repos.json"|head -1)"
+          test -n "$REPO_NAME"
+          yc container repository list-access-bindings --name "$REPO_NAME" --format json --no-user-output || true
 
-      - name: Verify historical deployer service account still exists
+      - name: Inspect organization scope and policy surfaces
         shell: bash
         run: |
           set +e
-          yc iam service-account get ajecdjjrkdo1t3itpl9k --format json --no-user-output
-          echo "historical_sa_lookup_exit=$?"
+          echo '--- ORGANIZATIONS_VISIBLE ---'
+          yc organization-manager organization list --format json --no-user-output > "$RUNNER_TEMP/orgs.json"
+          jq -c '.[]|{id,name}' "$RUNNER_TEMP/orgs.json"
+          ORG_ID="$(jq -r '.[0].id // empty' "$RUNNER_TEMP/orgs.json")"
+          if [[ -n "$ORG_ID" ]]; then
+            echo "ORG_ID=$ORG_ID"
+            echo '--- DEPLOYER_ORG_ROLES ---'
+            yc organization-manager organization list-access-bindings "$ORG_ID" --format json --no-user-output > "$RUNNER_TEMP/org-bindings.json"
+            jq -r --arg id "$CURRENT_SA_ID" '.[]? | select((.subject.id // .subjectId // .subject_id // "") == $id) | .role_id // .roleId // .role // empty' "$RUNNER_TEMP/org-bindings.json" | sort -u
+          fi
+          echo '--- IAM_ACCESS_POLICY_HELP ---'
+          yc iam access-policy --help 2>&1 | head -160 || true
+          echo '--- ORGANIZATION_POLICY_HELP ---'
+          yc organization-manager organization --help 2>&1 | grep -i -C3 policy || true
+          echo '--- CLOUD_POLICY_HELP ---'
+          yc resource-manager cloud --help 2>&1 | grep -i -C3 policy || true
+          echo '--- FOLDER_POLICY_HELP ---'
+          yc resource-manager folder --help 2>&1 | grep -i -C3 policy || true
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/folder-bindings.json"
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/folder.json" "$RUNNER_TEMP/cloud.json" "$RUNNER_TEMP/orgs.json" "$RUNNER_TEMP/org-bindings.json" "$RUNNER_TEMP/repos.json"
