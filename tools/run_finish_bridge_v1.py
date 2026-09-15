@@ -1,21 +1,77 @@
 #!/usr/bin/env python3
 """Runtime wrapper for the Bridge v1 finisher.
 
-Apps Script web-app redeployments can briefly return HTTP 404 or the previous
-bootstrap version while the new deployment propagates. The canonical finisher
-expects the final Bridge health immediately after redeploy, so this wrapper
-adds a bounded retry around that final health check without weakening any
-identity/release/root validation.
+Apps Script web-app deployments can briefly return HTTP 404/5xx while a new
+version propagates. This wrapper makes every deployment-bound transition
+resilient without weakening semantic checks:
+- bootstrap Script Properties installation retries only transient transport
+  failures and remains idempotent;
+- final Bridge health retries transient transport and short-lived previous
+  deployment responses;
+- bootstrap-removal proof retries while the previous deployment may still be
+  served.
 """
 from __future__ import annotations
 
 import subprocess
 import sys
 import time
+import urllib.error
 
 import finish_bridge_v1 as finisher
 
+_original_install_script_properties = finisher.base.install_script_properties
 _original_bridge_health = finisher.base.bridge_health
+_original_prove_bootstrap_removed = finisher.base.prove_bootstrap_removed
+
+_TRANSIENT_HTTP_CODES = {404, 408, 425, 429, 500, 502, 503, 504}
+
+
+def _is_transient_transport(exc: Exception) -> bool:
+    if isinstance(exc, urllib.error.HTTPError):
+        return int(exc.code) in _TRANSIENT_HTTP_CODES
+    return isinstance(exc, (urllib.error.URLError, TimeoutError, ConnectionError))
+
+
+def _retry_transient_transport(call, *, label: str, project_id: str, timeout_seconds: int = 180):
+    deadline = time.monotonic() + timeout_seconds
+    attempt = 0
+    last_exc: Exception | None = None
+    while time.monotonic() < deadline:
+        attempt += 1
+        try:
+            return call()
+        except Exception as exc:
+            if not _is_transient_transport(exc):
+                raise
+            last_exc = exc
+            remaining = max(0, int(deadline - time.monotonic()))
+            detail = f"HTTP {exc.code}" if isinstance(exc, urllib.error.HTTPError) else type(exc).__name__
+            print(
+                f"Apps Script {label} for {project_id} is still propagating "
+                f"(attempt {attempt}, {detail}); waiting, {remaining}s left..."
+            )
+            time.sleep(3)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Apps Script {label} did not become ready for {project_id}")
+
+
+def install_script_properties_with_retry(
+    url: str,
+    token: str,
+    project_id: str,
+    secret: str,
+    timeout_seconds: int = 180,
+):
+    # bootstrap_install is idempotent for the exact same secret/project/root,
+    # so retrying a transport-level failure cannot create a divergent config.
+    return _retry_transient_transport(
+        lambda: _original_install_script_properties(url, token, project_id, secret),
+        label="bootstrap install",
+        project_id=project_id,
+        timeout_seconds=timeout_seconds,
+    )
 
 
 def bridge_health_with_propagation_retry(
@@ -32,6 +88,9 @@ def bridge_health_with_propagation_retry(
         try:
             return _original_bridge_health(url, project_id, secret)
         except Exception as exc:
+            # During redeploy the previous bootstrap version can still answer
+            # valid JSON that fails final Bridge semantic checks. Health is
+            # read-only, so bounded retry of any failure is safe here.
             last_exc = exc
             remaining = max(0, int(deadline - time.monotonic()))
             print(
@@ -44,7 +103,36 @@ def bridge_health_with_propagation_retry(
     raise RuntimeError(f"Apps Script final deployment did not become ready for {project_id}")
 
 
+def prove_bootstrap_removed_with_retry(
+    url: str,
+    project_id: str,
+    timeout_seconds: int = 180,
+):
+    deadline = time.monotonic() + timeout_seconds
+    last_exc: Exception | None = None
+    attempt = 0
+    while time.monotonic() < deadline:
+        attempt += 1
+        try:
+            return _original_prove_bootstrap_removed(url, project_id)
+        except Exception as exc:
+            # This check is read-only. A semantic mismatch can simply mean the
+            # old bootstrap deployment is still being served.
+            last_exc = exc
+            remaining = max(0, int(deadline - time.monotonic()))
+            print(
+                f"Apps Script bootstrap retirement for {project_id} is still propagating "
+                f"(attempt {attempt}, {type(exc).__name__}); waiting, {remaining}s left..."
+            )
+            time.sleep(3)
+    if last_exc is not None:
+        raise last_exc
+    raise RuntimeError(f"Apps Script bootstrap retirement did not become visible for {project_id}")
+
+
+finisher.base.install_script_properties = install_script_properties_with_retry
 finisher.base.bridge_health = bridge_health_with_propagation_retry
+finisher.base.prove_bootstrap_removed = prove_bootstrap_removed_with_retry
 
 
 if __name__ == "__main__":

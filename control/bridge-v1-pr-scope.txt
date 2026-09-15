@@ -1,0 +1,1 @@
+PR scope: retry transient Apps Script propagation failures for bootstrap Script Properties POST, final Bridge health, and bootstrap retirement proof. No protocol, security, project-root, or production-cutover semantics are relaxed.

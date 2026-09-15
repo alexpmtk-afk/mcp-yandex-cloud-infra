@@ -1,0 +1,4 @@
+Live owner bootstrap observation 2026-09-15:
+- Google runtime authorization can PASS while the immediately following /exec POST briefly returns HTTP 404.
+- Final Apps Script redeploy can also briefly return HTTP 404 or serve the previous bootstrap version.
+- Owner runner therefore retries transient transport errors for bootstrap property installation and bounded propagation states for final health/bootstrap retirement.
