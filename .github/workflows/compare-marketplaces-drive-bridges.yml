@@ -7,6 +7,7 @@ on:
     paths:
       - '.github/workflows/compare-marketplaces-drive-bridges.yml'
       - 'shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3.py'
+      - 'shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3_retry.py'
   workflow_dispatch:
 
 permissions:
@@ -113,8 +114,9 @@ jobs:
           [[ "$V1_URL" == https://script.google.com/macros/s/*/exec ]]
           export V1_SECRET="$(cat "$RUNNER_TEMP/v1-secret")"
           export V3_SECRET="$(cat "$RUNNER_TEMP/v3-secret")"
-          python -u shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3.py | tee "$RUNNER_TEMP/bridge-comparison.log"
+          python -u shared/google-drive-bridge/scripts/compare_marketplaces_v1_v3_retry.py | tee "$RUNNER_TEMP/bridge-comparison.log"
           grep '^BRIDGE_COMPARISON_JSON=' "$RUNNER_TEMP/bridge-comparison.log"
+          grep '^V1_RESUMABLE_REPLAY_IDENTITY=' "$RUNNER_TEMP/bridge-comparison.log"
 
       - name: Cleanup local credentials
         if: always()
