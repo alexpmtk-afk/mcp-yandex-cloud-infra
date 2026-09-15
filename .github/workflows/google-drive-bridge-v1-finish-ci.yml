@@ -16,6 +16,7 @@ on:
       - bridge-v1-windows-exec-fix-v2
       - bridge-v1-clasp-auth-fix
       - bridge-v1-appsscript-redeploy-retry-v2
+      - bridge-v1-appsscript-all-transitions-retry
     paths:
       - 'tools/finish_bridge_v1.py'
       - 'tools/run_finish_bridge_v1.py'
@@ -56,6 +57,41 @@ jobs:
           assert seen['args'] == ['npx', '-y', f.base.CLASP_PACKAGE, 'show-authorized-user', '--user', f.base.CLASP_USER, '--json'], seen
           print('BRIDGE_V1_CLASP_AUTH_FAIL_CLOSED=PASS')
           PY
+      - name: Validate Apps Script transient bootstrap retry
+        shell: bash
+        run: |
+          python - <<'PY'
+          import io, sys, urllib.error
+          sys.path.insert(0, 'tools')
+          import run_finish_bridge_v1 as r
+          calls={'n':0}
+          def flaky(url, token, project_id, secret):
+              calls['n'] += 1
+              if calls['n'] < 3:
+                  raise urllib.error.HTTPError(url, 404, 'Not Found', {}, io.BytesIO())
+              return None
+          r._original_install_script_properties = flaky
+          original_sleep = r.time.sleep
+          r.time.sleep = lambda _: None
+          try:
+              r.install_script_properties_with_retry('https://example.invalid/exec','token','marketplaces','secret',timeout_seconds=5)
+          finally:
+              r.time.sleep = original_sleep
+          assert calls['n'] == 3
+
+          semantic={'n':0}
+          def bad(url, token, project_id, secret):
+              semantic['n'] += 1
+              raise RuntimeError('BOOTSTRAP_CONFIGURATION_CONFLICT')
+          r._original_install_script_properties = bad
+          try:
+              r.install_script_properties_with_retry('https://example.invalid/exec','token','marketplaces','secret',timeout_seconds=5)
+              raise AssertionError('semantic bootstrap error was incorrectly retried/ignored')
+          except RuntimeError as exc:
+              assert 'BOOTSTRAP_CONFIGURATION_CONFLICT' in str(exc)
+          assert semantic['n'] == 1
+          print('BRIDGE_V1_APPS_SCRIPT_BOOTSTRAP_RETRY=PASS')
+          PY
       - name: Validate Apps Script redeploy propagation retry
         shell: bash
         run: |
@@ -79,6 +115,29 @@ jobs:
           assert result == {'ok': True}
           assert calls['n'] == 3
           print('BRIDGE_V1_APPS_SCRIPT_REDEPLOY_RETRY=PASS')
+          PY
+      - name: Validate bootstrap retirement propagation retry
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'tools')
+          import run_finish_bridge_v1 as r
+          calls={'n':0}
+          def flaky(url, project_id):
+              calls['n'] += 1
+              if calls['n'] < 2:
+                  raise RuntimeError('old bootstrap version still served')
+              return None
+          r._original_prove_bootstrap_removed = flaky
+          original_sleep = r.time.sleep
+          r.time.sleep = lambda _: None
+          try:
+              r.prove_bootstrap_removed_with_retry('https://example.invalid/exec','birzha',timeout_seconds=5)
+          finally:
+              r.time.sleep = original_sleep
+          assert calls['n'] == 2
+          print('BRIDGE_V1_BOOTSTRAP_RETIREMENT_RETRY=PASS')
           PY
       - name: Validate final workflow chain
         shell: bash
