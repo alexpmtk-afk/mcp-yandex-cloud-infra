@@ -63,7 +63,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bearer"
           echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
 
-      - name: Verify checkpoint, process exactly one targeted step, verify no WB call
+      - name: Verify COMMIT checkpoint, process exactly one targeted step, verify 24/38 and no WB call
         shell: bash
         timeout-minutes: 10
         env:
@@ -79,7 +79,9 @@ jobs:
 
           JOB_ID = 'wb-finance-wb_laser_master-2026'
           EXPECTED_REPORT_ID = 743994450
-          EXPECTED_COMPLETED = 23
+          EXPECTED_COMPLETED_BEFORE = 23
+          EXPECTED_COMPLETED_AFTER = 24
+          EXPECTED_PROVIDER_CALLS = 49
 
           def unpack(response):
               response.raise_for_status()
@@ -99,7 +101,7 @@ jobs:
               response = client.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
                       'protocolVersion': '2025-06-18', 'capabilities': {},
-                      'clientInfo': {'name': 'laser-targeted-archive-worker-step', 'version': '1'}
+                      'clientInfo': {'name': 'laser-targeted-archive-commit-step', 'version': '1'}
                   }
               })
               init = unpack(response)
@@ -133,10 +135,11 @@ jobs:
               completed_before = len(before.get('completed_report_ids') or [])
               assert before.get('ok') is True, before
               assert before.get('job_id') == JOB_ID, before
-              assert int(before.get('report_index') or -1) == EXPECTED_COMPLETED, before
-              assert completed_before == EXPECTED_COMPLETED, before
-              assert str(before.get('finalize_phase') or '') == 'UPLOAD_ANNUAL', before
+              assert int(before.get('report_index') or -1) == EXPECTED_COMPLETED_BEFORE, before
+              assert completed_before == EXPECTED_COMPLETED_BEFORE, before
+              assert str(before.get('finalize_phase') or '') == 'COMMIT', before
               assert int(before.get('finalize_report_id') or 0) == EXPECTED_REPORT_ID, before
+              assert int(before.get('provider_calls') or 0) == EXPECTED_PROVIDER_CALLS, before
               assert not before.get('last_error'), before
               provider_calls_before = int(before.get('provider_calls') or 0)
               print('CHECKPOINT=PASS'
@@ -148,21 +151,30 @@ jobs:
               step = tool('marketplace_archive_worker_step', {'job_id': JOB_ID})
               assert step.get('ok') is True, step
               assert step.get('job_id') == JOB_ID, step
+              assert str(step.get('action') or '') == 'report_finalized', step
+              assert int(step.get('report_id') or 0) == EXPECTED_REPORT_ID, step
               print('TARGET_STEP_ACTION=' + str(step.get('action', '')), flush=True)
               print('TARGET_STEP_STATUS=' + str(step.get('status', '')), flush=True)
-              print('TARGET_STEP_CONFIRMED_BYTES=' + str(step.get('confirmed_bytes', '')), flush=True)
-              print('TARGET_STEP_ANNUAL_BYTES=' + str(step.get('annual_bytes', '')), flush=True)
-              print('TARGET_STEP_PROGRESS=' + str(step.get('progress_percent', '')), flush=True)
+              print('TARGET_STEP_REPORT=' + str(step.get('report_id', '')), flush=True)
+              print('TARGET_STEP_REPORTS_REMAINING=' + str(step.get('reports_remaining', '')), flush=True)
 
               after = tool('marketplace_archive_job_status', {'job_id': JOB_ID})
               assert after.get('ok') is True, after
               provider_calls_after = int(after.get('provider_calls') or 0)
-              assert provider_calls_after == provider_calls_before, (
-                  'provider_calls changed during UPLOAD_ANNUAL targeted step',
+              assert provider_calls_after == provider_calls_before == EXPECTED_PROVIDER_CALLS, (
+                  'provider_calls changed during COMMIT targeted step',
                   provider_calls_before,
                   provider_calls_after,
               )
-              completed_after = len(after.get('completed_report_ids') or [])
+              completed_ids = [int(value) for value in (after.get('completed_report_ids') or [])]
+              completed_after = len(completed_ids)
+              assert completed_after == EXPECTED_COMPLETED_AFTER, after
+              assert int(after.get('report_index') or -1) == EXPECTED_COMPLETED_AFTER, after
+              assert EXPECTED_REPORT_ID in completed_ids, after
+              assert after.get('finalize_phase') in (None, ''), after
+              assert int(after.get('finalize_report_id') or 0) == 0, after
+              assert int(after.get('current_rrd_id') or 0) == 0, after
+              assert not after.get('last_error'), after
               print('POST_STATUS=' + str(after.get('status')), flush=True)
               print('POST_COMPLETED=' + str(completed_after), flush=True)
               print('POST_REPORT_INDEX=' + str(after.get('report_index')), flush=True)
@@ -170,6 +182,7 @@ jobs:
               print('POST_FINALIZE_REPORT=' + str(after.get('finalize_report_id')), flush=True)
               print('POST_PROVIDER_CALLS=' + str(provider_calls_after), flush=True)
               print('POST_LAST_ERROR=' + str(after.get('last_error')), flush=True)
+              print('LASER_23_TO_24=PASS', flush=True)
           PY
 
       - name: Cleanup ephemeral credentials
