@@ -1,6 +1,0 @@
-MARKETPLACES live bootstrap latest observed sequence:
-- clasp OAuth PASS
-- Google runtime authorization marketplaces PASS
-- next bootstrap Script Properties POST -> HTTP 404 Not Found
-
-Interpretation: Apps Script /exec propagation can transiently disappear between successful authorization and the idempotent bootstrap POST. Covered by tools/run_finish_bridge_v1.py transient retry.
