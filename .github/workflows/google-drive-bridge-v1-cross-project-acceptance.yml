@@ -68,8 +68,7 @@ jobs:
             yc lockbox secret list-versions --id "$secret_id" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
             version_id="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
             test -n "$version_id"
-            yc lockbox payload get --id "$secret_id" --version-id "$version_id" --key gdrive_bridge_v1_secret --format json --no-user-output > "$RUNNER_TEMP/payload.json"
-            value="$(jq -r '.entries[]|select(.key=="gdrive_bridge_v1_secret")|.text_value//empty' "$RUNNER_TEMP/payload.json")"
+            value="$(yc lockbox payload get --id "$secret_id" --version-id "$version_id" --key gdrive_bridge_v1_secret --no-user-output)"
             test -n "$value"
             echo "::add-mask::$value"
             printf '%s' "$value" > "$output_file"
@@ -97,4 +96,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/marketplaces-secret" "$RUNNER_TEMP/birzha-secret"
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/marketplaces-secret" "$RUNNER_TEMP/birzha-secret"
