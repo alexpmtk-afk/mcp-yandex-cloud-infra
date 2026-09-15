@@ -61,6 +61,7 @@ jobs:
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
             https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
           tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"; chmod +x "$RUNNER_TEMP/yc/yc"; echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/yc:$PATH"
           KEY="$RUNNER_TEMP/yc-key.json"; umask 077; printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
           yc config profile create birzha-v1-cutover >/dev/null 2>&1 || true
           yc config set service-account-key "$KEY"
