@@ -37,7 +37,7 @@ resource "yandex_serverless_container" "orchestrator_worker" {
   memory             = 512
   cores              = 1
   concurrency        = 1
-  execution_timeout  = "120s"
+  execution_timeout  = "360s"
   service_account_id = yandex_iam_service_account.runtime.id
 
   runtime {
