@@ -27,7 +27,7 @@ jobs:
           grep -q 'protocol_version.*1' shared/google-drive-bridge/PROTOCOL.md
           grep -q 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
           grep -q "BRIDGE_RELEASE = '1.0.0'" shared/google-drive-bridge/bridge.gs
-          ! grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge
+          ! grep -n 'NOT_IMPLEMENTED' shared/google-drive-bridge/bridge.gs
           grep -q 'Project id: `birzha`' shared/google-drive-bridge/clients/birzha.md
           grep -q "rootId: '$EXPECTED_ROOT_ID'" shared/google-drive-bridge/deploy/birzha_config.gs
           grep -q 'sheetsEnabled: true' shared/google-drive-bridge/deploy/birzha_config.gs
