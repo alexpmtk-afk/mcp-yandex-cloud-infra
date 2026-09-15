@@ -1,0 +1,158 @@
+name: M26.6 D1 Queue Readonly Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m26-6-d1-queue-readonly-once.yml"
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: birzha-m26-6-d1-queue-readonly-once
+  cancel-in-progress: false
+
+env:
+  TF_DIR: terraform/birzha_test
+  DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+
+      - name: Mint Yandex read-only token
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
+          R="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          python - "$J" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('ref')=='refs/heads/main'
+          assert c.get('environment')=='test'
+          PY
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          test -n "$T"
+          echo "::add-mask::$T"
+          umask 077
+          printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
+          echo 'D1_QUEUE_READONLY_AUTH=PASS'
+
+      - name: Resolve YDB endpoint from canonical Terraform state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir="$TF_DIR" output -raw ydb_connection_string > "$RUNNER_TEMP/ydb-endpoint"
+          test -s "$RUNNER_TEMP/ydb-endpoint"
+          echo 'D1_QUEUE_ENDPOINT_RESOLVED=PASS'
+
+      - name: Inspect latest D1 workflow without changing state
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet ydb
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          import ydb
+
+          token=(Path(os.environ['RUNNER_TEMP'])/'iam-token').read_text()
+          endpoint=(Path(os.environ['RUNNER_TEMP'])/'ydb-endpoint').read_text().strip()
+          driver=ydb.Driver(connection_string=endpoint, credentials=ydb.AccessTokenCredentials(token))
+          driver.wait(timeout=10, fail_fast=True)
+          pool=ydb.QuerySessionPool(driver)
+
+          def flatten(result):
+              out=[]
+              for rs in result or []:
+                  out.extend(getattr(rs,'rows',[]) or [])
+              return out
+          def get(row,key,default=None):
+              try: return row[key]
+              except Exception: return getattr(row,key,default)
+
+          runs=flatten(pool.execute_with_retries("""
+            SELECT workflow_id, stage, status, updated_at, last_error
+            FROM `orchestration_runs`
+            WHERE kind = 'D1_ARCHIVE_REFRESH_V1'
+            ORDER BY updated_at DESC, workflow_id DESC
+            LIMIT 1;
+          """))
+          assert runs, 'no D1 archive workflow found'
+          r=runs[0]
+          wid=str(get(r,'workflow_id') or '')
+          print('D1_WORKFLOW_STATUS=' + str(get(r,'status') or ''))
+          print('D1_WORKFLOW_STAGE=' + str(get(r,'stage') or ''))
+          print('D1_WORKFLOW_UPDATED_AT=' + str(get(r,'updated_at') or ''))
+          err=str(get(r,'last_error') or '')
+          print('D1_WORKFLOW_HAS_ERROR=' + ('YES' if err else 'NO'))
+
+          q="""
+            DECLARE $wid AS Utf8;
+            SELECT sequence, kind, status, attempt, max_attempts, payload_json, evidence_json, last_error
+            FROM `orchestration_actions`
+            WHERE workflow_id = $wid
+            ORDER BY sequence, action_id;
+          """
+          acts=flatten(pool.execute_with_retries(q, {'$wid': (wid, ydb.PrimitiveType.Utf8)}))
+          summary={}
+          current=[]
+          failed=[]
+          for a in acts:
+              payload={}; evidence={}
+              try: payload=json.loads(str(get(a,'payload_json') or '{}'))
+              except Exception: pass
+              try: evidence=json.loads(str(get(a,'evidence_json') or '{}'))
+              except Exception: pass
+              sym=str(payload.get('symbol') or '')
+              st=str(get(a,'status') or '')
+              if sym:
+                  summary.setdefault(sym, {'PASS':0,'PENDING':0,'RUNNING':0,'FAILED':0,'OTHER':0})
+                  key=st if st in summary[sym] else 'OTHER'
+                  summary[sym][key]+=1
+              if st in ('RUNNING','CLAIMED','IN_PROGRESS'):
+                  current.append({'sequence':int(get(a,'sequence') or 0),'symbol':sym,'kind':str(get(a,'kind') or ''),'attempt':int(get(a,'attempt') or 0)})
+              if st in ('FAILED','ERROR') or str(get(a,'last_error') or ''):
+                  failed.append({'sequence':int(get(a,'sequence') or 0),'symbol':sym,'kind':str(get(a,'kind') or ''),'status':st,'error':str(get(a,'last_error') or '')[:300]})
+          print('D1_ACTION_SUMMARY=' + json.dumps(summary,sort_keys=True,ensure_ascii=False))
+          print('D1_CURRENT_ACTIONS=' + json.dumps(current,sort_keys=True,ensure_ascii=False))
+          print('D1_FAILED_ACTIONS=' + json.dumps(failed,sort_keys=True,ensure_ascii=False))
+          print('D1_QUEUE_READONLY=PASS')
+          pool.stop(); driver.stop(timeout=5)
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/ydb-endpoint"
