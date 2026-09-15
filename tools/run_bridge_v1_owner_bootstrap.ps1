@@ -27,9 +27,9 @@ try {
     Write-Host 'Downloading canonical Bridge v1 main...'
     gh repo clone $repo $tempRoot -- --depth 1 --branch main
 
-    $script = Join-Path $tempRoot 'tools\bootstrap_bridge_v1_apps_script.py'
+    $script = Join-Path $tempRoot 'tools\finish_bridge_v1.py'
     if (-not (Test-Path $script)) {
-        throw "Owner bootstrap script not found: $script"
+        throw "End-to-end Bridge v1 finisher not found: $script"
     }
 
     $args = @($script, '--repo-root', $tempRoot)
@@ -37,18 +37,18 @@ try {
         $args += '--keep-clasp-login'
     }
 
-    Write-Host 'Starting Google owner bootstrap. Google consent pages will open in your default browser.'
+    Write-Host 'Starting Bridge v1 end-to-end activation. Google consent pages will open in your default browser.'
     & python @args
     if ($LASTEXITCODE -ne 0) {
-        throw "Bridge v1 owner bootstrap failed with exit code $LASTEXITCODE"
+        throw "Bridge v1 end-to-end activation failed with exit code $LASTEXITCODE"
     }
 
     $result = Join-Path $tempRoot 'control\bridge-v1-owner-bootstrap-result.json'
     if (-not (Test-Path $result)) {
-        throw 'Bootstrap completed without the expected non-secret result file.'
+        throw 'Activation completed without the expected non-secret result file.'
     }
     Copy-Item -LiteralPath $result -Destination $resultCopy -Force
-    Write-Host "BRIDGE_V1_OWNER_BOOTSTRAP=PASS"
+    Write-Host 'BRIDGE_V1_END_TO_END_PRODUCTION=PASS'
     Write-Host "Non-secret result copied to: $resultCopy"
 }
 finally {
