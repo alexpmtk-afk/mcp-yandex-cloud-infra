@@ -13,7 +13,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: marketplaces-drive-bridge-comparison
+  group: marketplaces-drive-bridge-comparison-${{ github.event_name }}-${{ github.run_id }}
   cancel-in-progress: false
 
 env:
@@ -37,9 +37,6 @@ jobs:
           set -euo pipefail
           python -m pip install --quiet 'httpx>=0.27,<1'
           mkdir -p "$RUNNER_TEMP/yc"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
-            https://storage.yandexcloud.net/yandexcloud-yc/release/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
-            -o "$RUNNER_TEMP/yc.tgz" || \
           curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
             https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
             -o "$RUNNER_TEMP/yc.tgz"
