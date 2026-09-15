@@ -6,12 +6,12 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-14.v17"
+ARCHITECTURE_VERSION = "2026-09-15.v17"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
     "status": "CANONICAL",
-    "scope": "Marketplaces MCP runtime, multi-dataset marketplace archive, and fail-closed Semantic Core routing",
+    "scope": "Marketplaces MCP runtime, multi-dataset marketplace archive, advertising archive, and fail-closed Semantic Core routing",
     "runtime": {
         "cloud": "Yandex Cloud only",
         "entry": "ChatGPT/Codex -> marketplaces-yandex -> Yandex API Gateway -> Yandex Serverless Container",
@@ -21,7 +21,7 @@ SYSTEM_MAP: dict[str, Any] = {
     },
     "storage_policy": {
         "primary_archive_storage": "Google Drive",
-        "canonical_archive_data": "annual marketplace dataset CSV files plus reports registry",
+        "canonical_archive_data": "annual marketplace dataset CSV files plus dataset-specific coverage registries",
         "google_drive_root": "MCP архив базы данных",
         "google_drive_auth": "owner-operated Google Apps Script web-app bridge; shared bridge secret kept in Yandex Lockbox; no Google OAuth refresh token is stored in Yandex",
         "google_drive_bridge": "Apps Script executes as the Drive owner, handles small archive operations, brokers official Drive resumable-session creation, and performs narrow SHA256-verified promotion inside the fixed archive root",
@@ -40,7 +40,7 @@ SYSTEM_MAP: dict[str, Any] = {
         "default_update_scope": "all configured marketplace cabinets for the selected dataset",
         "idempotent": True,
         "registry_required": True,
-        "canonical_source_of_truth": "Google Drive annual dataset CSV files plus reports registry",
+        "canonical_source_of_truth": "Google Drive annual dataset CSV files plus dataset-specific coverage registries",
         "initial_history_backfill": 2026,
         "planned_history_floor": 2024,
         "annual_partitioning": "one logical annual dataset per marketplace/cabinet/dataset/year",
@@ -78,14 +78,31 @@ SYSTEM_MAP: dict[str, Any] = {
                 "sales-funnel analytics",
             ],
         },
+        "wb_advertising_v1": {
+            "status": "CANONICAL_ARCHIVE_IMPLEMENTED",
+            "registry": "dataset_coverage_registry.csv",
+            "datasets": [
+                "ads_campaign_roster_snapshots",
+                "ads_campaign_daily",
+                "ads_product_daily",
+                "ads_search_cluster_daily",
+                "ads_campaign_snapshots",
+                "ads_expenses",
+                "ads_payments",
+            ],
+            "semantic_execution_dataset": "ads_campaign_daily",
+            "semantic_coverage_dependency": "ads_campaign_roster_snapshots",
+            "campaign_daily_deduplication": "(date, campaign_id)",
+            "coverage_rule": "roster plus fullstats FULL_COVERAGE for every expected eligible campaign over the full requested closed period",
+        },
         "planned_dataset_families": {
-            "wildberries": ["orders", "stock snapshots", "promotion/advertising", "sales funnel"],
+            "wildberries": ["orders", "stock snapshots", "sales funnel"],
             "ozon": ["finance", "orders/shipments", "stock snapshots", "promotion/performance", "sales funnel"],
         },
     },
     "advertising_policy": {
         "current_scope": "Wildberries only; Ozon advertising is explicitly out of scope for this phase",
-        "phase": "WB Advertising M0 read-only",
+        "phase": "WB Advertising M0 live read-only + Advertising Archive V1 historical read-only",
         "credential_service": "wb_ads",
         "credentials": "Promotion-scoped WB credentials are server-side only and must be injected from Yandex Lockbox; never stored on Drive/GitHub",
         "live_state_source": "Wildberries Promotion API",
@@ -94,24 +111,34 @@ SYSTEM_MAP: dict[str, Any] = {
         "m0_default_audit_period": "last 7 full Europe/Moscow calendar days ending yesterday",
         "m0_batch_limit": "at most 50 campaign IDs in one /adv/v3/fullstats request; fail closed instead of returning a partial audit",
         "metric_class": "advertising_attribution_operational",
+        "semantic_metric_contract": "wb_ads_m0.v1",
         "profitability_boundary": "advertising attribution metrics are not actual business profit; real profitability requires approved joins to sales/buyouts, returns, finance and unit economics",
         "archive_domain": "База данных/WB/<cabinet>/<year>/advertising",
-        "archive_status": "2026 Drive category scaffold (stats/state/finance/config/audit) exists for wb_dmitrieva, wb_novokshenov and wb_laser_master; ingestion/coverage/registry integration is not yet implemented or accepted",
-        "planned_datasets": ["ads_campaign_daily", "ads_product_daily", "ads_search_cluster_daily", "ads_campaign_snapshots", "ads_expenses", "ads_payments", "ads_bid_history", "ads_product_membership_history", "ads_placement_history", "ads_minus_phrase_history", "ads_mcp_actions"],
-        "historical_routing": "when Advertising Archive V1 is implemented and coverage is proven, closed historical periods must be archive-first; current state/control stays live",
+        "archive_status": "Advertising Archive V1 canonical annual datasets and dataset_coverage_registry.csv are implemented; historical Semantic Core execution is coverage-gated",
+        "archive_v1_datasets": [
+            "ads_campaign_roster_snapshots",
+            "ads_campaign_daily",
+            "ads_product_daily",
+            "ads_search_cluster_daily",
+            "ads_campaign_snapshots",
+            "ads_expenses",
+            "ads_payments",
+        ],
+        "historical_routing": "closed cabinet-level campaign advertising analytics are archive-first only when roster plus campaign fullstats FULL_COVERAGE is proven; current state/control stays live",
+        "semantic_v1_scope": "cabinet-level ads_campaign_daily only; product/nm_id questions fail closed until ads_product_daily receives its own approved semantic execution contract; campaign-scoped selectors/grouping are also fail-closed",
         "write_control_status": "not accepted in M0; dedicated start/pause/stop/bid/budget/product/cluster control tools require a later safety-reviewed phase",
         "safety_override": "provider GET endpoints that mutate campaign state (start/pause/stop/delete) are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb",
     },
     "semantic_core": {
         "status": "TEST_RUNTIME_WIRED",
         "runtime_entry": "marketplace_business_query",
-        "registry": "core/semantic_registry.yaml",
+        "registry": "core/semantic_registry.yaml + validated core/semantic_registry_extensions.yaml",
         "intent_catalog": "core/semantic_intents.yaml",
-        "execution_registry": "core/semantic_execution.yaml",
-        "archive_executor": "core/semantic_archive.py",
-        "current_archive_dataset": "wb_weekly_finance_main",
-        "current_archive_schema": "92 official-help-audited physical columns",
-        "source_revision": "alexpmtk-afk/marketplaces-mcp-ru@920f3f1458a1700ad350d43cf35178256e8e858f",
+        "execution_registry": "core/semantic_execution.yaml for weekly finance",
+        "archive_executor": "core/semantic_archive.py for weekly finance; core/semantic_advertising.py for advertising",
+        "current_archive_datasets": ["wb_weekly_finance_main", "ads_campaign_daily", "ads_campaign_roster_snapshots"],
+        "current_archive_schema": "92 official-help-audited weekly-finance columns plus WB Advertising V1 campaign-daily and roster schemas",
+        "source_revision": "alexpmtk-afk/marketplaces-mcp-ru@833eab826bfaa4691a05a21a5d00f1e8e0ba1b37",
         "approved_archive_executors": [
             "penalties",
             "storage_charge",
@@ -123,8 +150,9 @@ SYSTEM_MAP: dict[str, Any] = {
             "acquiring_and_payment_processing",
             "observed_fulfillment_method",
             "warehouse_tariff_context",
+            "advertising_performance",
         ],
-        "execution_gate": "FULL_COVERAGE from COMPLETE reports_registry.csv fragments plus canonical annual-file presence",
+        "execution_gate": "FULL_COVERAGE from the dataset-specific canonical registry plus canonical annual-file presence; weekly finance uses reports_registry.csv, advertising uses dataset_coverage_registry.csv with roster/fullstats scope proof",
         "question_policy": "preserve the original natural-language question; execute only an explicitly registered capability; do not substitute a similar legacy metric",
         "fail_closed_for": [
             "complete marketplace order flow from weekly-finance orderDt/orderUid",
@@ -133,10 +161,15 @@ SYSTEM_MAP: dict[str, Any] = {
             "current live warehouse tariff from historical dlvPrc/warehouseLogisticsCoeff",
             "Ozon semantics until a dedicated approved source binding exists",
             "unknown provider fields such as agencyVat until explicitly audited and bound",
+            "advertising product/nm_id questions until ads_product_daily gets an approved Semantic contract",
+            "advertising campaign-scoped selectors or breakdowns until selector/grouping contracts are approved",
+            "current-day advertising from the closed historical archive",
+            "historical advertising when roster/fullstats FULL_COVERAGE is not proven",
         ],
+        "advertising_guardrail": "DRR/ROAS and attributed order metrics under advertising_performance are WB advertising-attribution metrics, not total seller revenue, complete orders, or business profitability",
         "money_policy": "never combine different currencies and never silently net unrelated financial components",
         "dlvPrc_policy": "historical coefficient fixed when the supply was planned; not proof of the coefficient actually charged after fixation expiry and never current tariff truth",
-        "schema_drift_policy": "provider fields outside the audited 92-column archive, including agencyVat, are not executable merely because the live API exposes them",
+        "schema_drift_policy": "provider fields outside the audited 92-column weekly-finance archive, including agencyVat, are not executable merely because the live API exposes them",
     },
     "data_routing_policy": {
         "canonical_catalog_tool": "marketplace_data_catalog",
@@ -156,7 +189,7 @@ SYSTEM_MAP: dict[str, Any] = {
         "current_or_uncovered": "use an explicitly suitable live/provider source or return a controlled source/coverage gap; never fall back to a similar historical field",
         "complete_orders": "never use weekly-finance orderDt/orderUid as the complete customer-order flow",
         "current_tariffs": "never use historical dlvPrc or warehouseLogisticsCoeff as current live tariff truth",
-        "advertising_live_vs_archive": "campaign state/current control is live; closed advertising analytics becomes archive-first only after the ad dataset binding and coverage are implemented and proven",
+        "advertising_live_vs_archive": "campaign state/current control remains live; closed cabinet-level advertising analytics are archive-first after roster/fullstats FULL_COVERAGE proof; product-level and campaign-scoped semantic requests remain fail-closed until separately approved",
         "multi_client": "all clients must see the same remote canonical Drive state, data catalog and Semantic Core rules; no chat-local architecture decisions",
     },
     "change_control": {
@@ -184,7 +217,7 @@ SYSTEM_MAP: dict[str, Any] = {
 SYSTEM_INSTRUCTIONS = f"""CANONICAL MARKETPLACES MCP ARCHITECTURE — {ARCHITECTURE_VERSION}
 Treat marketplace_system_map, marketplace_data_catalog and the server-side Semantic Core as sources of truth for business routing.
 Runtime infrastructure is Yandex Cloud. Google Cloud is not part of the runtime architecture and no Google Cloud OAuth runtime dependency is required.
-Canonical marketplace archive data is stored on Google Drive under the server-owned `MCP архив базы данных` root: annual dataset CSV files and the reports registry are the source of truth.
+Canonical marketplace archive data is stored on Google Drive under the server-owned `MCP архив базы данных` root: annual dataset CSV files and dataset-specific coverage registries are the source of truth.
 Yandex Object Storage remains required for durable queue/job state, immutable candidates, staging, resumable-upload state, and a secondary byte-for-byte backup of canonical Drive files. It uses the Serverless Container runtime service account and a temporary IAM token; no static archive key is required.
 Google Drive access uses the owner's Google Apps Script web-app bridge; its shared bridge secret remains in Yandex Lockbox. No Google OAuth refresh token is stored in Yandex.
 Large annual CSV files must NOT be transported through Apps Script/base64. Apps Script only brokers the official Google Drive API resumable-session start and narrow verified promotion; Yandex uploads bounded chunks directly to the returned Google session URI.
@@ -194,7 +227,7 @@ The marketplace archive is MULTI-DATASET. No single report or annual CSV is the 
 For natural-language business questions, preserve the user's original wording and route it through marketplace_business_query / Semantic Core before archive execution. Only explicitly approved capabilities may execute.
 The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for the complete customer-order flow, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
 Weekly-finance orderDt/orderUid are context attached to reported financial operations and must never be used as the complete customer-order funnel.
-Archive calculations require FULL_COVERAGE from COMPLETE registry fragments plus the canonical annual file. Different currencies are never combined and unrelated financial components are never silently netted.
+Archive calculations require FULL_COVERAGE from the dataset-specific canonical registry plus the canonical annual file. Different currencies are never combined and unrelated financial components are never silently netted.
 Historical deliveryMethod may describe observed fulfillment only. Historical dlvPrc is the coefficient fixed when the supply was planned; after fixation expiry it is not proof of the coefficient actually charged and it is never current tariff truth. warehouseLogisticsCoeff is also historical context, not a current tariff source.
 Current-state questions, complete-order-flow questions, unsupported Ozon semantics and unknown fields fail closed rather than falling back to similar weekly-finance data.
 The current provider API may expose agencyVat, but it is not part of the audited 92-column canonical archive and has no approved Semantic Core binding; do not execute it until it is explicitly audited and registered.
@@ -202,8 +235,10 @@ Before answering other historical business questions, use marketplace_metric_rou
 Never silently substitute the weekly finance dataset for orders, stocks, advertising, funnels, or any other missing dataset. Surface the gap or use the matching official provider API/backfill path.
 Initial historical backfill is 2026; planned archive depth is through 2024 where provider history allows it. The same multi-dataset principle applies to both Wildberries and Ozon.
 For database/archive tasks, use server-owned shared state, canonical Drive files, registry/idempotent update logic, and official WB/Ozon APIs. Do not invent chat-local storage, bypass Drive with another source of truth, or introduce a new architecture path.
-WB Advertising M0 is Wildberries-only and read-only: use dedicated server-side wb_ads Promotion credentials; current campaign state is live from WB Promotion API; M0 advertising-attribution metrics must never be presented as actual business profit.
-The advertising Drive folder scaffold is not proof that Advertising Archive V1 ingestion or historical coverage exists. Do not route historical ad analytics to the archive until dataset bindings, registry coverage and validation are implemented and accepted.
+WB Advertising M0 is Wildberries-only and read-only. Current campaign state/control remains live through dedicated server-side wb_ads Promotion credentials.
+Advertising Archive V1 is the canonical closed-history source for approved cabinet-level advertising_performance. It requires roster plus fullstats FULL_COVERAGE from dataset_coverage_registry.csv before any calculation.
+Semantic Advertising V1 is cabinet_total only. Product/nm_id questions, specific-campaign selectors, campaign breakdowns, incomplete coverage, and current-day requests must fail closed rather than being substituted with cabinet historical totals.
+Advertising metrics use the wb_ads_m0.v1 advertising-attribution contract. DRR/ROAS, ad orders and attributed order amount are NOT actual business profit, complete seller orders or realized seller revenue.
 Provider GET endpoints that change advertising state are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb.
 If a requested implementation conflicts with the canonical map, data catalog or Semantic Core guardrails, fail closed and surface the conflict instead of silently changing architecture.
 """
