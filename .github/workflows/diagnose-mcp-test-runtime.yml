@@ -56,11 +56,15 @@ jobs:
           test -n "$CONTAINER_ID"
           CONTAINER_URL="$(timeout 45s yc serverless container get --id "$CONTAINER_ID" --format json --no-user-output | jq -r '.url//empty')"
           GATEWAY_DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          CLUSTER_ID="$(timeout 45s yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
           test -n "$CONTAINER_URL"
           test -n "$GATEWAY_DOMAIN"
+          test -n "$CLUSTER_ID"
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
           echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
           echo "container_url=$CONTAINER_URL" >> "$GITHUB_OUTPUT"
           echo "gateway_url=https://$GATEWAY_DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "cluster=$CLUSTER_ID" >> "$GITHUB_OUTPUT"
           echo 'test_runtime_endpoints=RESOLVED'
 
       - name: Probe direct container vs API Gateway
@@ -88,6 +92,98 @@ jobs:
           else
             echo 'HEALTH_PATH_CLASSIFICATION=CONTAINER_OR_SHARED_RUNTIME_FAILURE'
           fi
+
+      - name: Print sanitized health response bodies
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import re
+          from pathlib import Path
+
+          def sanitize(text: str) -> str:
+              text = re.sub(r"https?://[^\s\"']+", "<url>", text)
+              text = re.sub(r"(?i)(authorization|bearer|token|secret|password)(\s*[:=]\s*)[^,}\s]+", r"\1\2<redacted>", text)
+              text = re.sub(r"eyJ[A-Za-z0-9_\-.]{20,}", "<redacted-jwt>", text)
+              text = re.sub(r"[A-Za-z0-9_\-]{48,}", "<redacted-long-value>", text)
+              return text[:2000]
+
+          for label, name in (("DIRECT_HEALTH_BODY", "direct-health"), ("GATEWAY_HEALTH_BODY", "gateway-health")):
+              p = Path("/home/runner/work/_temp") / name
+              text = p.read_text(errors="replace") if p.exists() else "<missing>"
+              print(f"{label}={sanitize(text)}")
+          PY
+
+      - name: Inspect active revision structure and Redis state
+        shell: bash
+        env:
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+          CLUSTER_ID: ${{ steps.resources.outputs.cluster }}
+        run: |
+          set -euo pipefail
+          yc serverless container revision list --container-id "$CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json"
+          ACTIVE_ID="$(jq -r '[.[]|select(.status=="ACTIVE")]|sort_by(.created_at//.createdAt)|last|.id//empty' "$RUNNER_TEMP/revisions.json")"
+          test -n "$ACTIVE_ID"
+          yc serverless container revision get "$ACTIVE_ID" --format json --no-user-output > "$RUNNER_TEMP/active-revision.json"
+          yc managed-redis cluster get --id "$CLUSTER_ID" --format json --no-user-output > "$RUNNER_TEMP/redis-cluster.json"
+          yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json --no-user-output > "$RUNNER_TEMP/redis-hosts.json"
+          python - <<'PY'
+          import json, re
+          from pathlib import Path
+
+          rev = json.loads(Path('/home/runner/work/_temp/active-revision.json').read_text())
+          cluster = json.loads(Path('/home/runner/work/_temp/redis-cluster.json').read_text())
+          hosts = json.loads(Path('/home/runner/work/_temp/redis-hosts.json').read_text())
+
+          env = rev.get('environment') or {}
+          if isinstance(env, list):
+              env_keys = sorted(str(x.get('key') or x.get('name') or '') for x in env if isinstance(x, dict))
+          elif isinstance(env, dict):
+              env_keys = sorted(map(str, env.keys()))
+          else:
+              env_keys = []
+
+          secrets = rev.get('secrets') or []
+          secret_env = []
+          for x in secrets if isinstance(secrets, list) else []:
+              if isinstance(x, dict):
+                  secret_env.append(str(x.get('environment_variable') or x.get('environmentVariable') or x.get('name') or ''))
+
+          image = rev.get('image') or {}
+          image_url = rev.get('image_url') or rev.get('imageUrl') or (image.get('image_url') if isinstance(image, dict) else None) or (image.get('imageUrl') if isinstance(image, dict) else None) or (image.get('url') if isinstance(image, dict) else None)
+          summary = {
+              'id': rev.get('id'),
+              'status': rev.get('status'),
+              'service_account_id': rev.get('service_account_id') or rev.get('serviceAccountId'),
+              'network_id': rev.get('network_id') or rev.get('networkId'),
+              'image_url': image_url,
+              'execution_timeout': rev.get('execution_timeout') or rev.get('executionTimeout'),
+              'concurrency': rev.get('concurrency'),
+              'environment_keys': env_keys,
+              'secret_environment_keys': sorted(x for x in secret_env if x),
+          }
+          print('ACTIVE_REVISION_SAFE_SUMMARY=' + json.dumps(summary, ensure_ascii=False, sort_keys=True))
+
+          csum = {
+              'id': cluster.get('id'),
+              'name': cluster.get('name'),
+              'status': cluster.get('status'),
+              'health': cluster.get('health'),
+              'environment': cluster.get('environment'),
+          }
+          print('REDIS_CLUSTER_SAFE_SUMMARY=' + json.dumps(csum, ensure_ascii=False, sort_keys=True))
+          hsum = []
+          for h in hosts if isinstance(hosts, list) else []:
+              if not isinstance(h, dict):
+                  continue
+              hsum.append({
+                  'name': h.get('name'),
+                  'role': h.get('role'),
+                  'health': h.get('health'),
+                  'shard_name': h.get('shard_name') or h.get('shardName'),
+              })
+          print('REDIS_HOSTS_SAFE_SUMMARY=' + json.dumps(hsum, ensure_ascii=False, sort_keys=True))
+          PY
 
       - name: Read and classify latest startup evidence
         shell: bash
@@ -163,4 +259,4 @@ jobs:
       - name: Cleanup diagnostic credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/direct-health" "$RUNNER_TEMP/gateway-health"
+        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/logs.json" "$RUNNER_TEMP/direct-health" "$RUNNER_TEMP/gateway-health" "$RUNNER_TEMP/active-revision.json" "$RUNNER_TEMP/redis-cluster.json" "$RUNNER_TEMP/redis-hosts.json"
