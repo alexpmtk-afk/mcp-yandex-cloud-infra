@@ -1,0 +1,70 @@
+name: Inspect TEST Gateway Stop
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/inspect-test-gateway-stop.yml
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+
+      - name: Inspect TEST gateway status and operation history
+        shell: bash
+        run: |
+          set +e
+          GW=d5deoa6cl4irtmkp5ad6
+          echo '--- GATEWAY_GET ---'
+          yc serverless api-gateway get --id "$GW" --format json --no-user-output
+          echo "gateway_get_exit=$?"
+          echo '--- GATEWAY_OPERATIONS ---'
+          yc serverless api-gateway list-operations --id "$GW" --format json --no-user-output
+          echo "gateway_ops_exit=$?"
+          echo '--- ALL_TEST_GATEWAYS ---'
+          yc serverless api-gateway list --folder-id b1gnd0dqoq3ljod88i8t --format json --no-user-output
+
+      - name: Inspect other visible gateways for systemic stop
+        shell: bash
+        run: |
+          set +e
+          for fid in $(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json --no-user-output | jq -r '.[].id'); do
+            echo "--- folder=$fid ---"
+            yc serverless api-gateway list --folder-id "$fid" --format json --no-user-output | jq -c '.[]? | {id,name,status,domain,created_at}' || true
+          done
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
