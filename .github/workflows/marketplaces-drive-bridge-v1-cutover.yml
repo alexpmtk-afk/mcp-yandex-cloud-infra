@@ -172,10 +172,40 @@ jobs:
             --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
             --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
             --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET,id=$SECRET_ID,version-id=$VERSION_ID,key=gdrive_bridge_v1_secret" \
-            --format json --no-user-output > "$RUNNER_TEMP/revision.json"
-          REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"; test -n "$REVISION_ID"
+            --async --format json > "$RUNNER_TEMP/deploy-operation.json"
+
+          OPERATION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/deploy-operation.json")"
+          test -n "$OPERATION_ID"
+          echo "Marketplaces revision deploy operation: $OPERATION_ID"
+
+          DONE=false
+          for attempt in $(seq 1 90); do
+            if yc operation get "$OPERATION_ID" --format json --retry 0 > "$RUNNER_TEMP/deploy-operation-state.json"; then
+              DONE="$(jq -r '.done//false' "$RUNNER_TEMP/deploy-operation-state.json")"
+              [[ "$DONE" == true ]] && break
+            else
+              echo "Operation status read failed transiently on attempt $attempt; retrying..." >&2
+            fi
+            sleep 5
+          done
+          [[ "$DONE" == true ]] || { echo "Revision deploy operation did not finish in time: $OPERATION_ID" >&2; exit 1; }
+
+          if jq -e '.error != null' "$RUNNER_TEMP/deploy-operation-state.json" >/dev/null; then
+            echo 'Yandex Serverless revision deploy failed:' >&2
+            jq -c '.error' "$RUNNER_TEMP/deploy-operation-state.json" >&2
+            exit 1
+          fi
+
+          REVISION_ID="$(jq -r '.response.id // .response.value.id // empty' "$RUNNER_TEMP/deploy-operation-state.json")"
+          if [[ -z "$REVISION_ID" ]]; then
+            yc serverless container revision list --container-id "$CONTAINER_ID" --format json > "$RUNNER_TEMP/revisions.json"
+            REVISION_ID="$(jq -r --arg image "$IMAGE" '[.[]|select(((.image.image_url // .image.url // "") == $image))]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/revisions.json")"
+          fi
+          test -n "$REVISION_ID"
+          yc serverless container revision get "$REVISION_ID" --format json > "$RUNNER_TEMP/revision.json"
+
           BASE="https://${DOMAIN}"
-          for attempt in $(seq 1 18); do
+          for attempt in $(seq 1 36); do
             CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
             [[ "$CODE" == 200 ]] && break
             sleep 5
@@ -249,4 +279,4 @@ jobs:
       - name: Cleanup credentials
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/deployed.json" "$RUNNER_TEMP/revision.json"
+        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/deployed.json" "$RUNNER_TEMP/revision.json" "$RUNNER_TEMP/deploy-operation.json" "$RUNNER_TEMP/deploy-operation-state.json" "$RUNNER_TEMP/revisions.json"
