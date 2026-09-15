@@ -1,1 +1,1 @@
-2026-09-14T22:04:00+03:00 read-only durable Laser state before resumable diagnostic continuation
+2026-09-15T18:28:00+03:00 read-only durable Laser state before Bridge v1 finalization continuation
