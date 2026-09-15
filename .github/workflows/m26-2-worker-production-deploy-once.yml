@@ -136,7 +136,7 @@ jobs:
           test "$rc" = 0 || { cat "$RUNNER_TEMP/zero.txt"; exit "$rc"; }
           echo 'M26_2_ZERO_DRIFT=PASS'
       - name: First real SBER forecast through production MCP
-        if: github.event.head_commit.message == 'ops: create first real SBER forecast once'
+        if: "${{ github.event.head_commit.message == 'ops: fix first forecast one-shot guard' }}"
         shell: bash
         run: |
           set -euo pipefail
