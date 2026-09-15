@@ -5,12 +5,19 @@ on:
     paths:
       - 'tools/finish_bridge_v1.py'
       - 'tools/run_finish_bridge_v1.py'
+      - 'tools/resume_bridge_v1_apps_script.py'
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
+      - 'shared/google-drive-bridge/bootstrap.gs'
       - '.github/workflows/google-drive-bridge-v1-finish-ci.yml'
+      - '.github/workflows/google-drive-bridge-v1-lockbox-bootstrap.yml'
+      - '.github/workflows/marketplaces-drive-bridge-v1-acceptance.yml'
+      - '.github/workflows/birzha-drive-bridge-v1-acceptance.yml'
+      - '.github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml'
       - '.github/workflows/marketplaces-drive-bridge-v1-cutover.yml'
       - '.github/workflows/birzha-drive-bridge-v1-cutover.yml'
   push:
     branches:
+      - main
       - bridge-v1-one-command-finish
       - bridge-v1-windows-exec-fix
       - bridge-v1-windows-exec-fix-v2
@@ -20,8 +27,16 @@ on:
     paths:
       - 'tools/finish_bridge_v1.py'
       - 'tools/run_finish_bridge_v1.py'
+      - 'tools/resume_bridge_v1_apps_script.py'
       - 'tools/run_bridge_v1_owner_bootstrap.ps1'
+      - 'shared/google-drive-bridge/bootstrap.gs'
       - '.github/workflows/google-drive-bridge-v1-finish-ci.yml'
+      - '.github/workflows/google-drive-bridge-v1-lockbox-bootstrap.yml'
+      - '.github/workflows/marketplaces-drive-bridge-v1-acceptance.yml'
+      - '.github/workflows/birzha-drive-bridge-v1-acceptance.yml'
+      - '.github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml'
+      - '.github/workflows/marketplaces-drive-bridge-v1-cutover.yml'
+      - '.github/workflows/birzha-drive-bridge-v1-cutover.yml'
 
 permissions:
   contents: read
@@ -36,7 +51,11 @@ jobs:
           python-version: '3.12'
       - name: Compile end-to-end scripts
         run: |
-          python -m py_compile tools/bootstrap_bridge_v1_apps_script.py tools/finish_bridge_v1.py tools/run_finish_bridge_v1.py
+          python -m py_compile \
+            tools/bootstrap_bridge_v1_apps_script.py \
+            tools/finish_bridge_v1.py \
+            tools/run_finish_bridge_v1.py \
+            tools/resume_bridge_v1_apps_script.py
       - name: Validate clasp named-user auth is fail-closed
         shell: bash
         run: |
@@ -78,7 +97,6 @@ jobs:
           finally:
               r.time.sleep = original_sleep
           assert calls['n'] == 3
-
           semantic={'n':0}
           def bad(url, token, project_id, secret):
               semantic['n'] += 1
@@ -139,6 +157,48 @@ jobs:
           assert calls['n'] == 2
           print('BRIDGE_V1_BOOTSTRAP_RETIREMENT_RETRY=PASS')
           PY
+      - name: Validate resume discovery parser and deployment URL binding
+        shell: bash
+        run: |
+          python - <<'PY'
+          import sys
+          sys.path.insert(0, 'tools')
+          import resume_bridge_v1_apps_script as r
+          assert r._deployment_id_from_url('https://script.google.com/macros/s/AKfyExample_123/exec') == 'AKfyExample_123'
+          assert r._deployment_id_from_url('https://example.invalid') == ''
+          rows=r._json_list('[{"name":"X","scriptId":"S"}]')
+          assert rows[0]['scriptId']=='S'
+          rows=r._json_list('{"deployments":[{"deploymentId":"AKfyD"}]}')
+          assert rows[0]['deploymentId']=='AKfyD'
+          print('BRIDGE_V1_RESUME_DISCOVERY_PARSER=PASS')
+          PY
+      - name: Reject single-key Lockbox JSON parsing regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          files=(
+            .github/workflows/google-drive-bridge-v1-lockbox-bootstrap.yml
+            .github/workflows/marketplaces-drive-bridge-v1-acceptance.yml
+            .github/workflows/birzha-drive-bridge-v1-acceptance.yml
+            .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
+          )
+          for f in "${files[@]}"; do
+            if grep -E -- '--key[^\n]*--format[ =]+json' "$f"; then
+              echo "Single-key Lockbox reads return raw values, not JSON: $f" >&2
+              exit 1
+            fi
+          done
+          echo 'BRIDGE_V1_LOCKBOX_SINGLE_KEY_RAW=PASS'
+      - name: Validate resumable bootstrap secret rotation remains identity-locked
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq 'sameIdentity' shared/google-drive-bridge/bootstrap.gs
+          grep -Fq "throw new Error('BOOTSTRAP_CONFIGURATION_CONFLICT')" shared/google-drive-bridge/bootstrap.gs
+          grep -Fq "props.setProperty('MCP_DRIVE_BRIDGE_SECRET', secret)" shared/google-drive-bridge/bootstrap.gs
+          grep -Fq 'rotated: !replayed' shared/google-drive-bridge/bootstrap.gs
+          grep -Fq 'resume.deploy_or_reuse_project' tools/run_finish_bridge_v1.py
+          echo 'BRIDGE_V1_RESUME_SECRET_ROTATION=PASS'
       - name: Validate final workflow chain
         shell: bash
         run: |
