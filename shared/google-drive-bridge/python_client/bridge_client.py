@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import math
 import random
 import uuid
 from dataclasses import dataclass
@@ -399,7 +400,7 @@ class GoogleDriveBridgeClient:
         values: list[list[Any]],
         idempotency_key: str,
     ) -> dict[str, Any]:
-        chunk_sha = hashlib.sha256(json.dumps(values, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+        chunk_sha = hashlib.sha256(json.dumps(_normalize_js_json(values), ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
         return await self.call(
             "sheet_write_chunk",
             {
@@ -469,6 +470,26 @@ class GoogleDriveBridgeClient:
             {"spreadsheet_id": spreadsheet_id, "stage_sheet_title": stage_sheet_title},
             idempotency_key=idempotency_key,
         )
+
+
+def _normalize_js_json(value: Any) -> Any:
+    """Normalize JSON values to Apps Script JSON.stringify number semantics.
+
+    In particular, JSON.parse/JSON.stringify collapses integral JSON numbers such
+    as 100.0 to 100 and negative zero to 0. Python json.dumps preserves 100.0,
+    which would otherwise produce a different SHA256 for the same parsed values.
+    """
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            raise ValueError("sheet values must not contain NaN or Infinity")
+        if value == 0.0 or value.is_integer():
+            return int(value)
+        return value
+    if isinstance(value, list):
+        return [_normalize_js_json(item) for item in value]
+    if isinstance(value, dict):
+        return {key: _normalize_js_json(item) for key, item in value.items()}
+    return value
 
 
 def _is_sha256(value: str) -> bool:

@@ -5,7 +5,7 @@ from pathlib import Path
 PYTHON_CLIENT = Path(__file__).resolve().parents[1] / "python_client"
 sys.path.insert(0, str(PYTHON_CLIENT))
 
-from bridge_client import _confirmed_offset  # noqa: E402
+from bridge_client import _confirmed_offset, _normalize_js_json  # noqa: E402
 
 
 def test_confirmed_offset():
@@ -42,3 +42,10 @@ def test_final_sheets_contract_has_post_commit_inspection() -> None:
     assert 'google_sheets_inspect' in bridge
     assert 'async def sheet_inspect(' in client
     assert '### `sheet_inspect`' in protocol
+
+
+def test_sheet_chunk_hash_normalizes_integral_float_like_json_stringify() -> None:
+    import json
+    values = [[1, 100.0, 101.5, -0.0]]
+    canonical = json.dumps(_normalize_js_json(values), ensure_ascii=False, separators=(",", ":"))
+    assert canonical == "[[1,100,101.5,0]]"
