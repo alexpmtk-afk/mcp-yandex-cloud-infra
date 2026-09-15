@@ -1,0 +1,106 @@
+name: Probe Current TEST MCP
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/probe-current-test-mcp.yml
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+
+      - name: Resolve current bearer and gateway
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create github-ci || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set folder-id b1gnd0dqoq3ljod88i8t
+          SECRET_ID="$(yc lockbox secret list --folder-id b1gnd0dqoq3ljod88i8t --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("mcp_bearer_token")!=null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          DOMAIN="$(yc serverless api-gateway list --folder-id b1gnd0dqoq3ljod88i8t --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain // .[0].domain // empty')"
+          test -n "$DOMAIN"
+          echo "MCP_URL=https://${DOMAIN}/mcp" >> "$GITHUB_ENV"
+
+      - name: Authenticated MCP initialize and tools list
+        shell: bash
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python - <<'PY'
+          import json, os, urllib.request, urllib.error
+          url=os.environ['MCP_URL']
+          token=os.environ['MCP_BEARER']
+          h={'Authorization':'Bearer '+token,'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          payload={'jsonrpc':'2.0','id':1,'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'current-test-probe','version':'1'}}}
+          req=urllib.request.Request(url,data=json.dumps(payload).encode(),headers=h,method='POST')
+          try:
+              with urllib.request.urlopen(req,timeout=60) as r:
+                  status=r.status; headers=dict(r.headers); text=r.read().decode()
+          except urllib.error.HTTPError as e:
+              status=e.code; headers=dict(e.headers); text=e.read().decode()
+          print('initialize_http='+str(status))
+          print('initialize_body_prefix='+text[:500].replace('\n',' '))
+          assert status==200,(status,text[:500])
+          data=None
+          for line in text.splitlines():
+              if line.startswith('data:'):
+                  data=json.loads(line[5:].strip()); break
+          if data is None and text.strip(): data=json.loads(text)
+          assert data and 'result' in data,data
+          print('protocol='+str(data['result'].get('protocolVersion')))
+          print('instructions_prefix='+str(data['result'].get('instructions',''))[:500])
+          sid=headers.get('Mcp-Session-Id') or headers.get('mcp-session-id')
+          hh=dict(h)
+          if sid: hh['Mcp-Session-Id']=sid
+          hh['MCP-Protocol-Version']=data['result'].get('protocolVersion','2025-06-18')
+          req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','method':'notifications/initialized'}).encode(),headers=hh,method='POST')
+          with urllib.request.urlopen(req,timeout=30) as r: print('initialized_http='+str(r.status))
+          req=urllib.request.Request(url,data=json.dumps({'jsonrpc':'2.0','id':2,'method':'tools/list','params':{}}).encode(),headers=hh,method='POST')
+          with urllib.request.urlopen(req,timeout=60) as r:
+              text=r.read().decode(); print('tools_http='+str(r.status))
+          data2=None
+          for line in text.splitlines():
+              if line.startswith('data:'):
+                  data2=json.loads(line[5:].strip()); break
+          if data2 is None and text.strip(): data2=json.loads(text)
+          names=sorted(x['name'] for x in data2['result']['tools'])
+          print('tool_count='+str(len(names)))
+          print('semantic_business_query_present='+str('marketplace_business_query' in names))
+          print('CURRENT_TEST_MCP_EXECUTION=PASS')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/bearer"
