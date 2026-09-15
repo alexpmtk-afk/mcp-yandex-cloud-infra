@@ -92,17 +92,25 @@ function doPost(e) {
       };
       const alreadyConfigured = Boolean(current.secret || current.projectId || current.rootId || current.rootName);
       if (alreadyConfigured) {
-        const same = current.secret === secret &&
-          current.projectId === cfg.projectId &&
+        const sameIdentity = current.projectId === cfg.projectId &&
           current.rootId === cfg.rootId &&
           current.rootName === cfg.rootName;
-        if (!same) throw new Error('BOOTSTRAP_CONFIGURATION_CONFLICT');
+        if (!sameIdentity) throw new Error('BOOTSTRAP_CONFIGURATION_CONFLICT');
+        const replayed = current.secret === secret;
+        if (!replayed) {
+          props.setProperty('MCP_DRIVE_BRIDGE_SECRET', secret);
+        }
+        props.setProperties({
+          MCP_DRIVE_BRIDGE_SMALL_MAX_BYTES: String(Math.floor(cfg.smallMaxBytes)),
+          MCP_DRIVE_BRIDGE_SHEETS_ENABLED: cfg.sheetsEnabled ? 'true' : 'false'
+        }, false);
         return bootstrapJson_({
           ok: true,
           phase: 'bootstrap_installed',
           project_id: cfg.projectId,
           root_id: root.id,
-          replayed: true
+          replayed: replayed,
+          rotated: !replayed
         });
       }
       props.setProperties({
@@ -118,7 +126,8 @@ function doPost(e) {
         phase: 'bootstrap_installed',
         project_id: cfg.projectId,
         root_id: root.id,
-        replayed: false
+        replayed: false,
+        rotated: false
       });
     } finally {
       lock.releaseLock();
