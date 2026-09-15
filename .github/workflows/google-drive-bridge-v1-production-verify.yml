@@ -1,0 +1,220 @@
+name: Google Drive Bridge v1 Production Verification
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bridge-v1-final-production-verify
+  cancel-in-progress: false
+
+env:
+  CLOUD_ID: b1gi4pr9msenirafh2c7
+  MARKETPLACES_REPO: alexpmtk-afk/marketplaces-mcp-ru
+  BIRZHA_REPO: alexpmtk-afk/birzha-mcp-forecast
+  MARKETPLACES_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+  LEGACY_MARKETPLACES_SECRET_ID: e6qb8b3u57e71731j1os
+  TF_DIR: terraform/birzha_test
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: '1.9.8'
+          terraform_wrapper: false
+
+      - name: Install Yandex Cloud CLI and authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          export PATH="$RUNNER_TEMP/yc:$PATH"
+          KEY="$RUNNER_TEMP/yc-key.json"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          yc config profile create bridge-v1-production-verify >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+          TOKEN="$(yc iam create-token)"
+          test -n "$TOKEN"
+          echo "::add-mask::$TOKEN"
+          printf '%s' "$TOKEN" > "$RUNNER_TEMP/iam-token"
+          echo 'BRIDGE_V1_FINAL_YC_AUTH=PASS'
+
+      - name: Verify Marketplaces production runtime
+        id: marketplaces
+        shell: bash
+        env:
+          BRIDGE_URL: ${{ vars.MARKETPLACES_GDRIVE_BRIDGE_V1_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$BRIDGE_URL"
+          [[ "$BRIDGE_URL" == https://script.google.com/macros/s/*/exec ]]
+          MAIN_SHA="$(git ls-remote "https://github.com/${MARKETPLACES_REPO}.git" refs/heads/main | awk '{print $1}')"
+          [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          RUNTIME_SA="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          GATEWAY="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          for v in CONTAINER_ID RUNTIME_SA SECRET_ID GATEWAY; do test -n "${!v}"; done
+
+          yc serverless container revision list --container-id "$CONTAINER_ID" --format json > "$RUNNER_TEMP/mp-revisions.json"
+          REVISION_ID="$(jq -r '[.[]|select((.status//"")=="ACTIVE")]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/mp-revisions.json")"
+          test -n "$REVISION_ID"
+          yc serverless container revision get "$REVISION_ID" --format json > "$RUNNER_TEMP/mp-revision.json"
+          MP_MAIN_SHA="$MAIN_SHA" MP_BRIDGE_URL="$BRIDGE_URL" python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'mp-revision.json').read_text())
+          image=d.get('image') or {}
+          env=image.get('environment') or {}
+          blob=json.dumps(d)
+          assert env.get('MARKETPLACE_MCP_SOURCE_COMMIT')==os.environ['MP_MAIN_SHA'], env.get('MARKETPLACE_MCP_SOURCE_COMMIT')
+          assert env.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_PROTOCOL')=='v1'
+          assert env.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_URL')==os.environ['MP_BRIDGE_URL']
+          assert env.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_ROOT_ID')==os.environ['MARKETPLACES_ROOT_ID']
+          assert 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET' in blob
+          assert 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' not in blob
+          assert 'google_drive_bridge_secret' not in blob
+          print('MARKETPLACES_PRODUCTION_V1_BINDING=PASS')
+          PY
+
+          CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/mp-health.json" -w '%{http_code}' "https://${GATEWAY}/healthz" || true)"
+          test "$CODE" = 200
+          echo 'MARKETPLACES_PRODUCTION_HEALTH=PASS'
+
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/mp-versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("mcp_bearer_token")!=null)|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/mp-versions.json")"
+          test -n "$VERSION_ID"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/mp-payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/mp-payload.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          MCP_URL="https://${GATEWAY}/mcp" MCP_BEARER="$BEARER" python - <<'PY'
+          import itertools,json,os,urllib.request
+          ids=itertools.count(1)
+          url=os.environ['MCP_URL']; bearer=os.environ['MCP_BEARER']; sid=None; proto='2025-06-18'
+          def call(payload):
+              global sid,proto
+              data=json.dumps(payload).encode()
+              h={'Authorization':'Bearer '+bearer,'Accept':'application/json, text/event-stream','Content-Type':'application/json','MCP-Protocol-Version':proto}
+              if sid: h['Mcp-Session-Id']=sid
+              req=urllib.request.Request(url,data=data,headers=h,method='POST')
+              with urllib.request.urlopen(req,timeout=90) as r:
+                  if r.headers.get('mcp-session-id'): sid=r.headers.get('mcp-session-id')
+                  text=r.read().decode()
+              for line in text.splitlines():
+                  if line.startswith('data:'): return json.loads(line[5:].strip())
+              return json.loads(text)
+          init=call({'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':proto,'capabilities':{},'clientInfo':{'name':'bridge-v1-final','version':'1'}}})
+          assert 'result' in init,init
+          proto=init['result'].get('protocolVersion',proto)
+          call({'jsonrpc':'2.0','method':'notifications/initialized'})
+          tools=call({'jsonrpc':'2.0','id':next(ids),'method':'tools/list','params':{}})['result']['tools']
+          assert 'marketplace_archive_status' in {x['name'] for x in tools}
+          out=call({'jsonrpc':'2.0','id':next(ids),'method':'tools/call','params':{'name':'marketplace_archive_status','arguments':{}}})['result']
+          assert not out.get('isError'),out
+          text=next(x['text'] for x in out.get('content',[]) if x.get('type')=='text')
+          data=json.loads(text)
+          assert data.get('error')!='archive_storage_not_configured',data
+          print('MARKETPLACES_PRODUCTION_MCP_DRIVE=PASS')
+          PY
+          echo "mp_sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
+          echo "mp_secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
+
+      - name: Initialize Birzha protected Terraform state
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir="$TF_DIR" validate
+          echo 'BIRZHA_PRODUCTION_TF_STATE=PASS'
+
+      - name: Verify Birzha production worker and isolation
+        shell: bash
+        env:
+          BRIDGE_URL: ${{ vars.BIRZHA_GDRIVE_BRIDGE_V1_URL }}
+          MP_RUNTIME_SA: ${{ steps.marketplaces.outputs.mp_sa }}
+          MP_SECRET_ID: ${{ steps.marketplaces.outputs.mp_secret }}
+        run: |
+          set -euo pipefail
+          test -n "$BRIDGE_URL"
+          [[ "$BRIDGE_URL" == https://script.google.com/macros/s/*/exec ]]
+          MAIN_SHA="$(git ls-remote "https://github.com/${BIRZHA_REPO}.git" refs/heads/main | awk '{print $1}')"
+          [[ "$MAIN_SHA" =~ ^[0-9a-f]{40}$ ]]
+          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/birzha-state.json"
+          BIRZHA_MAIN_SHA="$MAIN_SHA" BIRZHA_BRIDGE_URL="$BRIDGE_URL" python - <<'PY' > "$RUNNER_TEMP/birzha.env"
+          import json,os
+          from pathlib import Path
+          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'birzha-state.json').read_text())
+          by={r['address']:r['values'] for r in s['values']['root_module']['resources']}
+          w=by['yandex_serverless_container.orchestrator_worker[0]']; image=w['image'][0]; env=image.get('environment') or {}; sec=w.get('secrets') or []
+          assert env.get('BIRZHA_SOURCE_COMMIT')==os.environ['BIRZHA_MAIN_SHA']
+          assert env.get('BIRZHA_MARKET_MIRROR_REQUIRED')=='true'
+          assert env.get('BIRZHA_MARKET_MIRROR_PROJECT_ID')=='birzha'
+          assert env.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')==os.environ['BIRZHA_BRIDGE_URL']
+          assert any(x.get('key')=='gdrive_bridge_v1_secret' and x.get('environment_variable')=='BIRZHA_MARKET_MIRROR_BRIDGE_SECRET' for x in sec),sec
+          runtime=by['yandex_iam_service_account.runtime']; timer=by['yandex_function_trigger.orchestrator_timer[0]']
+          bridge_secret=by['yandex_lockbox_secret_iam_member.runtime_market_mirror_v1[0]']['secret_id']
+          vals={'WORKER_ID':w['id'],'BIRZHA_RUNTIME_SA':runtime['id'],'TIMER_ID':timer['id'],'BIRZHA_SECRET_ID':bridge_secret}
+          for k,v in vals.items():
+              v=str(v); assert '\n' not in v and '\r' not in v; print(f'{k}={v}')
+          PY
+          cat "$RUNNER_TEMP/birzha.env" >> "$GITHUB_ENV"
+          echo 'BIRZHA_PRODUCTION_V1_STATE=PASS'
+
+          URL="$(yc serverless container get "$WORKER_ID" --format json | jq -r '.url//empty')"
+          test -n "$URL"
+          URL="${URL%/}"
+          TOKEN="$(cat "$RUNNER_TEMP/iam-token")"
+          CODE="$(curl -sS --max-time 30 -H "Authorization: Bearer $TOKEN" -o "$RUNNER_TEMP/birzha-health.json" -w '%{http_code}' "$URL/healthz" || true)"
+          test "$CODE" = 200
+          jq -e '.status=="ok" and .market_mirror_required==true and .market_mirror_configured==true and .market_mirror_protocol==1 and .market_mirror_bridge_release=="1.0.0"' "$RUNNER_TEMP/birzha-health.json" >/dev/null
+          echo 'BIRZHA_PRODUCTION_HEALTH=PASS'
+
+          yc serverless trigger get "$TIMER_ID" --format json > "$RUNNER_TEMP/birzha-timer.json"
+          jq -e '.status=="ACTIVE"' "$RUNNER_TEMP/birzha-timer.json" >/dev/null
+          echo 'BIRZHA_PRODUCTION_TIMER=PASS'
+
+          test "$BIRZHA_SECRET_ID" != "$MP_SECRET_ID"
+          yc lockbox secret list-access-bindings --id "$MP_SECRET_ID" --format json > "$RUNNER_TEMP/mp-access.json"
+          yc lockbox secret list-access-bindings --id "$BIRZHA_SECRET_ID" --format json > "$RUNNER_TEMP/birzha-access.json"
+          jq -e --arg id "$BIRZHA_RUNTIME_SA" '[.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)]|length==0' "$RUNNER_TEMP/mp-access.json" >/dev/null
+          jq -e --arg id "$BIRZHA_RUNTIME_SA" '[.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)]|length>=1' "$RUNNER_TEMP/birzha-access.json" >/dev/null
+          jq -e --arg id "$MP_RUNTIME_SA" '[.[]|select(.role_id=="lockbox.payloadViewer" and .subject.type=="serviceAccount" and .subject.id==$id)]|length==0' "$RUNNER_TEMP/birzha-access.json" >/dev/null
+          echo 'BRIDGE_V1_PRODUCTION_CROSS_PROJECT_ISOLATION=PASS'
+
+      - name: Final production verdict
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'BRIDGE_V1_END_TO_END_PRODUCTION=PASS'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/mp-revisions.json" "$RUNNER_TEMP/mp-revision.json" "$RUNNER_TEMP/mp-health.json" "$RUNNER_TEMP/mp-versions.json" "$RUNNER_TEMP/mp-payload.json" "$RUNNER_TEMP/birzha-state.json" "$RUNNER_TEMP/birzha.env" "$RUNNER_TEMP/birzha-health.json" "$RUNNER_TEMP/birzha-timer.json" "$RUNNER_TEMP/mp-access.json" "$RUNNER_TEMP/birzha-access.json"
