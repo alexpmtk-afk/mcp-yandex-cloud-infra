@@ -5,9 +5,15 @@ Apps Script web-app deployments can briefly return HTTP 404/5xx while a new
 version propagates. This wrapper makes every deployment-bound transition
 resilient without weakening semantic checks and reuses the exact deployment
 URL already recorded for each project after a downstream failure.
+
+GitHub workflow dispatch resolution is baseline-based rather than timestamp-
+based because GitHub createdAt is second-granularity while local dispatch time
+has sub-second precision. Consecutive workflow_dispatch calls therefore cannot
+be lost merely because of timestamp rounding.
 """
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import time
@@ -119,12 +125,104 @@ def prove_bootstrap_removed_with_retry(
     raise RuntimeError(f"Apps Script bootstrap retirement did not become visible for {project_id}")
 
 
+def _workflow_rows(repo: str, workflow: str) -> list[dict]:
+    result = finisher.base.run_gh(
+        [
+            "run", "list", "--repo", repo, "--workflow", workflow,
+            "--event", "workflow_dispatch", "--limit", "50",
+            "--json", "databaseId,headSha,status,conclusion",
+        ],
+        capture=True,
+    )
+    rows = json.loads(result.stdout or "[]")
+    if not isinstance(rows, list):
+        raise RuntimeError(f"Unexpected workflow run list for {repo}/{workflow}")
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _dispatch_and_watch_new_run(
+    repo: str,
+    workflow: str,
+    *,
+    ref: str = "main",
+    inputs: dict[str, str] | None = None,
+    expected_head_sha: str | None = None,
+) -> int:
+    before = {
+        int(row.get("databaseId") or 0)
+        for row in _workflow_rows(repo, workflow)
+        if int(row.get("databaseId") or 0) > 0
+    }
+    args = ["workflow", "run", workflow, "--repo", repo, "--ref", ref]
+    for key, value in (inputs or {}).items():
+        args += ["-f", f"{key}={value}"]
+    finisher.base.run_gh(args, capture=True)
+
+    deadline = time.monotonic() + 180
+    run_id = 0
+    while time.monotonic() < deadline:
+        candidates: list[int] = []
+        for row in _workflow_rows(repo, workflow):
+            candidate = int(row.get("databaseId") or 0)
+            if candidate <= 0 or candidate in before:
+                continue
+            if expected_head_sha and str(row.get("headSha") or "") != expected_head_sha:
+                continue
+            candidates.append(candidate)
+        if candidates:
+            run_id = max(candidates)
+            break
+        time.sleep(2)
+    if not run_id:
+        raise RuntimeError(f"Could not resolve newly dispatched GitHub workflow run: {repo}/{workflow}")
+
+    watched = finisher.base.run(
+        ["gh", "run", "watch", str(run_id), "--repo", repo, "--exit-status"],
+        capture=False,
+        check=False,
+    )
+    if watched.returncode != 0:
+        raise RuntimeError(f"Workflow failed: {repo}/{workflow} run={run_id}")
+    print(f"{repo}/{workflow}: PASS (run {run_id})")
+    return run_id
+
+
+def base_dispatch_and_watch(workflow: str, inputs: dict[str, str] | None = None) -> int:
+    return _dispatch_and_watch_new_run(
+        finisher.base.REPO,
+        workflow,
+        ref="main",
+        inputs=inputs,
+    )
+
+
+def finisher_dispatch_and_watch(
+    repo: str,
+    workflow: str,
+    *,
+    ref: str = "main",
+    inputs: dict[str, str] | None = None,
+    expected_head_sha: str | None = None,
+) -> int:
+    return _dispatch_and_watch_new_run(
+        repo,
+        workflow,
+        ref=ref,
+        inputs=inputs,
+        expected_head_sha=expected_head_sha,
+    )
+
+
 finisher.base.install_script_properties = install_script_properties_with_retry
 finisher.base.bridge_health = bridge_health_with_propagation_retry
 finisher.base.prove_bootstrap_removed = prove_bootstrap_removed_with_retry
 # Resume uses the recorded GitHub environment URL to find the exact existing
 # script/deployment and rotates only the secret on the same project identity.
 finisher.base.deploy_project = resume.deploy_or_reuse_project
+# Replace both dispatch implementations. The owner bootstrap uses base's helper
+# for Lockbox/acceptance/gates; the finisher has a second helper for cutovers.
+finisher.base.dispatch_and_watch = base_dispatch_and_watch
+finisher.dispatch_and_watch = finisher_dispatch_and_watch
 
 
 if __name__ == "__main__":
