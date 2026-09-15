@@ -5,6 +5,7 @@ on:
     paths:
       - 'shared/google-drive-bridge/**'
       - 'tools/bootstrap_bridge_v1_apps_script.py'
+      - 'tools/run_bridge_v1_owner_bootstrap.ps1'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
       - '.github/workflows/*drive-bridge-v1*'
@@ -14,9 +15,11 @@ on:
       - feature/google-drive-bridge-v1
       - feature/bridge-v1-large-read
       - bridge-v1-finalization-20260914
+      - bridge-v1-clasp-owner-bootstrap
     paths:
       - 'shared/google-drive-bridge/**'
       - 'tools/bootstrap_bridge_v1_apps_script.py'
+      - 'tools/run_bridge_v1_owner_bootstrap.ps1'
       - 'terraform/birzha_test/m24_autonomous_worker.tf'
       - 'terraform/birzha_test/m25_market_mirror.tf'
       - '.github/workflows/*drive-bridge-v1*'
@@ -52,10 +55,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          cp shared/google-drive-bridge/bridge.gs "$RUNNER_TEMP/bridge.js"
-          node --check "$RUNNER_TEMP/bridge.js"
-          cp shared/google-drive-bridge/setup.gs "$RUNNER_TEMP/setup.js"
-          node --check "$RUNNER_TEMP/setup.js"
+          for src in bridge setup bootstrap; do
+            cp "shared/google-drive-bridge/${src}.gs" "$RUNNER_TEMP/${src}.js"
+            node --check "$RUNNER_TEMP/${src}.js"
+          done
           for f in shared/google-drive-bridge/deploy/*_config.gs; do
             cp "$f" "$RUNNER_TEMP/config.js"
             node --check "$RUNNER_TEMP/config.js"
@@ -76,12 +79,33 @@ jobs:
           grep -Fq 'large_download_poll' "$f"
           grep -Fq 'drive_files_download_lro' "$f"
           grep -Fq 'sheet_write_chunk' "$f"
-          grep -Fq 'injected.secret' "$f"
           if grep -Fq 'getScriptLock(); lock.waitLock' "$f"; then
             echo 'Global whole-request ScriptLock pattern is forbidden'
             exit 1
           fi
           echo 'BRIDGE_STATIC_CONTRACT=PASS'
+
+      - name: Validate secure one-time owner bootstrap
+        shell: bash
+        run: |
+          set -euo pipefail
+          py='tools/bootstrap_bridge_v1_apps_script.py'
+          boot='shared/google-drive-bridge/bootstrap.gs'
+          ps='tools/run_bridge_v1_owner_bootstrap.ps1'
+          grep -Fq '@google/clasp@3' "$py"
+          grep -Fq 'create-script' "$py"
+          grep -Fq 'create-deployment' "$py"
+          grep -Fq 'prove_remote_source_clean' "$py"
+          grep -Fq 'bootstrap_install' "$boot"
+          grep -Fq 'PropertiesService.getScriptProperties' "$boot"
+          grep -Fq 'gh repo clone' "$ps"
+          if grep -Eqi -- '(--credentials|load_client\(|discover_credentials\(|client_secret[[:space:]]*=)' "$py"; then
+            echo 'Custom OAuth credential loading is forbidden in the final owner bootstrap' >&2
+            exit 1
+          fi
+          grep -Fq "secret: ''" shared/google-drive-bridge/deploy/marketplaces_config.gs
+          grep -Fq "secret: ''" shared/google-drive-bridge/deploy/birzha_config.gs
+          echo 'BRIDGE_OWNER_BOOTSTRAP_STATIC=PASS'
 
       - name: Prove secret values are not committed
         shell: bash
@@ -109,3 +133,23 @@ jobs:
           grep -Fq 'key                  = "gdrive_bridge_v1_secret"' terraform/birzha_test/m24_autonomous_worker.tf
           test -f .github/workflows/google-drive-bridge-v1-cross-project-acceptance.yml
           echo 'BRIDGE_PROJECT_ISOLATION_STATIC=PASS'
+
+  powershell-contract:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse owner bootstrap PowerShell
+        shell: pwsh
+        run: |
+          $tokens = $null
+          $errors = $null
+          [void][System.Management.Automation.Language.Parser]::ParseFile(
+            (Resolve-Path 'tools/run_bridge_v1_owner_bootstrap.ps1'),
+            [ref]$tokens,
+            [ref]$errors
+          )
+          if ($errors.Count -gt 0) {
+            $errors | Format-List | Out-String | Write-Error
+            exit 1
+          }
+          'BRIDGE_OWNER_POWERSHELL_PARSE=PASS'

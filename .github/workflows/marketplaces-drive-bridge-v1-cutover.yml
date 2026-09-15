@@ -1,0 +1,252 @@
+name: Marketplaces Drive Bridge v1 Actual Cutover
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact marketplaces-mcp-ru main SHA to deploy
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-test-runtime-write
+  cancel-in-progress: false
+
+env:
+  MARKETPLACES_REPO: alexpmtk-afk/marketplaces-mcp-ru
+  ARCHIVE_DRIVE_ROOT_ID: 1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 45
+    steps:
+      - name: Checkout infrastructure
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Validate requested canonical Marketplaces SHA
+        id: source
+        shell: bash
+        env:
+          SOURCE_SHA: ${{ inputs.source_sha }}
+        run: |
+          set -euo pipefail
+          [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]
+          REMOTE_MAIN="$(git ls-remote "https://github.com/${MARKETPLACES_REPO}.git" refs/heads/main | awk '{print $1}')"
+          test -n "$REMOTE_MAIN"
+          [[ "$SOURCE_SHA" == "$REMOTE_MAIN" ]] || { echo "Requested SHA is not current Marketplaces main" >&2; exit 1; }
+          echo "sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_CANONICAL_MAIN=PASS'
+
+      - name: Checkout exact Marketplaces runtime
+        uses: actions/checkout@v4
+        with:
+          repository: alexpmtk-afk/marketplaces-mcp-ru
+          ref: ${{ steps.source.outputs.sha }}
+          path: runtime
+          persist-credentials: false
+
+      - name: Full v1 runtime regression
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd runtime
+          [[ "$(git rev-parse HEAD)" == "${{ steps.source.outputs.sha }}" ]]
+          grep -Fq 'BRIDGE_RELEASE_V1 = "1.0.0"' core/archive_google.py
+          grep -Fq 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_URL' core/archive_google.py
+          grep -Fq 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET' core/archive_google.py
+          grep -Fq 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_ROOT_ID' core/archive_google.py
+          python -m pip install --disable-pip-version-check -e '.[dev]'
+          python -m pytest -q
+          python -m compileall -q core wb_mcp ozon_mcp ozon_perf_mcp
+          echo 'MARKETPLACES_V1_RUNTIME_REGRESSION=PASS'
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location --retry 5 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate existing TEST deployer
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY="$RUNNER_TEMP/yc-key.json"
+          umask 077
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY"
+          yc config profile create bridge-v1-cutover >/dev/null 2>&1 || true
+          yc config set service-account-key "$KEY"
+
+      - name: Resolve isolated v1 runtime resources
+        id: resources
+        shell: bash
+        env:
+          BRIDGE_URL: ${{ vars.MARKETPLACES_GDRIVE_BRIDGE_V1_URL }}
+        run: |
+          set -euo pipefail
+          test -n "$BRIDGE_URL"
+          [[ "$BRIDGE_URL" == https://script.google.com/macros/s/*/exec ]]
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"; yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          test -n "$SECRET_ID"
+          yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("cabinets_json")!=null)|select((.payload_entry_keys//[])|index("mcp_bearer_token")!=null)|select((.payload_entry_keys//[])|index("redis_password")!=null)|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$VERSION_ID"
+          CONTAINER_ID="$(yc serverless container list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          RUNTIME_SA="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-runtime")|.id'|head -1)"
+          REGISTRY_ID="$(yc container registry list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp")|.id'|head -1)"
+          NETWORK_ID="$(yc vpc network list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-net")|.id'|head -1)"
+          CLUSTER_ID="$(yc managed-redis cluster list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-valkey")|.id'|head -1)"
+          REDIS_HOST="$(yc managed-redis hosts list --cluster-id "$CLUSTER_ID" --format json | jq -r '[.[]|select((.role//"")=="MASTER")][0].name // .[0].name // empty')"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          ARCHIVE_BUCKET="marketplaces-mcp-archive-${FOLDER_ID}"
+          for v in FOLDER_ID SECRET_ID VERSION_ID CONTAINER_ID RUNTIME_SA REGISTRY_ID NETWORK_ID REDIS_HOST DOMAIN ARCHIVE_BUCKET; do test -n "${!v}"; done
+          echo "folder=$FOLDER_ID" >> "$GITHUB_OUTPUT"
+          echo "secret=$SECRET_ID" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION_ID" >> "$GITHUB_OUTPUT"
+          echo "container=$CONTAINER_ID" >> "$GITHUB_OUTPUT"
+          echo "sa=$RUNTIME_SA" >> "$GITHUB_OUTPUT"
+          echo "registry=$REGISTRY_ID" >> "$GITHUB_OUTPUT"
+          echo "network=$NETWORK_ID" >> "$GITHUB_OUTPUT"
+          echo "redis_host=$REDIS_HOST" >> "$GITHUB_OUTPUT"
+          echo "domain=$DOMAIN" >> "$GITHUB_OUTPUT"
+          echo "archive_bucket=$ARCHIVE_BUCKET" >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_V1_RESOURCES=PASS'
+
+      - name: Build and publish exact canonical Marketplaces image
+        id: image
+        shell: bash
+        env:
+          REGISTRY_ID: ${{ steps.resources.outputs.registry }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          IMAGE="cr.yandex/${REGISTRY_ID}/marketplaces-mcp:bridge-v1-${SOURCE_SHA}"
+          yc container registry configure-docker
+          docker build --pull --label "org.opencontainers.image.revision=${SOURCE_SHA}" -t "$IMAGE" runtime
+          docker push "$IMAGE"
+          echo "image=$IMAGE" >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_V1_IMAGE=PASS'
+
+      - name: Deploy Protocol v1 runtime revision
+        id: deploy
+        shell: bash
+        env:
+          FOLDER_ID: ${{ steps.resources.outputs.folder }}
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          VERSION_ID: ${{ steps.resources.outputs.version }}
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+          RUNTIME_SA: ${{ steps.resources.outputs.sa }}
+          NETWORK_ID: ${{ steps.resources.outputs.network }}
+          REDIS_HOST: ${{ steps.resources.outputs.redis_host }}
+          DOMAIN: ${{ steps.resources.outputs.domain }}
+          ARCHIVE_BUCKET: ${{ steps.resources.outputs.archive_bucket }}
+          IMAGE: ${{ steps.image.outputs.image }}
+          BRIDGE_URL: ${{ vars.MARKETPLACES_GDRIVE_BRIDGE_V1_URL }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --container-id "$CONTAINER_ID" --folder-id "$FOLDER_ID" \
+            --image "$IMAGE" --memory 2048MB --cores 1 --execution-timeout 600s --concurrency 8 \
+            --service-account-id "$RUNTIME_SA" --network-id "$NETWORK_ID" \
+            --environment "MARKETPLACE_REQUIRE_REDIS=1,MARKETPLACE_MCP_REDIS_HOST=$REDIS_HOST,MARKETPLACE_MCP_REDIS_PORT=6380,MARKETPLACE_MCP_REDIS_TLS=1,MARKETPLACE_MCP_REDIS_CA_CERT=/opt/yandex/YandexInternalRootCA.crt,OZON_GLOBAL_RPS=50,OZON_PERF_GLOBAL_RPS=10,MARKETPLACE_MCP_ARCHIVE_BUCKET=$ARCHIVE_BUCKET,MARKETPLACE_MCP_ARCHIVE_DRIVE_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID,MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_PROTOCOL=v1,MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_URL=$BRIDGE_URL,MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_ROOT_ID=$ARCHIVE_DRIVE_ROOT_ID,MARKETPLACE_MCP_SOURCE_COMMIT=$SOURCE_SHA" \
+            --secret "environment-variable=MARKETPLACE_MCP_CABINETS_JSON,id=$SECRET_ID,version-id=$VERSION_ID,key=cabinets_json" \
+            --secret "environment-variable=MARKETPLACE_MCP_BEARER_TOKEN,id=$SECRET_ID,version-id=$VERSION_ID,key=mcp_bearer_token" \
+            --secret "environment-variable=MARKETPLACE_MCP_REDIS_PASSWORD,id=$SECRET_ID,version-id=$VERSION_ID,key=redis_password" \
+            --secret "environment-variable=MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET,id=$SECRET_ID,version-id=$VERSION_ID,key=gdrive_bridge_v1_secret" \
+            --format json --no-user-output > "$RUNNER_TEMP/revision.json"
+          REVISION_ID="$(jq -r '.id//empty' "$RUNNER_TEMP/revision.json")"; test -n "$REVISION_ID"
+          BASE="https://${DOMAIN}"
+          for attempt in $(seq 1 18); do
+            CODE="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/health" -w '%{http_code}' "$BASE/healthz" || true)"
+            [[ "$CODE" == 200 ]] && break
+            sleep 5
+          done
+          test "$CODE" = 200
+          echo "gateway_url=$BASE" >> "$GITHUB_OUTPUT"
+          echo "revision_id=$REVISION_ID" >> "$GITHUB_OUTPUT"
+          echo 'MARKETPLACES_V1_REVISION_HEALTH=PASS'
+
+      - name: Post-cutover MCP and Drive read verification
+        shell: bash
+        env:
+          GATEWAY_URL: ${{ steps.deploy.outputs.gateway_url }}
+          SECRET_ID: ${{ steps.resources.outputs.secret }}
+          VERSION_ID: ${{ steps.resources.outputs.version }}
+        run: |
+          set -euo pipefail
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/payload.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/payload.json")"
+          test -n "$BEARER"; echo "::add-mask::$BEARER"
+          export MCP_URL="${GATEWAY_URL}/mcp" MCP_BEARER="$BEARER"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          python - <<'PY'
+          import itertools,json,os,httpx
+          ids=itertools.count(1)
+          h={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'): return json.loads(line[5:].strip())
+              return r.json()
+          with httpx.Client(timeout=90,follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'bridge-v1-cutover','version':'1'}}})
+              init=unpack(r); assert 'result' in init, init
+              sid=r.headers.get('mcp-session-id');
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              def rpc(method,params=None):
+                  d=unpack(c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})); assert 'result' in d,d; return d['result']
+              tools={x['name'] for x in rpc('tools/list')['tools']}; assert 'marketplace_archive_status' in tools
+              out=rpc('tools/call',{'name':'marketplace_archive_status','arguments':{}}); assert not out.get('isError'),out
+              text=next(x['text'] for x in out.get('content',[]) if x.get('type')=='text')
+              data=json.loads(text); assert data.get('error')!='archive_storage_not_configured',data
+              print('MARKETPLACES_V1_REMOTE_MCP=PASS')
+              print('MARKETPLACES_V1_DRIVE_READ=PASS')
+          PY
+
+      - name: Verify deployed revision contains only v1 Bridge binding
+        shell: bash
+        env:
+          CONTAINER_ID: ${{ steps.resources.outputs.container }}
+          REVISION_ID: ${{ steps.deploy.outputs.revision_id }}
+        run: |
+          set -euo pipefail
+          yc serverless container revision get "$REVISION_ID" --format json > "$RUNNER_TEMP/deployed.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'deployed.json').read_text())
+          e=((d.get('image') or {}).get('environment') or {}) if isinstance(d.get('image'),dict) else {}
+          blob=json.dumps(d)
+          assert e.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_PROTOCOL')=='v1',e
+          assert e.get('MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_ROOT_ID')==os.environ.get('ARCHIVE_DRIVE_ROOT_ID','1UVKUcFfDhCDk6nMHX1mWg9cRL05DT-OJ')
+          assert 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_SECRET' not in blob
+          assert 'google_drive_bridge_secret' not in blob
+          assert 'MARKETPLACE_MCP_GOOGLE_DRIVE_BRIDGE_V1_SECRET' in blob
+          print('MARKETPLACES_V1_BINDING_ONLY=PASS')
+          PY
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/deployed.json" "$RUNNER_TEMP/revision.json"
