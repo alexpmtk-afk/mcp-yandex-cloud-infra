@@ -105,7 +105,7 @@ jobs:
           set -euo pipefail
           terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
           python - <<'PY' > "$RUNNER_TEMP/state.env"
-          import json,os,shlex
+          import json,os
           from pathlib import Path
           s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
           rs=s['values']['root_module']['resources']; by={r['address']:r['values'] for r in rs}
@@ -117,7 +117,10 @@ jobs:
             'PUBLIC_HOSTS':me.get('MCP_ALLOWED_HOSTS',''),'PUBLIC_ORIGINS':me.get('MCP_ALLOWED_ORIGINS',''),
             'WORKER_ID':w['id'],'TIMER_ID':t['id'],'CURRENT_BRIDGE_URL':we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL','')
           }
-          for k,v in vals.items(): print(f'{k}={shlex.quote(str(v))}')
+          for k,v in vals.items():
+              v=str(v)
+              assert '\n' not in v and '\r' not in v
+              print(f'{k}={v}')
           PY
           cat "$RUNNER_TEMP/state.env" >> "$GITHUB_ENV"
           echo 'BIRZHA_PROTECTED_STATE_CAPTURED=PASS'
@@ -146,7 +149,9 @@ jobs:
             -var="m25_birzha_bridge_v1_secret_id=${SECRET_ID}"
             -var="m25_birzha_bridge_v1_secret_version_id=${VERSION_ID}"
             -var="m24_infra_oidc_bootstrap_enabled=false"
-            -var="m24_observability_probe_enabled=true"
+            -var="m24_observability_probe_enabled=false"
+            -target='yandex_lockbox_secret_iam_member.runtime_market_mirror_v1[0]'
+            -target='yandex_serverless_container.orchestrator_worker[0]'
           )
           if [[ -n "$CURRENT_BRIDGE_URL" && "$CURRENT_BRIDGE_URL" != "$BRIDGE_URL" ]]; then args+=( -var="m25_market_mirror_bridge_url=${CURRENT_BRIDGE_URL}" ); fi
           terraform -chdir="$TF_DIR" plan -input=false -no-color -out="$RUNNER_TEMP/cutover.plan" "${args[@]}"
@@ -231,7 +236,8 @@ jobs:
             -var="m24_worker_image_url=${IMAGE}" -var="m24_worker_source_sha=${SOURCE_SHA}" \
             -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}" -var="m25_birzha_bridge_v1_required=true" \
             -var="m25_birzha_bridge_v1_secret_id=${SECRET_ID}" -var="m25_birzha_bridge_v1_secret_version_id=${VERSION_ID}" \
-            -var="m24_infra_oidc_bootstrap_enabled=false" -var="m24_observability_probe_enabled=true"
+            -var="m24_infra_oidc_bootstrap_enabled=false" -var="m24_observability_probe_enabled=false" \
+            -target='yandex_lockbox_secret_iam_member.runtime_market_mirror'
           terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/cleanup.plan" > "$RUNNER_TEMP/cleanup.json"
           python - <<'PY'
           import json,os
