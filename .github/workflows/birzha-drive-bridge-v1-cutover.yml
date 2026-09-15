@@ -74,7 +74,7 @@ jobs:
         run: |
           set -euo pipefail
           FOLDER_ID="$(yc resource-manager folder list --cloud-id b1gi4pr9msenirafh2c7 --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-test")|.id'|head -1)"; test -n "$FOLDER_ID"; yc config set folder-id "$FOLDER_ID"
-          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-test-auth")|.id'|head -1)"; test -n "$SECRET_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="birzha-mcp-forecast-drive-bridge-v1")|.id'|head -1)"; test -n "$SECRET_ID"
           yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
           VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys//[])|index("gdrive_bridge_v1_secret")!=null)]|sort_by(.created_at)|last|.id//empty' "$RUNNER_TEMP/versions.json")"; test -n "$VERSION_ID"
           yc container image list --registry-id "$REGISTRY_ID" --format json --no-user-output > "$RUNNER_TEMP/images.json"
