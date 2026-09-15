@@ -27,9 +27,9 @@ try {
     Write-Host 'Downloading canonical Bridge v1 main...'
     gh repo clone $repo $tempRoot -- --depth 1 --branch main
 
-    $script = Join-Path $tempRoot 'tools\finish_bridge_v1.py'
+    $script = Join-Path $tempRoot 'tools\run_finish_bridge_v1.py'
     if (-not (Test-Path $script)) {
-        throw "End-to-end Bridge v1 finisher not found: $script"
+        throw "End-to-end Bridge v1 runtime wrapper not found: $script"
     }
 
     $args = @($script, '--repo-root', $tempRoot)
