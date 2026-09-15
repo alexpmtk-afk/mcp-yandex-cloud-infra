@@ -62,7 +62,7 @@ jobs:
           yc config profile create wb-ads-acceptance || true
           yc config set service-account-key "$KEY_FILE"
 
-      - name: Resolve TEST gateway and secrets
+      - name: Resolve TEST gateway and credentials
         id: runtime
         shell: bash
         run: |
@@ -87,27 +87,50 @@ jobs:
           echo "gateway=https://${DOMAIN}" >> "$GITHUB_OUTPUT"
           echo 'runtime_resolution=PASS'
 
-      - name: Verify wb_ads credential coverage without exposing secrets
+      - name: Verify permanent WB advertising credential model
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
+          import base64
           import json
+          import os
           from pathlib import Path
 
-          data = json.loads(Path('/home/runner/work/_temp/cabinets.json').read_text(encoding='utf-8'))
-          svc = data.get('wb_ads') if isinstance(data, dict) else None
-          assert isinstance(svc, dict), 'wb_ads service is absent from cabinets_json'
-          cabinets = svc.get('cabinets')
-          assert isinstance(cabinets, dict), 'wb_ads.cabinets is absent'
+          data = json.loads((Path(os.environ['RUNNER_TEMP']) / 'cabinets.json').read_text(encoding='utf-8'))
           required = ('wb_dmitrieva', 'wb_novokshenov', 'wb_laser_master')
-          missing = []
+          wb = data.get('wb') if isinstance(data, dict) else None
+          ads = data.get('wb_ads') if isinstance(data, dict) else None
+          assert isinstance(wb, dict), 'wb service is absent from cabinets_json'
+          wb_cabs = wb.get('cabinets')
+          assert isinstance(wb_cabs, dict), 'wb.cabinets is absent'
+          ads_cabs = ads.get('cabinets') if isinstance(ads, dict) else {}
+          ads_cabs = ads_cabs if isinstance(ads_cabs, dict) else {}
+
+          def promotion_scope(token: str) -> bool:
+              try:
+                  parts = token.split('.')
+                  if len(parts) < 2:
+                      return False
+                  payload = parts[1] + '=' * (-len(parts[1]) % 4)
+                  claims = json.loads(base64.urlsafe_b64decode(payload.encode('ascii')).decode('utf-8'))
+                  return bool(int(claims.get('s') or 0) & (1 << 5))
+              except Exception:
+                  return False
+
+          modes = []
           for name in required:
-              item = cabinets.get(name)
-              if not isinstance(item, dict) or not str(item.get('token', '')).strip():
-                  missing.append(name)
-          assert not missing, f'missing wb_ads Promotion credentials: {missing}'
-          print('WB_ADS_CREDENTIAL_COVERAGE=PASS cabinets=' + ','.join(required))
+              explicit = ads_cabs.get(name)
+              explicit_token = str(explicit.get('token', '')).strip() if isinstance(explicit, dict) else ''
+              if explicit_token:
+                  modes.append(f'{name}:explicit')
+                  continue
+              normal = wb_cabs.get(name)
+              token = str(normal.get('token', '')).strip() if isinstance(normal, dict) else ''
+              assert token, f'missing WB token for {name}'
+              assert promotion_scope(token), f'WB token lacks Promotion scope for {name}'
+              modes.append(f'{name}:scope_verified_alias')
+          print('WB_ADS_CREDENTIAL_MODEL=PASS ' + ','.join(modes))
           PY
 
       - name: Accept remote WB Advertising M0
@@ -144,7 +167,7 @@ jobs:
               init_resp = client.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize',
                   'params': {'protocolVersion': '2025-06-18', 'capabilities': {},
-                             'clientInfo': {'name': 'wb-ads-m0-acceptance', 'version': '1'}}
+                             'clientInfo': {'name': 'wb-ads-m0-acceptance', 'version': '2'}}
               })
               init = unpack(init_resp)
               assert init and 'result' in init, init
@@ -169,8 +192,7 @@ jobs:
               def call(name, args):
                   result = rpc('tools/call', {'name': name, 'arguments': args})
                   assert not result.get('isError'), (name, result)
-                  text = next((x.get('text') for x in result.get('content', [])
-                               if x.get('type') == 'text'), None)
+                  text = next((x.get('text') for x in result.get('content', []) if x.get('type') == 'text'), None)
                   assert text is not None, name
                   return json.loads(text)
 
@@ -194,12 +216,9 @@ jobs:
               sellers = ('Дмитриева', 'Новокшенов', 'Лазер-Мастер')
               for seller in sellers:
                   data = call('wb_ads_list_active_campaigns', {'seller': seller})
-                  if not data.get('ok'):
-                      retryable_rl = data.get('error_type') == 'rate_limit' and data.get('retryable') is True
-                      if retryable_rl:
-                          delay = min(float(data.get('retry_after_seconds') or 1.0), 5.0)
-                          time.sleep(max(0.5, delay))
-                          data = call('wb_ads_list_active_campaigns', {'seller': seller})
+                  if not data.get('ok') and data.get('error_type') == 'rate_limit' and data.get('retryable') is True:
+                      time.sleep(max(0.5, min(float(data.get('retry_after_seconds') or 1.0), 5.0)))
+                      data = call('wb_ads_list_active_campaigns', {'seller': seller})
                   assert data.get('ok') is True, {
                       'seller': seller,
                       'error': data.get('error'),
@@ -209,15 +228,19 @@ jobs:
                   }
                   assert data.get('live') is True, seller
                   assert data.get('status_filter') == 9, seller
-                  print(f'WB_ADS_LIVE_LIST=PASS seller={seller} active_campaign_count={data.get("campaign_count")}')
+                  binding = data.get('credential_binding')
+                  backing = data.get('credential_backing_service')
+                  proof = data.get('promotion_scope_proof')
+                  assert binding in {'explicit', 'scope_verified_alias'}, (seller, binding)
+                  if binding == 'scope_verified_alias':
+                      assert backing == 'wb', (seller, backing)
+                      assert proof == 'jwt_s_bit_6', (seller, proof)
+                  print(f'WB_ADS_LIVE_LIST=PASS seller={seller} binding={binding} active_campaign_count={data.get("campaign_count")}')
 
               audit = call('wb_ads_audit_active', {'seller': 'Новокшенов', 'days': 1})
               if not audit.get('ok'):
-                  allowed_fail_closed = audit.get('code') == 'WB_ADS_M0_MAX_50_CAMPAIGNS'
-                  assert allowed_fail_closed, {
-                      'error': audit.get('error'),
-                      'code': audit.get('code'),
-                      'status': audit.get('status'),
+                  assert audit.get('code') == 'WB_ADS_M0_MAX_50_CAMPAIGNS', {
+                      'error': audit.get('error'), 'code': audit.get('code'), 'status': audit.get('status')
                   }
                   print('WB_ADS_AUDIT=PASS mode=FAIL_CLOSED_MAX_50')
               else:
