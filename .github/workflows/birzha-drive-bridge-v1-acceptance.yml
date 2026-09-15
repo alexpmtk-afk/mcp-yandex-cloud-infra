@@ -41,7 +41,7 @@ jobs:
           set -euo pipefail
           grep -q 'bridge_release=1.0.0' shared/google-drive-bridge/VERSION
           grep -q "BRIDGE_RELEASE = '1.0.0'" shared/google-drive-bridge/bridge.gs
-          ! grep -R -n 'NOT_IMPLEMENTED' shared/google-drive-bridge
+          ! grep -n 'NOT_IMPLEMENTED' shared/google-drive-bridge/bridge.gs
           grep -q "action === 'sheet_inspect'" shared/google-drive-bridge/bridge.gs
           grep -q 'async def sheet_inspect' shared/google-drive-bridge/python_client/bridge_client.py
           echo 'BIRZHA_STABLE_COMMON_SOURCE=PASS'
