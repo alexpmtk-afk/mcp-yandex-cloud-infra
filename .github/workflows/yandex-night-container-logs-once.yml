@@ -1,0 +1,49 @@
+name: Yandex night container logs once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/yandex-night-container-logs-once.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install YC and authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSLo "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          K="$RUNNER_TEMP/yc-key.json"; printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$K"; chmod 600 "$K"
+          "$RUNNER_TEMP/yc/yc" config profile create night-logs || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$K"
+      - name: Read M24 and Marketplaces logs
+        shell: bash
+        run: |
+          set +e
+          for SPEC in 'M24:bbamdg0po6fkukhod2e9:b1g00gqb66tbnfoumnkv' 'MARKETPLACES:bba6lj5ggejtop0jl5k8:b1gnd0dqoq3ljod88i8t'; do
+            IFS=: read -r NAME RID FID <<< "$SPEC"
+            echo "=== $NAME ==="
+            yc logging read --folder-id "$FID" --resource-ids "$RID" --since '2026-09-15T18:00:00Z' --until '2026-09-16T05:30:00Z' --limit 10000 --format json > "$RUNNER_TEMP/$NAME.json" 2>"$RUNNER_TEMP/$NAME.err"
+            RC=$?; echo "RC=$RC"
+            if [ $RC -eq 0 ]; then
+              jq -r 'length as $n | "LOG_ENTRIES=\($n)"' "$RUNNER_TEMP/$NAME.json"
+              jq -r '[.[] | select((.message//.json_payload.message//"")|test("START RequestID"))] | length | "STARTS="+tostring' "$RUNNER_TEMP/$NAME.json" 2>/dev/null || true
+              jq -r '[.[] | select((.message//.json_payload.message//"")|test("END RequestID"))] | length | "ENDS="+tostring' "$RUNNER_TEMP/$NAME.json" 2>/dev/null || true
+              jq -r '.[0:15][] | {timestamp,level,message,json_payload}' "$RUNNER_TEMP/$NAME.json" 2>/dev/null || true
+            else
+              sed -n '1,20p' "$RUNNER_TEMP/$NAME.err"
+            fi
+          done
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/M24.json" "$RUNNER_TEMP/MARKETPLACES.json" "$RUNNER_TEMP/M24.err" "$RUNNER_TEMP/MARKETPLACES.err"
