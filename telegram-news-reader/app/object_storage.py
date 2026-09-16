@@ -7,6 +7,7 @@ import mimetypes
 import os
 import time
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
@@ -17,7 +18,7 @@ _METADATA_TOKEN_URL = (
 
 
 class ObjectStorage:
-    """Private Yandex Object Storage access via the VM service-account IAM token."""
+    """Private Yandex Object Storage access via a service-account IAM token."""
 
     def __init__(self):
         self.bucket = os.getenv("TELEGRAM_MEDIA_BUCKET", "").strip()
@@ -42,11 +43,37 @@ class ObjectStorage:
             payload = json.loads(response.read().decode("utf-8"))
         token = str(payload.get("access_token") or "")
         if not token:
-            raise RuntimeError("Yandex VM service-account IAM token is unavailable")
+            raise RuntimeError("Yandex service-account IAM token is unavailable")
         return token
 
     def _object_url(self, key: str) -> str:
         return f"{self.endpoint}/{quote(self.bucket, safe='')}/{quote(key, safe='/')}"
+
+    def key_for(self, *, chat_id: int, message_id: int, suffix: str, variant: str | None = None) -> str:
+        ext = suffix if suffix.startswith(".") else f".{suffix}"
+        stem = str(message_id) if not variant else f"{message_id}.{variant.strip('.')}"
+        return f"{self.prefix}/{chat_id}/{stem}{ext.lower()}"
+
+    def object_info(self, key: str) -> dict | None:
+        """Return lightweight object metadata, or None when the object does not exist."""
+        if not self.enabled:
+            return None
+        request = Request(
+            self._object_url(key),
+            method="HEAD",
+            headers={"Authorization": f"Bearer {self._iam_token()}"},
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                size_raw = response.headers.get("Content-Length")
+                return {
+                    "size": int(size_raw) if size_raw and size_raw.isdigit() else None,
+                    "content_type": response.headers.get_content_type() or "application/octet-stream",
+                }
+        except HTTPError as exc:
+            if exc.code == 404:
+                return None
+            raise
 
     def upload(
         self,
@@ -59,9 +86,12 @@ class ObjectStorage:
         if not self.enabled:
             return None
         source = Path(path)
-        suffix = source.suffix.lower()
-        stem = str(message_id) if not variant else f"{message_id}.{variant.strip('.') }"
-        key = f"{self.prefix}/{chat_id}/{stem}{suffix}"
+        key = self.key_for(
+            chat_id=chat_id,
+            message_id=message_id,
+            suffix=source.suffix.lower(),
+            variant=variant,
+        )
         content_type = mimetypes.guess_type(source.name)[0] or "application/octet-stream"
         request = Request(
             self._object_url(key),
