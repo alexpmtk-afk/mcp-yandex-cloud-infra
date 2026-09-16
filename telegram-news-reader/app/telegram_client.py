@@ -18,34 +18,31 @@ from app.ws_relay import WebSocketRelayAdapter
 
 
 class EntityResolutionError(RuntimeError):
-    """Base safe marker for whitelisted peer resolution failures."""
+    pass
 
 
 class DialogTraversalError(EntityResolutionError):
-    """Telegram dialog traversal failed before the whitelisted peer was found."""
+    pass
 
 
 class EntityNotInDialogsError(EntityResolutionError):
-    """Dialog traversal completed but did not contain the whitelisted peer."""
+    pass
 
 
 class PeerMapConfigError(EntityResolutionError):
-    """Runtime peer-map exists but is malformed."""
+    pass
 
 
 class MessageFetchError(RuntimeError):
-    """Safe marker for Telegram message iteration failures."""
+    pass
 
 
 class MessageDecodeError(RuntimeError):
-    """Safe marker for converting a Telegram message to our record."""
+    pass
 
 
 class TelegramReader:
-    """Read-only application wrapper around Telethon.
-
-    The wrapper intentionally exposes no send/edit/delete/join/leave operations.
-    """
+    """Read-only wrapper around Telethon; no write Telegram operations are exposed."""
 
     def __init__(self, settings: Settings, whitelist: Whitelist | None = None):
         self.settings = settings
@@ -68,12 +65,7 @@ class TelegramReader:
         else:
             kwargs["proxy"] = settings.telethon_proxy()
         session = StringSession(settings.session_string) if settings.session_string else str(settings.session_path)
-        self.client = TelegramClient(
-            session,
-            settings.api_id,
-            settings.api_hash,
-            **kwargs,
-        )
+        self.client = TelegramClient(session, settings.api_id, settings.api_hash, **kwargs)
         self._runtime_entities: dict[int, object] = {}
 
     async def connect(self, *, interactive_login: bool = False) -> None:
@@ -89,9 +81,7 @@ class TelegramReader:
             return
         if not interactive_login:
             await self.disconnect()
-            raise AuthorizationRequired(
-                "Telegram session is not authorized. Run one-time setup."
-            )
+            raise AuthorizationRequired("Telegram session is not authorized. Run one-time setup.")
         await self.client.start(phone=self.settings.phone)
 
     async def disconnect(self) -> None:
@@ -165,19 +155,27 @@ class TelegramReader:
         datetime_to: datetime,
         *,
         limit: int = 1000,
+        before_id: int | None = None,
     ) -> list[MessageRecord]:
+        """Return one newest-first page in a closed time window.
+
+        before_id is an exclusive upper message-id cursor, which makes paging
+        lossless even when several Telegram messages share the same timestamp.
+        """
         entity = await self._allowed_entity(chat_id)
         low = _as_utc(datetime_from)
         high = _as_utc(datetime_to)
         if low > high:
             low, high = high, low
         result: list[MessageRecord] = []
+        kwargs: dict[str, object] = {
+            "offset_date": high,
+            "limit": max(1, limit),
+        }
+        if before_id is not None:
+            kwargs["max_id"] = int(before_id)
         try:
-            async for message in self.client.iter_messages(
-                entity,
-                offset_date=high,
-                limit=max(1, limit),
-            ):
+            async for message in self.client.iter_messages(entity, **kwargs):
                 if not message.date:
                     continue
                 moment = _as_utc(message.date)
@@ -198,9 +196,7 @@ class TelegramReader:
     async def get_messages_after_id(self, chat_id: int, last_message_id: int) -> list[MessageRecord]:
         entity = await self._allowed_entity(chat_id)
         result: list[MessageRecord] = []
-        async for message in self.client.iter_messages(
-            entity, min_id=int(last_message_id), reverse=True
-        ):
+        async for message in self.client.iter_messages(entity, min_id=int(last_message_id), reverse=True):
             result.append(self._message_record(chat_id, entity, message))
         return result
 
@@ -218,9 +214,7 @@ class TelegramReader:
         result: list[MessageRecord] = []
         low = _as_utc(date_from) if date_from else None
         high = _as_utc(date_to) if date_to else None
-        async for message in self.client.iter_messages(
-            entity, search=query, limit=max(limit, scan_limit)
-        ):
+        async for message in self.client.iter_messages(entity, search=query, limit=max(limit, scan_limit)):
             if not message.date:
                 continue
             moment = _as_utc(message.date)
@@ -265,11 +259,9 @@ class TelegramReader:
 
     async def _allowed_entity(self, chat_id: int):
         self.whitelist.assert_allowed(chat_id)
-
         cached = self._runtime_entities.get(int(chat_id))
         if cached is not None:
             return cached
-
         runtime_peer = self._runtime_peer(chat_id)
         if runtime_peer is not None:
             try:
@@ -278,14 +270,12 @@ class TelegramReader:
                 raise EntityResolutionError() from exc
             self._runtime_entities[int(chat_id)] = entity
             return entity
-
         try:
             entity = await self.client.get_input_entity(int(chat_id))
             self._runtime_entities[int(chat_id)] = entity
             return entity
         except ValueError:
             pass
-
         try:
             async for dialog in self.client.iter_dialogs(limit=None):
                 if int(dialog.id) == int(chat_id):
@@ -293,7 +283,6 @@ class TelegramReader:
                     return dialog.entity
         except Exception as exc:
             raise DialogTraversalError() from exc
-
         raise EntityNotInDialogsError()
 
     def _message_record(self, chat_id: int, entity, message) -> MessageRecord:
@@ -303,10 +292,7 @@ class TelegramReader:
             getattr(entity, "title", None)
             or " ".join(
                 part
-                for part in [
-                    getattr(entity, "first_name", None),
-                    getattr(entity, "last_name", None),
-                ]
+                for part in [getattr(entity, "first_name", None), getattr(entity, "last_name", None)]
                 if part
             )
             or allowed.name
