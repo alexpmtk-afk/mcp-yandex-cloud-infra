@@ -1,1 +1,1 @@
-2026-09-16 read-only Laser final verification check 5 after scheduled worker drain
+2026-09-16 read-only Laser overall archive progress check 6 requested by user
