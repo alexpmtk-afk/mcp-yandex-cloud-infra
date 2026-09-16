@@ -166,7 +166,11 @@ jobs:
               instructions = init['result'].get('instructions','')
               assert 'marketplace_query_plan as the first server-side planning step' in instructions, instructions
               assert 'marketplace_execution_plan.v2' in instructions, instructions
+              assert 'cross-source arithmetic' in instructions, instructions
               assert 'Clarification Gate' in instructions, instructions
+              assert 'Never guess the closest metric' in instructions, instructions
+              assert 'must not execute any data leg' in instructions, instructions
+              assert 'Do not resume the old ambiguous plan directly' in instructions, instructions
               assert 'marketplace_execution_control before every provider/archive/card executor' in instructions, instructions
               assert 'exact executor_arguments' in instructions, instructions
               assert 'Never pass the original compound multi-source user question unchanged' in instructions, instructions
@@ -212,9 +216,16 @@ jobs:
               assert router['availability_facts']['wb_stock_historical_archive'] is False, router
 
               clarification = router['clarification_gate']
+              assert clarification['position'] == 'after marketplace_query_plan and before any data executor', clarification
               assert clarification['interaction_state'] == 'CLARIFICATION_REQUIRED', clarification
+              triggers = ' '.join(clarification['triggers'])
+              assert 'NEEDS_CONTEXT' in triggers, clarification
+              assert 'AMBIGUOUS' in triggers, clarification
+              assert 'UNKNOWN' in triggers, clarification
               assert 'must not execute' in clarification['assistant_response_policy'], clarification
               assert 'call marketplace_query_plan again' in clarification['resume_policy'], clarification
+              assert 'source gap' in clarification['known_source_gap_behavior'], clarification
+              assert 'do not ask for clarification' in clarification['recognized_multi_source_behavior'], clarification
 
               today = datetime.date.today().isoformat()
               current_stock = call('marketplace_query_plan', {
@@ -289,6 +300,29 @@ jobs:
               assert join['arithmetic_allowed'] is False, join
               assert join['explicit_calculation_contract_required_for_arithmetic'] is True, join
               assert join['provenance_required'] is True, join
+
+              no_target = call('marketplace_execution_control', {
+                  'question':'Сравни цену на сайте и текущие остатки Wildberries',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':today,'date_to':today
+              })
+              assert no_target['state'] == 'BLOCKED', no_target
+              assert no_target['can_dispatch'] is False, no_target
+              assert no_target['dispatch_contracts'] == [], no_target
+              assert any(x['type'] == 'PRODUCT_TARGET_REQUIRED' for x in no_target['blockers']), no_target
+              assert no_target['prepared_non_dispatchable_contracts'], no_target
+
+              with_target = call('marketplace_execution_control', {
+                  'question':'Сравни цену на сайте и текущие остатки Wildberries',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':today,'date_to':today,
+                  'target_ids':['wb-card-1']
+              })
+              assert with_target['state'] == 'READY_WITH_GATES', with_target
+              assert {x['executor'] for x in with_target['dispatch_contracts']} == {'card_monitor_get_latest','marketplace_business_query'}, with_target
+              public = next(x for x in with_target['dispatch_contracts'] if x['executor'] == 'card_monitor_get_latest')
+              assert public['executor_arguments']['target_ids'] == ['wb-card-1'], public
+              assert public['executor_arguments']['marketplace'] == 'wildberries', public
 
               unknown = call('marketplace_execution_control', {
                   'question':'Покажи мне коэффициент счастья товара за август',
