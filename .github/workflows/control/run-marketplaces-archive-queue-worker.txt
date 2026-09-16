@@ -1,1 +1,1 @@
-2026-09-14 resume Laser Master UPLOAD_ANNUAL after verified API Gateway 600s
+2026-09-16 resume normal Laser Master drain after verified 24->25 checkpoint; continue 25->38 with V3 durable telemetry
