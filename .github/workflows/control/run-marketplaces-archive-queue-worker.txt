@@ -1,1 +1,1 @@
-2026-09-16 resume Laser Master from verified durable state 31/38; report 798899890 at PREPARE; Drive/Yandex health PASS; schedule re-registered and staggered
+2026-09-16 resume Laser after verified-mirror deploy from durable PREPARE 31/38; one normal worker only
