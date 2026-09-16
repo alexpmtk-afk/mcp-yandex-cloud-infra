@@ -1,0 +1,48 @@
+name: Telegram Cost Detail
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-cost-detail.yml]
+permissions:
+  contents: read
+jobs:
+  detail:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          yc config profile create tg-cost-detail || true
+          yc config profile activate tg-cost-detail
+          yc config set service-account-key "$RUNNER_TEMP/yc-key.json"
+      - name: Collect cost-driving details
+        shell: bash
+        run: |
+          set +e
+          f=b1gk4p83brasi8g811jv
+          echo '=== ROUTE TABLES ==='
+          yc vpc route-table list --folder-id "$f" --format json
+          echo '=== COMPUTE IMAGES ==='
+          yc compute image list --folder-id "$f" --format json
+          echo '=== REGISTRY IMAGES ==='
+          yc container image list --registry-id crphagvid8e8g5pp4fpe --format json
+          echo '=== BUCKET OBJECTS / SIZE ==='
+          yc storage s3 ls --recursive s3://telegram-reader-media-alexpmtk-20260910 2>&1 | tail -n 200
+          echo '=== BUCKET DU ==='
+          yc storage s3 du s3://telegram-reader-media-alexpmtk-20260910 2>&1
