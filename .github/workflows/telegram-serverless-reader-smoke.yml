@@ -9,6 +9,7 @@ on:
 permissions:
   contents: read
 
+# Re-run after least-privilege Lockbox metadata access was granted to the deployer.
 jobs:
   smoke:
     runs-on: ubuntu-latest
