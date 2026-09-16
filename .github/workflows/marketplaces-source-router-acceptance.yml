@@ -67,7 +67,7 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           printf '%s' "https://${DOMAIN}/mcp" > "$RUNNER_TEMP/mcp-url"
 
-      - name: Accept top-level source routing on live TEST MCP
+      - name: Accept query execution plan v2 on live TEST MCP
         shell: bash
         run: |
           set -euo pipefail
@@ -95,12 +95,14 @@ jobs:
               response = client.post(os.environ['MCP_URL'], headers=headers, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'source-router-acceptance','version':'1'}
+                      'clientInfo':{'name':'source-router-acceptance','version':'2'}
                   }
               })
               init = unpack(response); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
               assert 'marketplace_query_plan as the first server-side planning step' in instructions, instructions
+              assert 'marketplace_execution_plan.v2' in instructions, instructions
+              assert 'cross-source arithmetic' in instructions, instructions
               session = response.headers.get('mcp-session-id')
               if session: headers['Mcp-Session-Id'] = session
               headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
@@ -120,10 +122,12 @@ jobs:
 
               names = {tool['name'] for tool in rpc('tools/list')['tools']}
               assert 'marketplace_query_plan' in names, sorted(names)
+
               system_map = call('marketplace_system_map', {})
               router = system_map['request_source_router']
-              assert router['status'] == 'FOUNDATION_V1', router
-              assert router['source_revision'].endswith('700ee1d87c77a66e5e908a72998da2194d7f17a8'), router
+              assert router['status'] == 'EXECUTION_PLAN_V2', router
+              assert router['source_revision'].endswith('4fe77f5359803e92230b7e7e7744cf61c1ec0c49'), router
+              assert router['execution_plan']['version'] == 'marketplace_execution_plan.v2', router
               assert router['availability_facts']['wb_orders_historical_archive'] is False, router
               assert router['availability_facts']['wb_stock_historical_archive'] is False, router
 
@@ -132,8 +136,14 @@ jobs:
                   'marketplace':'wb','seller':'wb_novokshenov',
                   'date_from':'2026-09-16','date_to':'2026-09-16'
               })
+              assert current_stock['planner'] == 'marketplace_query_plan.v2', current_stock
               assert current_stock['source_family'] == 'LIVE_CABINET_API', current_stock
-              assert current_stock['source_status'] == 'AVAILABLE', current_stock
+              current_execution = current_stock['execution_plan']
+              assert current_execution['version'] == 'marketplace_execution_plan.v2', current_execution
+              assert current_execution['mode'] == 'SINGLE_SOURCE', current_execution
+              assert current_execution['status'] == 'READY', current_execution
+              assert current_execution['can_answer_without_more_validation'] is True, current_execution
+              assert current_execution['legs'][0]['executor'] == 'marketplace_business_query', current_execution
 
               historical_stock = call('marketplace_query_plan', {
                   'question':'Сколько остатков было 1 сентября?',
@@ -142,6 +152,8 @@ jobs:
               })
               assert historical_stock['source_family'] == 'UNAVAILABLE', historical_stock
               assert historical_stock['source_status'] == 'HISTORICAL_SOURCE_ABSENT', historical_stock
+              assert historical_stock['execution_plan']['status'] == 'BLOCKED', historical_stock
+              assert historical_stock['execution_plan']['can_start_execution'] is False, historical_stock
 
               recent_orders = call('marketplace_query_plan', {
                   'question':'Сколько заказов было в августе?',
@@ -150,7 +162,9 @@ jobs:
               })
               assert recent_orders['source_family'] == 'LIVE_CABINET_API', recent_orders
               assert recent_orders['source_status'] == 'AVAILABLE_WITH_LIMITATION', recent_orders
-              assert recent_orders['availability_facts']['orders_historical_archive'] is False, recent_orders
+              assert recent_orders['execution_plan']['status'] == 'READY_WITH_GATES', recent_orders
+              assert recent_orders['execution_plan']['legs'][0]['coverage_gate'] == 'LIVE_RETENTION_WINDOW', recent_orders
+              assert recent_orders['execution_plan']['can_answer_without_more_validation'] is False, recent_orders
 
               old_orders = call('marketplace_query_plan', {
                   'question':'Сколько заказов было в январе?',
@@ -159,16 +173,58 @@ jobs:
               })
               assert old_orders['source_family'] == 'UNAVAILABLE', old_orders
               assert old_orders['source_status'] == 'NO_VERIFIED_ARCHIVE_HISTORY', old_orders
+              assert old_orders['execution_plan']['status'] == 'BLOCKED', old_orders
+
+              missing_marketplace = call('marketplace_query_plan', {
+                  'question':'Сколько заказов сегодня?', 'seller':'shop'
+              })
+              assert missing_marketplace['source_status'] == 'MARKETPLACE_REQUIRED', missing_marketplace
+              assert missing_marketplace['execution_plan']['status'] == 'NEEDS_CONTEXT', missing_marketplace
+              assert missing_marketplace['execution_plan']['blockers'][0]['type'] == 'MISSING_CONTEXT', missing_marketplace
+
+              historical_compare = call('marketplace_query_plan', {
+                  'question':'Сравни продажи и рекламные расходы за август',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-08-01','date_to':'2026-08-31'
+              })
+              compare_execution = historical_compare['execution_plan']
+              assert historical_compare['source_family'] == 'HYBRID', historical_compare
+              assert compare_execution['mode'] == 'MULTI_SOURCE', compare_execution
+              assert compare_execution['status'] == 'READY_WITH_GATES', compare_execution
+              assert compare_execution['join']['strategy'] == 'SIDE_BY_SIDE_COMPARISON', compare_execution
+              assert compare_execution['join']['requires_all_required_legs'] is True, compare_execution
+              assert compare_execution['join']['allow_partial_answer'] is False, compare_execution
+              assert compare_execution['join']['arithmetic_allowed_without_explicit_semantic_contract'] is False, compare_execution
+              assert {leg['purpose'] for leg in compare_execution['legs']} >= {'advertising','sales_or_finance'}, compare_execution
+              assert all(leg['coverage_gate'] == 'FULL_COVERAGE' for leg in compare_execution['legs']), compare_execution
+
+              blocked_join = call('marketplace_query_plan', {
+                  'question':'Сравни цену на сайте и остатки товара на 1 сентября',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-09-01','date_to':'2026-09-01'
+              })
+              blocked_execution = blocked_join['execution_plan']
+              assert blocked_execution['mode'] == 'MULTI_SOURCE', blocked_execution
+              assert blocked_execution['status'] == 'BLOCKED', blocked_execution
+              stock_leg = next(x for x in blocked_execution['legs'] if x['purpose'] == 'current_stock')
+              public_leg = next(x for x in blocked_execution['legs'] if x['purpose'] == 'public_card')
+              assert stock_leg['source_family'] == 'UNAVAILABLE', stock_leg
+              assert stock_leg['source_status'] == 'HISTORICAL_SOURCE_ABSENT', stock_leg
+              assert public_leg['source_family'] == 'PUBLIC_MARKETPLACE_SOURCE', public_leg
+              assert blocked_execution['join']['missing_required_leg_behavior'] == 'FAIL_CLOSED', blocked_execution
 
               public_rules = call('marketplace_query_plan', {
                   'question':'Какие сейчас официальные правила Wildberries для продавцов?'
               })
               assert public_rules['source_family'] == 'PUBLIC_MARKETPLACE_SOURCE', public_rules
               assert public_rules['source_status'] == 'NOT_CONNECTED_ON_DEMAND', public_rules
+              assert public_rules['execution_plan']['status'] == 'BLOCKED', public_rules
 
               internal = call('marketplace_query_plan', {
                   'question':'Какие данные есть в базе и какие источники сейчас доступны?'
               })
               assert internal['source_family'] == 'SYSTEM_INTERNAL', internal
-              print('MARKETPLACE_SOURCE_ROUTER_LIVE_ACCEPTANCE=PASS', flush=True)
+              assert internal['execution_plan']['status'] == 'READY', internal
+
+              print('MARKETPLACE_QUERY_EXECUTION_PLAN_V2_LIVE_ACCEPTANCE=PASS', flush=True)
           PY
