@@ -55,7 +55,8 @@ class MediaPipeline:
             if ref.media_type not in SUPPORTED_MEDIA:
                 continue
             try:
-                if await self._capture_one(ref):
+                _, changed = await self._ensure_one(ref)
+                if changed:
                     saved += 1
             except Exception as exc:
                 LOGGER.warning(
@@ -67,7 +68,13 @@ class MediaPipeline:
                 )
         return saved
 
-    async def _capture_one(self, ref: MediaRef) -> bool:
+    async def ensure_asset(self, chat_id: int, message_id: int, media_type: str | None) -> dict | None:
+        if media_type not in SUPPORTED_MEDIA:
+            return None
+        metadata, _ = await self._ensure_one(MediaRef(int(chat_id), int(message_id), media_type))
+        return metadata
+
+    async def _ensure_one(self, ref: MediaRef) -> tuple[dict | None, bool]:
         folder = self.root / str(ref.chat_id)
         folder.mkdir(parents=True, exist_ok=True)
         manifest = folder / f"{ref.message_id}.json"
@@ -79,13 +86,61 @@ class MediaPipeline:
             except (OSError, ValueError):
                 previous = None
             if previous and previous.get("object_key") and previous.get("preview_object_key"):
-                return False
+                previous["media_url"] = self.objects.signed_proxy_url(previous.get("object_key"))
+                previous["preview_url"] = self.objects.signed_proxy_url(previous.get("preview_object_key"))
+                return previous, False
 
         self.reader.whitelist.assert_allowed(ref.chat_id)
-        entity = await self.reader.client.get_entity(int(ref.chat_id))
+        entity = await self.reader._allowed_entity(int(ref.chat_id))
         message = await self.reader.client.get_messages(entity, ids=int(ref.message_id))
         if not message or not getattr(message, "media", None):
-            return False
+            return None, False
+
+        ext = self._extension(message, ref.media_type or "media")
+        object_key = previous.get("object_key") if previous else None
+        preview_object_key = previous.get("preview_object_key") if previous else None
+        object_info = None
+        preview_info = None
+
+        if self.objects.enabled and not object_key:
+            candidate = self.objects.key_for(
+                chat_id=ref.chat_id,
+                message_id=ref.message_id,
+                suffix=ext,
+            )
+            object_info = self.objects.object_info(candidate)
+            if object_info:
+                object_key = candidate
+
+        if self.objects.enabled and not preview_object_key:
+            preview_candidate = self.objects.key_for(
+                chat_id=ref.chat_id,
+                message_id=ref.message_id,
+                suffix=".jpg",
+                variant="preview",
+            )
+            preview_info = self.objects.object_info(preview_candidate)
+            if preview_info:
+                preview_object_key = preview_candidate
+
+        # Serverless invocations are stateless. Reuse deterministic objects from
+        # Object Storage and avoid downloading the same Telegram media repeatedly.
+        if object_key and preview_object_key:
+            metadata = {
+                "chat_id": ref.chat_id,
+                "message_id": ref.message_id,
+                "media_type": ref.media_type,
+                "local_path": None,
+                "size": (object_info or {}).get("size") or (previous or {}).get("size"),
+                "object_key": object_key,
+                "media_url": self.objects.signed_proxy_url(object_key),
+                "preview_local_path": None,
+                "preview_size": (preview_info or {}).get("size") or (previous or {}).get("preview_size"),
+                "preview_object_key": preview_object_key,
+                "preview_url": self.objects.signed_proxy_url(preview_object_key),
+            }
+            self._write_manifest(manifest, metadata)
+            return metadata, False
 
         actual = None
         if previous:
@@ -94,28 +149,21 @@ class MediaPipeline:
                 actual = Path(str(local_path))
 
         if actual is None:
-            ext = self._extension(message, ref.media_type or "media")
             target = folder / f"{ref.message_id}{ext}"
             downloaded = await self.reader.client.download_media(message, file=str(target))
             if not downloaded:
-                return False
+                return None, False
             actual = Path(downloaded)
 
-        object_key = previous.get("object_key") if previous else None
-        media_url = previous.get("media_url") if previous else None
+        changed = False
         if self.objects.enabled and not object_key:
-            uploaded = self.objects.upload(
-                actual,
-                chat_id=ref.chat_id,
-                message_id=ref.message_id,
-            )
+            uploaded = self.objects.upload(actual, chat_id=ref.chat_id, message_id=ref.message_id)
             if uploaded:
-                object_key, media_url = uploaded
+                object_key, _ = uploaded
+                changed = True
 
         preview_path = self._build_preview(actual, ref.media_type or "media")
-        preview_object_key = previous.get("preview_object_key") if previous else None
-        preview_url = previous.get("preview_url") if previous else None
-        preview_size = previous.get("preview_size") if previous else None
+        preview_size = (previous or {}).get("preview_size")
         if preview_path and preview_path.exists():
             preview_size = preview_path.stat().st_size
             if self.objects.enabled and not preview_object_key:
@@ -126,25 +174,30 @@ class MediaPipeline:
                     variant="preview",
                 )
                 if uploaded_preview:
-                    preview_object_key, preview_url = uploaded_preview
+                    preview_object_key, _ = uploaded_preview
+                    changed = True
 
         metadata = {
             "chat_id": ref.chat_id,
             "message_id": ref.message_id,
             "media_type": ref.media_type,
             "local_path": str(actual),
-            "size": actual.stat().st_size if actual.exists() else None,
+            "size": actual.stat().st_size if actual.exists() else (object_info or {}).get("size"),
             "object_key": object_key,
-            "media_url": media_url,
+            "media_url": self.objects.signed_proxy_url(object_key),
             "preview_local_path": str(preview_path) if preview_path else None,
             "preview_size": preview_size,
             "preview_object_key": preview_object_key,
-            "preview_url": preview_url,
+            "preview_url": self.objects.signed_proxy_url(preview_object_key),
         }
+        self._write_manifest(manifest, metadata)
+        return metadata, changed
+
+    @staticmethod
+    def _write_manifest(manifest: Path, metadata: dict) -> None:
         tmp = manifest.with_suffix(".json.tmp")
         tmp.write_text(json.dumps(metadata, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(manifest)
-        return True
 
     @staticmethod
     def _build_preview(source: Path, kind: str) -> Path | None:
