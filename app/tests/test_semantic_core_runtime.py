@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import date
 
+from core.request_execution_controller import control_marketplace_execution
 from core.semantic_business_router import execute_business_query
 from core.semantic_archive import load_semantic_execution
 from core.semantic_registry import get_capability, get_dataset, get_field, load_semantic_registry
@@ -96,3 +98,39 @@ def test_business_query_never_falls_back_from_current_state_to_archive():
     )
     assert result["ok"] is False
     assert result["error"] == "source_not_suitable"
+
+
+def test_execution_controller_splits_compound_query_into_narrow_server_owned_legs():
+    result = control_marketplace_execution(
+        "Сравни продажи и рекламные расходы за август",
+        marketplace="wb",
+        seller="wb_novokshenov",
+        date_from="2026-08-01",
+        date_to="2026-08-31",
+        today=date(2026, 9, 16),
+    )
+    assert result["state"] == "READY_WITH_GATES"
+    assert result["can_dispatch"] is True
+    contracts = result["dispatch_contracts"]
+    assert {item["executor_arguments"]["question"] for item in contracts} == {
+        "продажи", "рекламные расходы"
+    }
+    assert all(item["original_compound_question_allowed"] is False for item in contracts)
+    assert result["join_control"]["allow_partial_answer"] is False
+    assert result["join_control"]["arithmetic_allowed"] is False
+
+
+def test_execution_controller_withholds_all_dispatch_when_required_leg_is_not_contractable():
+    result = control_marketplace_execution(
+        "Сравни цену на сайте и текущие остатки Wildberries",
+        marketplace="wb",
+        seller="wb_novokshenov",
+        date_from="2026-09-16",
+        date_to="2026-09-16",
+        today=date(2026, 9, 16),
+    )
+    assert result["state"] == "BLOCKED"
+    assert result["can_dispatch"] is False
+    assert result["dispatch_contracts"] == []
+    assert any(item["type"] == "PRODUCT_TARGET_REQUIRED" for item in result["blockers"])
+    assert result["prepared_non_dispatchable_contracts"]
