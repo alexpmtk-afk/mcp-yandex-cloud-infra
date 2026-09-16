@@ -1,0 +1,71 @@
+name: Telegram Serverless Media Preflight
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-serverless-media-preflight.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  preflight:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-media-preflight || true
+          yc config profile activate tg-media-preflight
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Inspect runtime secret keys without revealing values
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(yc iam create-token)"
+          curl -fsS -H "Authorization: Bearer $token" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/e6qnt0bt655jltrr5sid/payload" \
+            -o "$RUNNER_TEMP/payload.json"
+          jq -r '.entries[].key' "$RUNNER_TEMP/payload.json" | sort > "$RUNNER_TEMP/keys.txt"
+          echo 'LOCKBOX_KEYS_BEGIN'
+          cat "$RUNNER_TEMP/keys.txt"
+          echo 'LOCKBOX_KEYS_END'
+          for k in TELEGRAM_MEDIA_BUCKET TELEGRAM_MEDIA_PREFIX TELEGRAM_PUBLIC_BASE_URL TELEGRAM_MEDIA_LINK_SECRET READER_API_TOKEN; do
+            if jq -e --arg k "$k" '.entries[] | select(.key==$k and ((.textValue // "")|length)>0)' "$RUNNER_TEMP/payload.json" >/dev/null; then
+              echo "$k=PRESENT"
+            else
+              echo "$k=ABSENT"
+            fi
+          done
+
+      - name: Inspect runtime service-account storage roles
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc resource-manager folder list-access-bindings b1gk4p83brasi8g811jv --format json \
+            | jq -r '.[] | select(any(.subjects[]?; .id=="ajeaad0m00gncv22tagf")) | .role_id' \
+            | sort -u | sed 's/^/RUNTIME_ROLE=/'
+          echo MEDIA_PREFLIGHT_PASS
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/keys.txt"
