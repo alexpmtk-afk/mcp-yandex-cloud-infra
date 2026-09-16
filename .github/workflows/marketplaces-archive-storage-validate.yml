@@ -81,6 +81,10 @@ jobs:
           grep -q 'sync_resumable_telemetry' app/core/archive_resumable_worker.py
           grep -q 'archive-finalize-' app/core/archive_finalize_telemetry.py
           grep -q 'marketplace_business_query' app/core/semantic_business_router.py
+          grep -q 'semantic_current_stock' app/core/semantic_business_router.py
+          test -f app/core/order_history.py
+          test -f app/core/semantic_current_stock.py
+          grep -q 'CURRENT_STOCK' app/core/semantic_intents.yaml
           grep -q 'advertising_performance' app/core/semantic_registry_extensions.yaml
           grep -q 'ads_campaign_daily' app/core/semantic_registry_extensions.yaml
           grep -q 'FULL_COVERAGE' app/core/semantic_advertising.py
@@ -99,9 +103,11 @@ jobs:
           grep -q 'google_drive_bridge_secret' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'MARKETPLACE_MCP_GOOGLE_DRIVE_OAUTH_JSON' .github/workflows/deploy-mcp-test.yml
           ! grep -q 'google_drive_oauth_json' .github/workflows/deploy-mcp-test.yml
-          grep -q '2026-09-15.v17' .github/workflows/deploy-mcp-test.yml
+          grep -q '2026-09-16.v19' .github/workflows/deploy-mcp-test.yml
           grep -q 'marketplace_business_query' .github/workflows/deploy-mcp-test.yml
           grep -q 'SEMANTIC_CORE_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'SEMANTIC_CURRENT_STOCK_HISTORICAL_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
+          grep -q 'SYSTEM_MAP_SEMANTIC_OPERATIONAL=PASS' .github/workflows/deploy-mcp-test.yml
           grep -q 'SEMANTIC_ADVERTISING_COVERAGE_GAP=PASS' .github/workflows/deploy-mcp-test.yml
           grep -q 'SEMANTIC_ADVERTISING_PRODUCT_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
           grep -q 'SEMANTIC_ADVERTISING_CAMPAIGN_FAIL_CLOSED=PASS' .github/workflows/deploy-mcp-test.yml
@@ -148,7 +154,7 @@ jobs:
           grep -q 'Architecture version: 2026-09-16.v19' app/.source-revision
           grep -q 'durable non-secret telemetry' docs/CURRENT_RUNTIME_BASELINE.md
           grep -q 'resumable `session_uri`' docs/CURRENT_RUNTIME_BASELINE.md
-          grep -q '833eab826bfaa4691a05a21a5d00f1e8e0ba1b37' app/.source-revision
+          grep -q '303b7f6e732e8c6b0047ab4e81c43169acd6f040' app/.source-revision
           echo 'ARCHIVE_SEMANTIC_RUNTIME_VALIDATE=PASS'
 
       - name: Probe live Apps Script bridge version and hardened capabilities (read only)
