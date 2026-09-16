@@ -1,4 +1,4 @@
 allowed_chats:
-  - chat_id: -1003236897998
-    name: "Тестовый канал ChatGPT"
+  - chat_id: -1001343028414
+    name: "prod-smoke"
     enabled: true
