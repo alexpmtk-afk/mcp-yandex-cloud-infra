@@ -1,0 +1,105 @@
+name: Yandex cost and night activity audit once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/yandex-cost-night-audit-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    env:
+      YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install current Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          "$RUNNER_TEMP/yc/yc" version
+
+      - name: Authenticate safely
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "${YC_SERVICE_ACCOUNT_KEY_JSON:-}"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          echo "YC_KEY_FILE=$KEY_FILE" >> "$GITHUB_ENV"
+          yc config profile create cost-audit || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id "$YC_CLOUD_ID"
+          TOKEN="$(yc iam create-token)"
+          echo "::add-mask::$TOKEN"
+          echo "IAM_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+          echo 'YANDEX_AUTH=PASS'
+
+      - name: Billing balance and detailed usage
+        shell: bash
+        run: |
+          set +e
+          echo '=== BILLING_ACCOUNTS ==='
+          ACCOUNTS_JSON="$(curl -sS -H "Authorization: Bearer $IAM_TOKEN" 'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts?pageSize=100')"
+          echo "$ACCOUNTS_JSON" | jq '{billingAccounts:[.billingAccounts[]? | {id,name,currency,active,balance}]}'
+          ACCOUNT_ID="$(echo "$ACCOUNTS_JSON" | jq -r '.billingAccounts[0].id // empty')"
+          if [ -z "$ACCOUNT_ID" ]; then
+            echo 'BILLING_ACCOUNT_VISIBLE=NO'
+          else
+            echo "BILLING_ACCOUNT_VISIBLE=YES id=$ACCOUNT_ID"
+            echo '=== RESOURCE_USAGE_2026-09-15_TO_2026-09-16 ==='
+            yc billing consumption-core get-resource-usage-report "$ACCOUNT_ID" --start-date 2026-09-15T00:00:00Z --end-date 2026-09-16T23:59:59Z --aggregation-period day --format json
+            RC=$?
+            echo "RESOURCE_USAGE_EXIT=$RC"
+            sleep 65
+            echo '=== SERVICE_USAGE_2026-09-15_TO_2026-09-16 ==='
+            yc billing consumption-core get-service-usage-report "$ACCOUNT_ID" --start-date 2026-09-15T00:00:00Z --end-date 2026-09-16T23:59:59Z --aggregation-period day --format json
+            echo "SERVICE_USAGE_EXIT=$?"
+          fi
+
+      - name: Current cloud inventory and scheduled triggers
+        shell: bash
+        run: |
+          set +e
+          echo '=== FOLDERS ==='
+          FOLDERS="$(yc resource-manager folder list --cloud-id "$YC_CLOUD_ID" --format json 2>/dev/null)"
+          echo "$FOLDERS" | jq '[.[] | {id,name,status,created_at}]'
+          echo "$FOLDERS" | jq -r '.[].id' | while read -r FID; do
+            FNAME="$(echo "$FOLDERS" | jq -r --arg id "$FID" '.[]|select(.id==$id)|.name')"
+            echo "=== FOLDER $FNAME $FID ==="
+            echo '-- COMPUTE_INSTANCES --'
+            yc compute instance list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at,zone_id,resources,network_interfaces}]' || true
+            echo '-- DISKS --'
+            yc compute disk list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at,type_id,size,instance_ids}]' || true
+            echo '-- SERVERLESS_CONTAINERS --'
+            yc serverless container list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at}]' || true
+            echo '-- FUNCTIONS --'
+            yc serverless function list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at}]' || true
+            echo '-- TRIGGERS_TIMERS --'
+            yc serverless trigger list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at,rule}]' || true
+            echo '-- API_GATEWAYS --'
+            yc serverless api-gateway list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at,domain}]' || true
+            echo '-- YDB --'
+            yc ydb database list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at,serverless_database}]' || true
+            echo '-- CONTAINER_REGISTRIES --'
+            yc container registry list --folder-id "$FID" --format json 2>/dev/null | jq '[.[] | {id,name,status,created_at}]' || true
+          done
+
+      - name: Cleanup key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
