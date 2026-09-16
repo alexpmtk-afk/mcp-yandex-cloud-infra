@@ -1,0 +1,157 @@
+name: Telegram Reader Final Legacy Decommission
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-final-decommission.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-reader-final-legacy-decommission
+  cancel-in-progress: false
+
+jobs:
+  decommission:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-final-decommission || true
+          yc config profile activate telegram-final-decommission
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Preflight — prove Serverless production and identify exact legacy assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          prod_vm=fhm7p41jpj4uc2c6buou
+          prod_boot=fhm3d8hhmujlu7akkstn
+          state_disk=fhm6hcjd5blbrbg8oine
+
+          reader="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json)"
+          media="$(yc serverless container get telegram-reader-media --folder-id "$folder" --format json)"
+          test -n "$(echo "$reader" | jq -r '.id // empty')"
+          test -n "$(echo "$media" | jq -r '.id // empty')"
+          url="$(echo "$reader" | jq -r '.url')"
+          url="${url%/}"
+          token="$(yc iam create-token)"
+          healthy=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+              healthy=1
+              break
+            fi
+            sleep 5
+          done
+          test "$healthy" -eq 1
+
+          vm="$(yc compute instance get --id "$prod_vm" --folder-id "$folder" --format json)"
+          echo "$vm" | jq -e --arg s "$state_disk" --arg b "$prod_boot" '.name=="telegram-news-reader" and .status=="STOPPED" and .boot_disk.disk_id==$b and any(.secondary_disks[]?; .disk_id==$s) and ((.network_interfaces[0].primary_v4_address.one_to_one_nat.address // "")=="")' >/dev/null
+
+          boot="$(yc compute disk get --id "$prod_boot" --folder-id "$folder" --format json)"
+          state="$(yc compute disk get --id "$state_disk" --folder-id "$folder" --format json)"
+          echo "$state" | jq -e '.name=="telegram-reader-state" and .status=="READY" and .size=="10737418240"' >/dev/null
+          echo "$boot" | jq -e '.status=="READY" and .size=="10737418240"' >/dev/null
+
+          echo "LEGACY_BOOT_NAME=$(echo "$boot" | jq -r '.name // ""')"
+          echo "LEGACY_BOOT_SIZE=$(echo "$boot" | jq -r '.size')"
+          echo "LEGACY_STATE_NAME=$(echo "$state" | jq -r '.name // ""')"
+          echo "LEGACY_STATE_SIZE=$(echo "$state" | jq -r '.size')"
+          echo FINAL_DECOMMISSION_PREFLIGHT_PASS
+
+      - name: Delete legacy VM and both legacy 10 GB disks
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          prod_vm=fhm7p41jpj4uc2c6buou
+          prod_boot=fhm3d8hhmujlu7akkstn
+          state_disk=fhm6hcjd5blbrbg8oine
+
+          yc compute instance delete --id "$prod_vm" --folder-id "$folder"
+          for i in $(seq 1 30); do
+            if ! yc compute instance get --id "$prod_vm" --folder-id "$folder" >/dev/null 2>&1; then break; fi
+            sleep 2
+          done
+          ! yc compute instance get --id "$prod_vm" --folder-id "$folder" >/dev/null 2>&1
+
+          for disk in "$prod_boot" "$state_disk"; do
+            if yc compute disk get --id "$disk" --folder-id "$folder" >/dev/null 2>&1; then
+              yc compute disk delete --id "$disk" --folder-id "$folder"
+            fi
+          done
+          for i in $(seq 1 30); do
+            boot_exists=0; state_exists=0
+            yc compute disk get --id "$prod_boot" --folder-id "$folder" >/dev/null 2>&1 && boot_exists=1 || true
+            yc compute disk get --id "$state_disk" --folder-id "$folder" >/dev/null 2>&1 && state_exists=1 || true
+            if [ "$boot_exists" -eq 0 ] && [ "$state_exists" -eq 0 ]; then break; fi
+            sleep 2
+          done
+
+          echo LEGACY_VM_AND_DISKS_DELETE_REQUEST_PASS
+
+      - name: Independent post-delete audit — old assets absent, Serverless still healthy
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          prod_vm=fhm7p41jpj4uc2c6buou
+          prod_boot=fhm3d8hhmujlu7akkstn
+          state_disk=fhm6hcjd5blbrbg8oine
+          old_address=e9bv4ec7lo22sahplcpj
+
+          ! yc compute instance get --id "$prod_vm" --folder-id "$folder" >/dev/null 2>&1
+          ! yc compute disk get --id "$prod_boot" --folder-id "$folder" >/dev/null 2>&1
+          ! yc compute disk get --id "$state_disk" --folder-id "$folder" >/dev/null 2>&1
+          ! yc vpc address get --id "$old_address" --folder-id "$folder" >/dev/null 2>&1
+
+          reader="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json)"
+          yc serverless container get telegram-reader-media --folder-id "$folder" >/dev/null
+          url="$(echo "$reader" | jq -r '.url')"
+          url="${url%/}"
+          token="$(yc iam create-token)"
+          healthy=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+              healthy=1
+              break
+            fi
+            sleep 5
+          done
+          test "$healthy" -eq 1
+
+          echo POST_DELETE_LEGACY_VM_ABSENT_PASS
+          echo POST_DELETE_BOOT_DISK_ABSENT_PASS
+          echo POST_DELETE_STATE_DISK_ABSENT_PASS
+          echo POST_DELETE_STATIC_IP_ABSENT_PASS
+          echo POST_DELETE_SERVERLESS_HEALTH_PASS
+          echo TELEGRAM_READER_FULL_SERVERLESS_MIGRATION_PASS
+
+      - name: Cleanup credential file
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
