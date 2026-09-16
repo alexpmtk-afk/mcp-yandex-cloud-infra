@@ -60,8 +60,17 @@ jobs:
           url="${url%/}"
           test -n "$url" && test "$url" != null
           token="$(yc iam create-token)"
-          body="$(curl -fsS --max-time 30 -H "Authorization: Bearer $token" "$url/health")"
-          echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null
+          healthy=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+              healthy=1
+              echo "PRODUCTION_READER_HEALTH_ATTEMPT=$attempt"
+              break
+            fi
+            sleep 5
+          done
+          test "$healthy" -eq 1
           public_code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$url/internal/chats")"
           test "$public_code" = 401 -o "$public_code" = 403
           echo "READER_URL=$url" >> "$GITHUB_ENV"
