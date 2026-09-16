@@ -14,6 +14,18 @@ from app.whitelist import Whitelist
 from app.ws_relay import WebSocketRelayAdapter
 
 
+class EntityResolutionError(RuntimeError):
+    """Safe marker for a whitelisted entity that could not be resolved."""
+
+
+class MessageFetchError(RuntimeError):
+    """Safe marker for Telegram message iteration failures."""
+
+
+class MessageDecodeError(RuntimeError):
+    """Safe marker for converting a Telegram message to our record."""
+
+
 class TelegramReader:
     """Read-only application wrapper around Telethon.
 
@@ -107,8 +119,16 @@ class TelegramReader:
     ) -> list[MessageRecord]:
         entity = await self._allowed_entity(chat_id)
         records: list[MessageRecord] = []
-        async for message in self.client.iter_messages(entity, limit=max(1, limit)):
-            records.append(self._message_record(chat_id, entity, message))
+        try:
+            async for message in self.client.iter_messages(entity, limit=max(1, limit)):
+                try:
+                    records.append(self._message_record(chat_id, entity, message))
+                except Exception as exc:
+                    raise MessageDecodeError() from exc
+        except MessageDecodeError:
+            raise
+        except Exception as exc:
+            raise MessageFetchError() from exc
         return records
 
     async def get_messages_since(
@@ -179,15 +199,20 @@ class TelegramReader:
     async def _allowed_entity(self, chat_id: int):
         self.whitelist.assert_allowed(chat_id)
         try:
-            return await self.client.get_entity(int(chat_id))
-        except ValueError:
-            # StringSession intentionally stores authorization only and does not
-            # carry Telethon's SQLite entity cache. Rehydrate the exact allowed
-            # entity from the account dialog list on a cold serverless start.
-            async for dialog in self.client.iter_dialogs():
-                if int(dialog.id) == int(chat_id):
-                    return dialog.entity
-            raise
+            # Numeric IDs require Telethon's entity cache. A normal SQLiteSession
+            # has that cache, while StringSession deliberately does not.
+            return await self.client.get_input_entity(int(chat_id))
+        except ValueError as cache_exc:
+            # Rehydrate the exact InputPeer from Telegram's dialog list. Dialog
+            # objects carry access_hash, so iter_messages can work on a cold
+            # StringSession without persisting Telethon's entity database.
+            try:
+                async for dialog in self.client.iter_dialogs(limit=None):
+                    if int(dialog.id) == int(chat_id):
+                        return dialog.input_entity
+            except Exception as exc:
+                raise EntityResolutionError() from exc
+            raise EntityResolutionError() from cache_exc
 
     def _message_record(self, chat_id: int, entity, message) -> MessageRecord:
         username = getattr(entity, "username", None)
