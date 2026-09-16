@@ -1,0 +1,196 @@
+name: Telegram Legacy Cleanup Exec Temp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/telegram-legacy-cleanup-exec-temp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-cleanup-exec || true
+          yc config profile activate telegram-cleanup-exec
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Pre-cleanup production safety gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+
+          # Production workflows must no longer depend on legacy IP / SSH bridge.
+          ! grep -n '111\.88\.248\.156' .github/workflows/telegram-news-bridge.yml .github/workflows/telegram-news-ondemand.yml
+          ! grep -n 'ssh-keygen\|ubuntu@111\.88\.248\.156' .github/workflows/telegram-news-bridge.yml .github/workflows/telegram-news-ondemand.yml
+
+          jq -e '.schema=="TELEGRAM_NEWS_READER_V1" and .allowed_chats==9 and .message_count>0' telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json >/dev/null
+          jq -e '.schema=="TELEGRAM_NEWS_ONDEMAND_V3" and .chat_count>=1 and .chat_count<=5' telegram-news-reader/ondemand/latest.json >/dev/null
+
+          url="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json | jq -r '.url')"
+          url="${url%/}"
+          token="$(yc iam create-token)"
+          healthy=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+              healthy=1
+              break
+            fi
+            sleep 5
+          done
+          test "$healthy" -eq 1
+          echo PRE_CLEANUP_PRODUCTION_GATE_PASS
+
+      - name: Release legacy Telegram static public IP
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          prod_vm=fhm7p41jpj4uc2c6buou
+          address_id=e9bv4ec7lo22sahplcpj
+
+          # Exact audited VM/address pair only.
+          vm="$(yc compute instance get --id "$prod_vm" --folder-id "$folder" --format json)"
+          echo "$vm" | jq -e '.name=="telegram-news-reader" and .status=="STOPPED" and .network_interfaces[0].primary_v4_address.one_to_one_nat.address=="111.88.248.156"' >/dev/null
+          addr="$(yc vpc address get --id "$address_id" --folder-id "$folder" --format json)"
+          echo "$addr" | jq -e '.name=="telegram-reader-public-ip" and .external_ipv4_address.address=="111.88.248.156"' >/dev/null
+
+          yc compute instance remove-one-to-one-nat --id "$prod_vm" --network-interface-index 0 --folder-id "$folder" >/dev/null
+          yc vpc address delete --id "$address_id" --folder-id "$folder" >/dev/null
+
+          if yc vpc address get --id "$address_id" --folder-id "$folder" >/dev/null 2>&1; then
+            echo STATIC_IP_STILL_EXISTS
+            exit 1
+          fi
+          post="$(yc compute instance get --id "$prod_vm" --folder-id "$folder" --format json)"
+          test "$(echo "$post" | jq -r '.network_interfaces[0].primary_v4_address.one_to_one_nat.address // empty')" = ""
+          echo STATIC_IP_RELEASE_PASS
+
+      - name: Delete temporary builder compute and network contour
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          builder_vm=fhm4dcokf4herjhn8aiv
+          builder_disk=fhmrot9tje8e7pg7teqb
+          builder_subnet=e9b8k00chkpj4dd11uui
+          builder_rt=enpgequlsevs5jl4gtl6
+          builder_gw=enpkq16qa4ismtl2lap5
+
+          vm="$(yc compute instance get --id "$builder_vm" --folder-id "$folder" --format json)"
+          echo "$vm" | jq -e '.name=="telegram-reader-builder-temp" and .status=="STOPPED" and .boot_disk.disk_id=="fhmrot9tje8e7pg7teqb"' >/dev/null
+          subnet="$(yc vpc subnet get --id "$builder_subnet" --folder-id "$folder" --format json)"
+          echo "$subnet" | jq -e '.name=="telegram-builder-subnet-temp" and .route_table_id=="enpgequlsevs5jl4gtl6"' >/dev/null
+
+          yc compute instance delete --id "$builder_vm" --folder-id "$folder" >/dev/null
+          yc compute disk delete --id "$builder_disk" --folder-id "$folder" >/dev/null
+          yc vpc subnet delete --id "$builder_subnet" --folder-id "$folder" >/dev/null
+          yc vpc route-table delete --id "$builder_rt" --folder-id "$folder" >/dev/null
+          yc vpc gateway delete --id "$builder_gw" --folder-id "$folder" >/dev/null
+
+          for cmd in \
+            "yc compute instance get --id $builder_vm --folder-id $folder" \
+            "yc compute disk get --id $builder_disk --folder-id $folder" \
+            "yc vpc subnet get --id $builder_subnet --folder-id $folder" \
+            "yc vpc route-table get --id $builder_rt --folder-id $folder" \
+            "yc vpc gateway get --id $builder_gw --folder-id $folder"; do
+            if bash -lc "$cmd" >/dev/null 2>&1; then
+              echo "RESOURCE_STILL_EXISTS: $cmd"
+              exit 1
+            fi
+          done
+          echo BUILDER_CONTOUR_CLEANUP_PASS
+
+      - name: Remove obsolete Telegram smoke and cutover containers
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          keep_prod="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json | jq -r '.name')"
+          keep_media="$(yc serverless container get telegram-reader-media --folder-id "$folder" --format json | jq -r '.name')"
+          test "$keep_prod" = telegram-reader-serverless
+          test "$keep_media" = telegram-reader-media
+
+          for name in telegram-relay-serverless-smoke telegram-reader-serverless-cutover-test telegram-reader-serverless-smoke; do
+            if yc serverless container get "$name" --folder-id "$folder" >/dev/null 2>&1; then
+              yc serverless container delete "$name" --folder-id "$folder" >/dev/null
+            fi
+            if yc serverless container get "$name" --folder-id "$folder" >/dev/null 2>&1; then
+              echo "TEST_CONTAINER_STILL_EXISTS=$name"
+              exit 1
+            fi
+          done
+          echo TEST_CONTAINERS_CLEANUP_PASS
+
+      - name: Remove obsolete builder SSH security-group rule
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          sg=enpocnvnpdu2goj9nkjn
+          rule=enpbefq221lqv8qh15h9
+          if yc vpc security-group get "$sg" --folder-id "$folder" --format json | jq -e --arg r "$rule" 'any(.rules[]?; .id==$r and .description=="telegram-builder-internal-ssh")' >/dev/null; then
+            yc vpc security-group update-rules "$sg" --folder-id "$folder" --delete-rule-id "$rule" >/dev/null
+          fi
+          if yc vpc security-group get "$sg" --folder-id "$folder" --format json | jq -e --arg r "$rule" 'any(.rules[]?; .id==$r)' >/dev/null; then
+            echo BUILDER_SSH_RULE_STILL_EXISTS
+            exit 1
+          fi
+          echo BUILDER_SSH_RULE_CLEANUP_PASS
+
+      - name: Post-cleanup safety and rollback verification
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          prod_vm=fhm7p41jpj4uc2c6buou
+          state_disk=fhm6hcjd5blbrbg8oine
+
+          # Rollback state is deliberately retained.
+          vm="$(yc compute instance get --id "$prod_vm" --folder-id "$folder" --format json)"
+          echo "$vm" | jq -e --arg d "$state_disk" '.name=="telegram-news-reader" and .status=="STOPPED" and any(.secondary_disks[]?; .disk_id==$d)' >/dev/null
+          disk="$(yc compute disk get --id "$state_disk" --folder-id "$folder" --format json)"
+          echo "$disk" | jq -e '.name=="telegram-reader-state" and .status=="READY"' >/dev/null
+
+          # Production Serverless containers still exist.
+          yc serverless container get telegram-reader-serverless --folder-id "$folder" >/dev/null
+          yc serverless container get telegram-reader-media --folder-id "$folder" >/dev/null
+
+          echo STATE_DISK_PRESERVED_PASS
+          echo TELEGRAM_LEGACY_PAID_CLEANUP_PASS
+
+      - name: Cleanup credential file
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
