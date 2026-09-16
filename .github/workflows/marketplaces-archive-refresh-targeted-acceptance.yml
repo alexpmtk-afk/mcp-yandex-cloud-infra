@@ -1,0 +1,288 @@
+name: Marketplaces Archive Refresh Targeted Acceptance
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/control/run-archive-refresh-targeted-acceptance.txt
+
+permissions:
+  contents: read
+
+concurrency:
+  group: marketplaces-archive-refresh-targeted-acceptance
+  cancel-in-progress: false
+
+jobs:
+  targeted-refresh:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 180
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 8); do
+            if timeout 75s wget -q --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 3
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          python -m pip install --quiet 'httpx>=0.27,<1'
+
+      - name: Resolve TEST MCP endpoint and bearer
+        id: target
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create archive-refresh-targeted || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output > "$RUNNER_TEMP/versions.json"
+          VERSION_ID="$(jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty' "$RUNNER_TEMP/versions.json")"
+          test -n "$DOMAIN" && test -n "$SECRET_ID" && test -n "$VERSION_ID"
+          timeout 45s yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          chmod 600 "$RUNNER_TEMP/bearer"
+          echo "url=https://${DOMAIN}/mcp" >> "$GITHUB_OUTPUT"
+
+      - name: Refresh Laser Master and Novokshenov only, then prove idempotency
+        shell: bash
+        timeout-minutes: 170
+        env:
+          MCP_URL: ${{ steps.target.outputs.url }}
+        run: |
+          set -euo pipefail
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -u - <<'PY'
+          import itertools
+          import json
+          import os
+          import time
+          import httpx
+
+          YEAR = 2026
+          TARGETS = ('wb_laser_master', 'wb_novokshenov')
+          RESERVED = 'wb_dmitrieva'
+          EXPECTED_MIN_DATE = '2026-09-13'
+          MAX_STEPS = 220
+
+          def unpack(response):
+              response.raise_for_status()
+              for line in response.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return response.json() if response.text.strip() else None
+
+          def tool(name, arguments):
+              timeout = httpx.Timeout(connect=15.0, read=90.0, write=30.0, pool=15.0)
+              headers0 = {
+                  'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+                  'Accept': 'application/json, text/event-stream',
+                  'Content-Type': 'application/json',
+              }
+              ids = itertools.count(1)
+              with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+                  response = client.post(os.environ['MCP_URL'], headers=headers0, json={
+                      'jsonrpc': '2.0', 'id': next(ids), 'method': 'initialize', 'params': {
+                          'protocolVersion': '2025-06-18', 'capabilities': {},
+                          'clientInfo': {'name': 'archive-refresh-targeted-acceptance', 'version': '1'}
+                      }
+                  })
+                  init = unpack(response)
+                  assert init and 'result' in init, init
+                  headers = dict(headers0)
+                  sid = response.headers.get('mcp-session-id')
+                  if sid:
+                      headers['Mcp-Session-Id'] = sid
+                  headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion', '2025-06-18')
+                  ready = client.post(os.environ['MCP_URL'], headers=headers, json={
+                      'jsonrpc': '2.0', 'method': 'notifications/initialized'
+                  })
+                  assert ready.status_code in (200, 202), ready.status_code
+                  response = client.post(os.environ['MCP_URL'], headers=headers, json={
+                      'jsonrpc': '2.0', 'id': next(ids), 'method': 'tools/call',
+                      'params': {'name': name, 'arguments': arguments}
+                  })
+                  data = unpack(response)
+                  assert data and 'result' in data, (name, data)
+                  result = data['result']
+                  if result.get('isError'):
+                      raise RuntimeError(f'{name} failed: {result}')
+                  text = next((x.get('text') for x in result.get('content', []) if x.get('type') == 'text'), None)
+                  assert text is not None, name
+                  return json.loads(text)
+
+          def query_snapshot(seller):
+              sql = (
+                  f"SELECT COUNT(*) AS rows, COUNT(DISTINCT reportId) AS reports, "
+                  f"MAX(dateTo) AS max_date_to FROM {seller}"
+              )
+              data = tool('marketplace_archive_query', {'year': YEAR, 'sql': sql})
+              assert data.get('ok') is True, data
+              rows = data.get('rows') or []
+              assert len(rows) == 1, data
+              return {
+                  'rows': int(rows[0][0] or 0),
+                  'reports': int(rows[0][1] or 0),
+                  'max_date': str(rows[0][2] or ''),
+              }
+
+          def verify_finance(seller):
+              data = tool('marketplace_database_verify', {
+                  'marketplace': 'wb', 'year': YEAR, 'seller': seller, 'dataset_family': 'finance'
+              })
+              assert data.get('ok') is True, data
+              checks = data.get('checks') or []
+              assert len(checks) == 1, data
+              check = checks[0]
+              assert check.get('cabinet') == seller, check
+              assert int(check.get('duplicate_stable_key_rows') or 0) == 0, check
+              assert int(check.get('incomplete_stable_key_rows') or 0) == 0, check
+              assert not (check.get('missing_registry_report_ids_with_rows') or []), check
+              return check
+
+          def drive_job(job_id, *, collect_actions=False):
+              actions = []
+              for step_no in range(1, MAX_STEPS + 1):
+                  status = tool('marketplace_archive_job_status', {'job_id': job_id})
+                  assert status.get('ok') is True, status
+                  if status.get('status') == 'COMPLETE':
+                      return status, actions
+                  if status.get('status') == 'FAILED':
+                      raise RuntimeError('archive job failed: ' + json.dumps(status, ensure_ascii=False))
+                  result = tool('marketplace_archive_worker_step', {'job_id': job_id})
+                  assert result.get('ok') is True, result
+                  action = str(result.get('action') or '')
+                  if collect_actions:
+                      actions.append(action)
+                  print('JOB_STEP seller=' + str(status.get('cabinet'))
+                        + ' step=' + str(step_no)
+                        + ' status=' + str(result.get('status'))
+                        + ' phase=' + str(result.get('phase'))
+                        + ' action=' + action
+                        + ' provider_calls=' + str(result.get('provider_calls', '')), flush=True)
+                  if result.get('status') == 'COMPLETE':
+                      final_status = tool('marketplace_archive_job_status', {'job_id': job_id})
+                      return final_status, actions
+                  delay = float(result.get('retry_after_seconds') or 0)
+                  time.sleep(delay + 1.0 if delay > 0 else 1.0)
+              raise RuntimeError(f'job {job_id} did not reach COMPLETE within {MAX_STEPS} targeted steps')
+
+          # Prove the reserved cabinet remains a read-only control throughout this acceptance.
+          reserved_before = query_snapshot(RESERVED)
+          reserved_verify_before = verify_finance(RESERVED)
+          reserved_job_before = tool('marketplace_archive_job_status', {
+              'job_id': f'wb-finance-{RESERVED}-{YEAR}'
+          })
+          assert reserved_job_before.get('ok') is True, reserved_job_before
+          print('RESERVED_BEFORE=' + json.dumps(reserved_before, ensure_ascii=False), flush=True)
+
+          before = {}
+          for seller in TARGETS:
+              before[seller] = query_snapshot(seller)
+              initial_job = tool('marketplace_archive_job_status', {
+                  'job_id': f'wb-finance-{seller}-{YEAR}'
+              })
+              assert initial_job.get('ok') is True, initial_job
+              assert initial_job.get('status') == 'COMPLETE', initial_job
+              print('TARGET_BEFORE seller=' + seller + ' snapshot=' + json.dumps(before[seller], ensure_ascii=False), flush=True)
+
+          first_after = {}
+          first_provider_calls = {}
+          for seller in TARGETS:
+              update = tool('marketplace_database_update', {
+                  'marketplace': 'wb', 'year': YEAR, 'seller': seller, 'dataset_family': 'finance'
+              })
+              assert update.get('ok') is True and update.get('queued') is True, update
+              jobs = update.get('jobs') or []
+              assert len(jobs) == 1, update
+              job = jobs[0]
+              expected_job_id = f'wb-finance-{seller}-{YEAR}'
+              assert job.get('job_id') == expected_job_id, job
+              assert job.get('scheduled') is True, job
+              assert job.get('refresh_action') == 'reopened_complete', job
+              assert job.get('status') == 'QUEUED' and job.get('phase') == 'DISCOVER', job
+              print('REOPEN=PASS seller=' + seller + ' generation=' + str(job.get('refresh_generation')), flush=True)
+
+              final_job, _ = drive_job(expected_job_id)
+              assert final_job.get('status') == 'COMPLETE', final_job
+              first_provider_calls[seller] = int(final_job.get('provider_calls') or 0)
+              check = verify_finance(seller)
+              snap = query_snapshot(seller)
+              assert str(check.get('max_canonical_date') or '') >= EXPECTED_MIN_DATE, check
+              assert str(check.get('max_registry_coverage_date') or '') >= EXPECTED_MIN_DATE, check
+              assert snap['max_date'] >= EXPECTED_MIN_DATE, snap
+              assert snap['rows'] >= before[seller]['rows'], (before[seller], snap)
+              assert snap['reports'] >= before[seller]['reports'], (before[seller], snap)
+              if before[seller]['max_date'] < EXPECTED_MIN_DATE:
+                  assert snap['reports'] > before[seller]['reports'], (before[seller], snap)
+                  assert snap['rows'] > before[seller]['rows'], (before[seller], snap)
+              first_after[seller] = snap
+              print('FIRST_REFRESH=PASS seller=' + seller + ' snapshot=' + json.dumps(snap, ensure_ascii=False), flush=True)
+
+          # Reopen the same COMPLETE jobs again. Registry coverage must reduce this to discovery only.
+          for seller in TARGETS:
+              update = tool('marketplace_database_update', {
+                  'marketplace': 'wb', 'year': YEAR, 'seller': seller, 'dataset_family': 'finance'
+              })
+              assert update.get('ok') is True and update.get('queued') is True, update
+              jobs = update.get('jobs') or []
+              assert len(jobs) == 1 and jobs[0].get('refresh_action') == 'reopened_complete', update
+              job_id = f'wb-finance-{seller}-{YEAR}'
+              final_job, actions = drive_job(job_id, collect_actions=True)
+              assert final_job.get('status') == 'COMPLETE', final_job
+              provider_delta = int(final_job.get('provider_calls') or 0) - first_provider_calls[seller]
+              assert provider_delta == 1, (seller, provider_delta, final_job)
+              forbidden = {'report_page_staged', 'report_download_complete', 'report_finalized'}
+              assert not (forbidden & set(actions)), (seller, actions)
+              snap = query_snapshot(seller)
+              assert snap == first_after[seller], (seller, first_after[seller], snap)
+              verify_finance(seller)
+              print('SECOND_REFRESH_IDEMPOTENT=PASS seller=' + seller
+                    + ' provider_delta=' + str(provider_delta)
+                    + ' actions=' + json.dumps(actions), flush=True)
+
+          reserved_after = query_snapshot(RESERVED)
+          reserved_verify_after = verify_finance(RESERVED)
+          reserved_job_after = tool('marketplace_archive_job_status', {
+              'job_id': f'wb-finance-{RESERVED}-{YEAR}'
+          })
+          assert reserved_after == reserved_before, (reserved_before, reserved_after)
+          assert reserved_verify_after.get('max_canonical_date') == reserved_verify_before.get('max_canonical_date')
+          assert reserved_verify_after.get('max_registry_coverage_date') == reserved_verify_before.get('max_registry_coverage_date')
+          assert reserved_job_after.get('status') == reserved_job_before.get('status'), (reserved_job_before, reserved_job_after)
+          assert int(reserved_job_after.get('provider_calls') or 0) == int(reserved_job_before.get('provider_calls') or 0), (reserved_job_before, reserved_job_after)
+          print('RESERVED_WB_DMITRIEVA_UNTOUCHED=PASS snapshot=' + json.dumps(reserved_after, ensure_ascii=False), flush=True)
+          print('ARCHIVE_REFRESH_TARGETED_ACCEPTANCE=PASS', flush=True)
+          PY
+
+      - name: Cleanup credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/versions.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer"
