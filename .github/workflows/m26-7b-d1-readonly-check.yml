@@ -1,0 +1,104 @@
+name: M26.7b D1 Readonly Check
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "control/run-m26-7b-d1-readonly-check.txt"
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TF_DIR: terraform/birzha_test
+  DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+  OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+  EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: hashicorp/setup-terraform@b9cd54a3c349d3f38e8881555d616ced269862dd
+        with:
+          terraform_version: "1.9.8"
+          terraform_wrapper: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: '3.12'
+      - name: Mint Yandex token
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
+          R="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          python - "$J" <<'PY'
+          import base64,json,os,sys
+          p=sys.argv[1].split('.')[1]; p += '='*(-len(p)%4)
+          c=json.loads(base64.urlsafe_b64decode(p))
+          assert c.get('sub')==os.environ['EXPECTED_OIDC_SUBJECT']
+          assert c.get('aud')==os.environ['OIDC_AUDIENCE']
+          assert c.get('ref')=='refs/heads/main'
+          assert c.get('environment')=='test'
+          PY
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          echo "::add-mask::$T"; umask 077; printf '%s' "$T" > "$RUNNER_TEMP/token"
+      - name: Resolve YDB
+        shell: bash
+        env:
+          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
+          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
+        run: |
+          set -euo pipefail
+          terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
+            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
+            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
+          terraform -chdir="$TF_DIR" output -raw ydb_connection_string > "$RUNNER_TEMP/ydb"
+      - name: Read latest D1 queue
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --disable-pip-version-check --quiet ydb
+          python - <<'PY'
+          import json,os,ydb
+          from pathlib import Path
+          token=(Path(os.environ['RUNNER_TEMP'])/'token').read_text(); ep=(Path(os.environ['RUNNER_TEMP'])/'ydb').read_text().strip()
+          d=ydb.Driver(connection_string=ep,credentials=ydb.AccessTokenCredentials(token)); d.wait(timeout=10,fail_fast=True); p=ydb.QuerySessionPool(d)
+          def rows(x):
+            out=[]
+            for rs in x or []: out += list(getattr(rs,'rows',[]) or [])
+            return out
+          def g(r,k,default=None):
+            try:return r[k]
+            except:return getattr(r,k,default)
+          rs=rows(p.execute_with_retries("SELECT workflow_id,stage,status,updated_at,last_error FROM `orchestration_runs` WHERE kind='D1_ARCHIVE_REFRESH_V1' ORDER BY updated_at DESC,workflow_id DESC LIMIT 1;")); assert rs
+          r=rs[0]; wid=str(g(r,'workflow_id') or '')
+          print('WORKFLOW_ID='+wid); print('WORKFLOW_STAGE='+str(g(r,'stage') or '')); print('WORKFLOW_STATUS='+str(g(r,'status') or '')); print('WORKFLOW_ERROR='+str(g(r,'last_error') or ''))
+          q="DECLARE $wid AS Utf8; SELECT sequence,kind,status,attempt,payload_json,last_error FROM `orchestration_actions` WHERE workflow_id=$wid ORDER BY sequence,action_id;"
+          aa=rows(p.execute_with_retries(q,{'$wid':(wid,ydb.PrimitiveType.Utf8)}))
+          s={}; cur=[]; fail=[]
+          for a in aa:
+            try: pay=json.loads(str(g(a,'payload_json') or '{}'))
+            except: pay={}
+            sym=str(pay.get('symbol') or ''); st=str(g(a,'status') or '')
+            if sym:
+              z=s.setdefault(sym,{'PASS':0,'PENDING':0,'RUNNING':0,'FAILED':0,'OTHER':0}); z[st if st in z else 'OTHER']+=1
+            if st in {'RUNNING','CLAIMED','IN_PROGRESS'}: cur.append([int(g(a,'sequence') or 0),sym,str(g(a,'kind') or ''),int(g(a,'attempt') or 0)])
+            if st in {'FAILED','ERROR'} or str(g(a,'last_error') or ''): fail.append([int(g(a,'sequence') or 0),sym,str(g(a,'kind') or ''),st,str(g(a,'last_error') or '')[:300]])
+          print('ACTION_SUMMARY='+json.dumps(s,sort_keys=True)); print('CURRENT='+json.dumps(cur)); print('FAILED='+json.dumps(fail)); print('D1_READONLY_CHECK=PASS')
+          p.stop(); d.stop(timeout=5)
+          PY
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/token" "$RUNNER_TEMP/ydb"
