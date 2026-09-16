@@ -5,24 +5,28 @@ on:
     branches: [main]
     paths:
       - telegram-news-reader/requests/ondemand.json
+      - .github/workflows/telegram-news-ondemand.yml
   workflow_dispatch:
 
 permissions:
   contents: write
 
 concurrency:
-  group: telegram-news-reader-ssh
+  group: telegram-news-reader-serverless-ondemand
   cancel-in-progress: false
 
+# On-demand V3 is produced directly from the private Serverless Reader.
+# The legacy VM/static IP/SSH path is intentionally not used here.
 jobs:
   export:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
           ref: main
+          fetch-depth: 0
 
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -31,7 +35,6 @@ jobs:
           mkdir -p "$RUNNER_TEMP/yc"
           wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
           tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
-          chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
       - name: Authenticate
@@ -43,11 +46,37 @@ jobs:
           key="$RUNNER_TEMP/yc-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
           chmod 600 "$key"
-          yc config profile create telegram-news-ondemand || true
-          yc config profile activate telegram-news-ondemand
+          yc config profile create telegram-news-ondemand-serverless || true
+          yc config profile activate telegram-news-ondemand-serverless
           yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
 
-      - name: Export requested chats
+      - name: Validate private production Reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          url="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json | jq -r '.url')"
+          url="${url%/}"
+          test -n "$url" && test "$url" != null
+          token="$(yc iam create-token)"
+          healthy=0
+          for attempt in $(seq 1 12); do
+            body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+              healthy=1
+              echo "ONDEMAND_READER_HEALTH_ATTEMPT=$attempt"
+              break
+            fi
+            sleep 5
+          done
+          test "$healthy" -eq 1
+          public_code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$url/internal/chats")"
+          test "$public_code" = 401 -o "$public_code" = 403
+          echo "READER_URL=$url" >> "$GITHUB_ENV"
+          echo ONDEMAND_READER_HEALTH_PASS
+
+      - name: Export requested chats from Serverless Reader
         shell: bash
         run: |
           set -euo pipefail
@@ -73,79 +102,116 @@ jobs:
           if [ "$period_hours" -lt 1 ]; then period_hours=1; fi
           if [ "$period_hours" -gt 192 ]; then period_hours=192; fi
 
-          date_from="$(jq -r '.date_from // "-"' "$request")"
-          date_to="$(jq -r '.date_to // "-"' "$request")"
+          raw_from="$(jq -r '.date_from // "-"' "$request")"
+          raw_to="$(jq -r '.date_to // "-"' "$request")"
 
-          folder="b1gk4p83brasi8g811jv"
-          ip="$(curl -fsS https://api.ipify.org)"
-          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
-          old_keys="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.metadata["ssh-keys"] // ""')"
-          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
-          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
-          yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys"
-          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --add-rule "description=github-telegram-news-ondemand,direction=ingress,port=22,protocol=tcp,v4-cidrs=$ip/32"
+          readarray -t bounds < <(python3 - "$raw_from" "$raw_to" "$period_hours" <<'PY'
+          import sys
+          from datetime import datetime, timezone, timedelta
+          raw_from, raw_to, ph = sys.argv[1], sys.argv[2], int(sys.argv[3])
+          def parse(v):
+              if v == '-': return None
+              x = datetime.fromisoformat(v.replace('Z', '+00:00'))
+              if x.tzinfo is None: x = x.replace(tzinfo=timezone.utc)
+              return x.astimezone(timezone.utc)
+          dt_to = parse(raw_to) or datetime.now(timezone.utc)
+          dt_from = parse(raw_from) or (dt_to - timedelta(hours=ph))
+          if dt_from > dt_to:
+              raise SystemExit('date_from must not be later than date_to')
+          print(dt_from.isoformat())
+          print(dt_to.isoformat())
+          print(datetime.now(timezone.utc).isoformat())
+          PY
+          )
+          date_from="${bounds[0]}"
+          date_to="${bounds[1]}"
+          generated_at="${bounds[2]}"
 
-          ssh_opts=(-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey")
-          ssh_ready=0
-          for attempt in $(seq 1 12); do
-            if ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 true >/dev/null 2>&1; then
-              ssh_ready=1
-              break
-            fi
-            echo "SSH key not active yet; retry $attempt/12"
-            sleep 10
-          done
-          if [ "$ssh_ready" -ne 1 ]; then
-            echo "SSH_READY_TIMEOUT"
-            exit 255
-          fi
+          token="$(yc iam create-token)"
+          chats_meta="$(curl -fsS --retry 2 --retry-delay 2 --retry-all-errors --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/internal/chats")"
+          echo "$chats_meta" | jq -e '.chat_count==9 and (.chats|length)==9' >/dev/null
+          while read -r cid; do
+            echo "$chats_meta" | jq -e --argjson cid "$cid" 'any(.chats[]; .chat_id==$cid)' >/dev/null
+          done < <(echo "$chat_ids" | jq -r '.[]')
 
-          mkdir -p telegram-news-reader/ondemand
-          ids_csv="$(echo "$chat_ids" | jq -r 'join(",")')"
-          remote_cmd="sudo docker exec telegram-reader python -c 'import json,sys; from datetime import datetime,timezone,timedelta; from app.runtime import build_runtime; _,w,_,s=build_runtime(); ids=[int(x) for x in sys.argv[1].split(\",\") if x]; lim=int(sys.argv[2]); ph=int(sys.argv[3]); raw_from=sys.argv[4]; raw_to=sys.argv[5]; parse=lambda x: datetime.fromisoformat(x.replace(\"Z\",\"+00:00\")) if x!=\"-\" else None; dt_to=parse(raw_to) or datetime.now(timezone.utc); dt_from=parse(raw_from) or (dt_to-timedelta(hours=ph)); out=[]; [w.assert_allowed(cid) for cid in ids]; [out.append({\"chat_id\":cid,\"messages\":s.get_messages_local(cid,date_from=dt_from,date_to=dt_to,limit=lim)}) for cid in ids]; print(json.dumps({\"schema\":\"TELEGRAM_NEWS_ONDEMAND_V3\",\"generated_at\":datetime.now(timezone.utc).isoformat(),\"date_from\":dt_from.isoformat(),\"date_to\":dt_to.isoformat(),\"period_hours\":ph,\"chat_count\":len(out),\"chats\":out},ensure_ascii=False))' $ids_csv $limit $period_hours $date_from $date_to"
-          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 "$remote_cmd" > telegram-news-reader/ondemand/latest.json
+          work="$RUNNER_TEMP/telegram-ondemand-serverless"
+          mkdir -p "$work" telegram-news-reader/ondemand
+          : > "$work/chats.ndjson"
 
-          jq -e '.schema == "TELEGRAM_NEWS_ONDEMAND_V3" and (.chat_count | type == "number") and (.chats | type == "array") and ((.chats | length) == .chat_count) and (.date_from | type == "string") and (.date_to | type == "string")' telegram-news-reader/ondemand/latest.json >/dev/null
-          echo "ONDEMAND_EXPORT_PASS"
+          while read -r cid; do
+            page="$(curl -fsS --retry 2 --retry-delay 2 --retry-all-errors --max-time 110 \
+              -H "Authorization: Bearer $token" \
+              --get \
+              --data-urlencode "date_from=$date_from" \
+              --data-urlencode "date_to=$date_to" \
+              --data-urlencode "limit=$limit" \
+              "$READER_URL/internal/chats/$cid/messages")"
+            echo "$page" | jq -e --argjson cid "$cid" '.chat_id==$cid and (.messages|type)=="array" and (.messages|length)==.message_count' >/dev/null
+            echo "$page" | jq -c --argjson cid "$cid" '{chat_id:$cid,messages:.messages}' >> "$work/chats.ndjson"
+          done < <(echo "$chat_ids" | jq -r '.[]')
+
+          jq -s \
+            --arg schema TELEGRAM_NEWS_ONDEMAND_V3 \
+            --arg generated_at "$generated_at" \
+            --arg date_from "$date_from" \
+            --arg date_to "$date_to" \
+            --argjson period_hours "$period_hours" \
+            '{schema:$schema,generated_at:$generated_at,date_from:$date_from,date_to:$date_to,period_hours:$period_hours,chat_count:length,chats:.}' \
+            "$work/chats.ndjson" > telegram-news-reader/ondemand/latest.json
+
+          jq -e '
+            .schema=="TELEGRAM_NEWS_ONDEMAND_V3" and
+            (.chat_count|type)=="number" and
+            (.chats|type)=="array" and
+            (.chats|length)==.chat_count and
+            .chat_count>=1 and .chat_count<=5 and
+            (.date_from|type)=="string" and (.date_to|type)=="string" and
+            all(.chats[]; (.chat_id|type)=="number" and (.messages|type)=="array")
+          ' telegram-news-reader/ondemand/latest.json >/dev/null
+
+          python3 - telegram-news-reader/ondemand/latest.json <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+          data=json.load(open(sys.argv[1],encoding='utf-8'))
+          def dt(v):
+              x=datetime.fromisoformat(v.replace('Z','+00:00'))
+              return (x if x.tzinfo else x.replace(tzinfo=timezone.utc)).astimezone(timezone.utc)
+          lo,hi=dt(data['date_from']),dt(data['date_to'])
+          for chat in data['chats']:
+              for row in chat['messages']:
+                  if not lo <= dt(row['datetime']) <= hi:
+                      raise SystemExit('message outside requested interval')
+          PY
+
+          echo SERVERLESS_ONDEMAND_V3_PASS
           jq '{generated_at,date_from,date_to,period_hours,chat_count,chats:[.chats[]|{chat_id,message_count:(.messages|length),latest_datetime:(.messages[0].datetime // null),oldest_datetime:(.messages[-1].datetime // null),latest_message_id:(.messages[0].message_id // null)}]}' telegram-news-reader/ondemand/latest.json
 
       - name: Commit latest on-demand response
         shell: bash
         run: |
           set -euo pipefail
+          file=telegram-news-reader/ondemand/latest.json
           git config user.name telegram-news-ondemand
           git config user.email telegram-news-ondemand@users.noreply.github.com
-          git add telegram-news-reader/ondemand/latest.json
+          git add "$file"
           if git diff --cached --quiet; then
             echo ONDEMAND_UNCHANGED
-          else
-            git commit -m "telegram-news: refresh on-demand period"
-            push_ok=0
-            for attempt in 1 2 3; do
-              git fetch origin main
-              git rebase origin/main
-              if git push origin HEAD:main; then
-                push_ok=1
-                break
-              fi
-              echo "On-demand push raced with another main update; retry $attempt/3"
-              sleep 2
-            done
-            if [ "$push_ok" -ne 1 ]; then
-              echo ONDEMAND_PUSH_FAILED
-              exit 1
-            fi
-            echo ONDEMAND_PUSH_PASS
+            exit 0
           fi
+          git commit -m "telegram-news: refresh on-demand period via serverless"
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo SERVERLESS_ONDEMAND_PUBLISH_PASS
+              exit 0
+            fi
+            git rebase --abort >/dev/null 2>&1 || true
+            sleep 2
+          done
+          echo ONDEMAND_PUSH_FAILED
+          exit 1
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: |
-          set +e
-          yc config profile activate telegram-news-ondemand >/dev/null 2>&1 || true
-          folder="b1gk4p83brasi8g811jv"
-          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json | jq -r '.rules[] | select(.description=="github-telegram-news-ondemand") | .id')
-          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --delete-rule-id "$id"; done
-          if [ -f "$RUNNER_TEMP/oldkeys" ]; then yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys"; fi
-          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
