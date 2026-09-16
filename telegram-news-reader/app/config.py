@@ -15,6 +15,7 @@ class Settings:
     session_path: Path
     database_path: Path
     whitelist_path: Path
+    session_string: str | None = None
     proxy_type: str | None = None
     proxy_host: str | None = None
     proxy_port: int | None = None
@@ -42,6 +43,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
     api_id_raw = os.getenv("TELEGRAM_API_ID", "").strip()
     api_hash = os.getenv("TELEGRAM_API_HASH", "").strip()
     phone = os.getenv("TELEGRAM_PHONE", "").strip() or None
+    session_string = os.getenv("TELEGRAM_SESSION_STRING", "").strip() or None
     if not api_id_raw or not api_hash:
         raise RuntimeError("Missing TELEGRAM_API_ID / TELEGRAM_API_HASH")
     try:
@@ -63,6 +65,7 @@ def load_settings(env_file: str | Path = ".env") -> Settings:
         session_path=Path(os.getenv("TELEGRAM_SESSION_PATH", "data/telegram_news")),
         database_path=Path(os.getenv("TELEGRAM_DATABASE_PATH", "data/telegram.db")),
         whitelist_path=Path(os.getenv("TELEGRAM_WHITELIST_PATH", "config/allowed_chats.yaml")),
+        session_string=session_string,
         proxy_type=proxy_type,
         proxy_host=proxy_host,
         proxy_port=proxy_port,
