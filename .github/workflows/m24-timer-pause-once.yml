@@ -95,3 +95,5 @@ jobs:
         if: always()
         shell: bash
         run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/before.json" "$RUNNER_TEMP/after.json"
+
+# rerun-marker: 2026-09-16T20:35+03:00
