@@ -1,0 +1,64 @@
+name: Fix Archive Telemetry Validation Gate
+
+on:
+  push:
+    branches:
+      - sync/archive-finalize-telemetry
+    paths:
+      - .github/workflows/fix-archive-validate-telemetry.yml
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: sync/archive-finalize-telemetry
+          fetch-depth: 0
+      - name: Update canonical validation gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          from pathlib import Path
+          p=Path('.github/workflows/marketplaces-archive-storage-validate.yml')
+          text=p.read_text(encoding='utf-8')
+          replacements=[
+            (
+              "      - docs/MARKETPLACES_SEMANTIC_CORE_TEST_V17.md\n",
+              "      - docs/MARKETPLACES_SEMANTIC_CORE_TEST_V17.md\n      - docs/CURRENT_RUNTIME_BASELINE.md\n",
+            ),
+            (
+              "            app/tests/test_archive_resumable_diagnostic.py \\\n            app/tests/test_data_catalog.py \\\n",
+              "            app/tests/test_archive_resumable_diagnostic.py \\\n            app/tests/test_archive_finalize_telemetry.py \\\n            app/tests/test_data_catalog.py \\\n",
+            ),
+            (
+              "          grep -q 'sha256Checksum' app/core/archive_resumable_worker.py\n",
+              "          grep -q 'sha256Checksum' app/core/archive_resumable_worker.py\n          grep -q 'public_finalize_telemetry' app/core/archive_queue.py\n          grep -q 'sync_resumable_telemetry' app/core/archive_resumable_worker.py\n          grep -q 'archive-finalize-' app/core/archive_finalize_telemetry.py\n",
+            ),
+            (
+              "          grep -q '616a156cde2b0a1f1e50251726c728e7a1b24448' app/.source-revision\n",
+              "          grep -q '432b5ea07dccc9eebe9e38438c59d2d991482f85' app/.source-revision\n          grep -q 'Finalize telemetry contract:' app/.source-revision\n          grep -q 'Architecture version: 2026-09-16.v19' app/.source-revision\n          grep -q 'durable non-secret telemetry' docs/CURRENT_RUNTIME_BASELINE.md\n          grep -q 'resumable `session_uri`' docs/CURRENT_RUNTIME_BASELINE.md\n",
+            ),
+          ]
+          for old,new in replacements:
+              count=text.count(old)
+              if count != 1:
+                  raise SystemExit(f'expected exactly one match, got {count}: {old!r}')
+              text=text.replace(old,new)
+          p.write_text(text,encoding='utf-8')
+          PY
+          rm .github/workflows/fix-archive-validate-telemetry.yml
+          git diff --check
+      - name: Commit gate update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add .github/workflows/marketplaces-archive-storage-validate.yml .github/workflows/fix-archive-validate-telemetry.yml
+          git commit -m "ci: validate accepted finalize telemetry baseline"
+          git push origin HEAD:sync/archive-finalize-telemetry
