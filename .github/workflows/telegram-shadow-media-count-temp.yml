@@ -1,0 +1,23 @@
+name: Telegram Shadow Media Count Temp
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-shadow-media-count-temp.yml]
+permissions:
+  contents: read
+jobs:
+  count:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Count supported media in existing rolling shadow
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_SHADOW.json
+          test -s "$f"
+          echo "TOTAL=$(jq -r '.message_count' "$f")"
+          echo "SUPPORTED=$(jq '[.messages[]|select(.media_type=="photo" or .media_type=="image" or .media_type=="gif" or .media_type=="animation")]|length' "$f")"
+          jq -r '[.messages[].media_type] | map(select(.!=null)) | group_by(.) | map({type:.[0],count:length}) | .[] | "TYPE_\(.type)=\(.count)"' "$f" | sort
+          echo SHADOW_MEDIA_COUNT_PASS
