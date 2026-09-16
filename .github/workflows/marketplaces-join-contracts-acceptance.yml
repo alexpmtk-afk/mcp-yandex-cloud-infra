@@ -112,7 +112,7 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           printf '%s' "https://${DOMAIN}/mcp" > "$RUNNER_TEMP/mcp-url"
 
-      - name: Accept Join / Calculation Contracts V1 on live TEST MCP
+      - name: Accept Join / Calculation Contracts V1 and Calculation Registry V1 on live TEST MCP
         shell: bash
         run: |
           set -euo pipefail
@@ -168,6 +168,8 @@ jobs:
               assert 'Join Controller V1' in instructions, instructions
               assert 'Join permission and arithmetic permission are separate' in instructions, instructions
               assert 'marketplace_calculation_contract' in instructions, instructions
+              assert 'Calculation Contract Registry V1' in instructions, instructions
+              assert 'Client-authored formulas and implicit currency conversion are forbidden' in instructions, instructions
               session = response.headers.get('mcp-session-id')
               if session:
                   headers['Mcp-Session-Id'] = session
@@ -195,6 +197,7 @@ jobs:
               system_map = call('marketplace_system_map', {})
               router = system_map['request_source_router']
               assert router['join_controller_source_revision'].endswith('a48e06625add3655158cb0837ffe842cf44cf2c9'), router
+              assert router['calculation_registry_source_revision'].endswith('fef591ecdfa43039cc34059200c2c79d9a270f73'), router
               join_map = router['join_controller']
               assert join_map['status'] == 'REGISTERED_JOIN_CONTRACTS_V1', join_map
               assert join_map['runtime_entry'] == 'marketplace_join_control', join_map
@@ -203,6 +206,13 @@ jobs:
               assert join_map['calculation_contract_version'] == 'marketplace_calculation_contract.v1', join_map
               assert join_map['registered_cross_source_calculations'] == [], join_map
               assert 'side-by-side' in join_map['approved_v1_join'], join_map
+              registry_map = join_map['calculation_registry']
+              assert registry_map['registry_version'] == 'marketplace_calculation_registry.v1', registry_map
+              assert registry_map['contract_version'] == 'marketplace_calculation_contract.v1', registry_map
+              assert registry_map['status'] == 'VALIDATED_EMPTY_V1', registry_map
+              assert registry_map['registered_cross_source_calculations'] == [], registry_map
+              assert registry_map['currency_policy'] == 'EXPLICIT_ONLY', registry_map
+              assert registry_map['provenance_required'] is True, registry_map
 
               question = 'Сравни продажи и рекламные расходы за август'
               args = {
@@ -259,7 +269,14 @@ jobs:
               assert joined['join_contract']['comparison_mode'] == 'SIDE_BY_SIDE_ONLY', joined
               assert joined['arithmetic_allowed'] is False, joined
               assert joined['calculation_contract'] is None, joined
+              assert joined['calculation_contract_version'] == 'marketplace_calculation_contract.v1', joined
               assert joined['registered_cross_source_calculations'] == [], joined
+              registry = joined['calculation_registry']
+              assert registry['registry_version'] == 'marketplace_calculation_registry.v1', registry
+              assert registry['contract_version'] == 'marketplace_calculation_contract.v1', registry
+              assert registry['registered_calculation_ids'] == [], registry
+              assert registry['registered_calculation_count'] == 0, registry
+              assert registry['arithmetic_enabled'] is False, registry
               assert len(joined['joined_legs']) == 2, joined
 
               missing = call('marketplace_join_control', {**args, 'leg_results': leg_results[:1]})
@@ -275,9 +292,22 @@ jobs:
               assert arithmetic['state'] == 'BLOCKED', arithmetic
               assert arithmetic['can_join'] is False, arithmetic
               assert arithmetic['arithmetic_allowed'] is False, arithmetic
+              assert arithmetic['calculation_registry']['registered_calculation_count'] == 0, arithmetic
               assert any(x['type'] == 'CALCULATION_CONTRACT_REQUIRED' for x in arithmetic['blockers']), arithmetic
 
+              named_formula = call('marketplace_join_control', {
+                  **args,
+                  'leg_results': leg_results,
+                  'calculation_id': 'overall_drr.v1',
+              })
+              assert named_formula['state'] == 'BLOCKED', named_formula
+              assert named_formula['can_join'] is False, named_formula
+              assert named_formula['arithmetic_allowed'] is False, named_formula
+              assert named_formula['calculation_registry']['registered_calculation_count'] == 0, named_formula
+              assert any(x['type'] == 'CALCULATION_CONTRACT_NOT_REGISTERED' for x in named_formula['blockers']), named_formula
+
               print('MARKETPLACE_JOIN_CALCULATION_CONTRACTS_V1_LIVE_ACCEPTANCE=PASS', flush=True)
+              print('MARKETPLACE_CALCULATION_CONTRACT_REGISTRY_V1_LIVE_ACCEPTANCE=PASS', flush=True)
           PY
 
       - name: Cleanup ephemeral credentials

@@ -85,3 +85,24 @@ def test_server_instructions_require_execution_planning_before_semantic_core():
     assert "exact executor_arguments" in SYSTEM_INSTRUCTIONS
     assert "Never pass the original compound multi-source user question unchanged" in SYSTEM_INSTRUCTIONS
     assert "dispatch_contracts must be empty" in SYSTEM_INSTRUCTIONS
+
+
+def test_calculation_registry_v1_is_exposed_with_exact_app_provenance():
+    router = SYSTEM_MAP["request_source_router"]
+    assert router["calculation_registry_source_revision"].endswith(
+        "fef591ecdfa43039cc34059200c2c79d9a270f73"
+    )
+    registry = router["join_controller"]["calculation_registry"]
+    assert registry["registry_version"] == "marketplace_calculation_registry.v1"
+    assert registry["contract_version"] == "marketplace_calculation_contract.v1"
+    assert registry["status"] == "VALIDATED_EMPTY_V1"
+    assert registry["registered_cross_source_calculations"] == []
+    assert registry["currency_policy"] == "EXPLICIT_ONLY"
+    assert registry["provenance_required"] is True
+
+
+def test_system_instructions_keep_registry_validation_separate_from_execution():
+    assert "Calculation Contract Registry V1 is the server-owned gate" in SYSTEM_INSTRUCTIONS
+    assert "Client-authored formulas and implicit currency conversion are forbidden" in SYSTEM_INSTRUCTIONS
+    assert "merely passes registry validation is still not executable" in SYSTEM_INSTRUCTIONS
+    assert "runtime registry currently contains zero cross-source formulas" in SYSTEM_INSTRUCTIONS
