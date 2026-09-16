@@ -15,7 +15,15 @@ from app.ws_relay import WebSocketRelayAdapter
 
 
 class EntityResolutionError(RuntimeError):
-    """Safe marker for a whitelisted entity that could not be resolved."""
+    """Base safe marker for whitelisted peer resolution failures."""
+
+
+class DialogTraversalError(EntityResolutionError):
+    """Telegram dialog traversal failed before the whitelisted peer was found."""
+
+
+class EntityNotInDialogsError(EntityResolutionError):
+    """Dialog traversal completed but did not contain the whitelisted peer."""
 
 
 class MessageFetchError(RuntimeError):
@@ -84,7 +92,6 @@ class TelegramReader:
             await self.relay.stop()
 
     def is_connected(self) -> bool:
-        """Return local connection state without initiating network I/O."""
         return bool(self.client.is_connected())
 
     async def is_authorized(self) -> bool:
@@ -114,9 +121,7 @@ class TelegramReader:
             )
         return result
 
-    async def get_recent_messages(
-        self, chat_id: int, limit: int = 20
-    ) -> list[MessageRecord]:
+    async def get_recent_messages(self, chat_id: int, limit: int = 20) -> list[MessageRecord]:
         entity = await self._allowed_entity(chat_id)
         records: list[MessageRecord] = []
         try:
@@ -147,9 +152,7 @@ class TelegramReader:
             result.append(self._message_record(chat_id, entity, message))
         return result
 
-    async def get_messages_after_id(
-        self, chat_id: int, last_message_id: int
-    ) -> list[MessageRecord]:
+    async def get_messages_after_id(self, chat_id: int, last_message_id: int) -> list[MessageRecord]:
         entity = await self._allowed_entity(chat_id)
         result: list[MessageRecord] = []
         async for message in self.client.iter_messages(
@@ -187,9 +190,7 @@ class TelegramReader:
                 break
         return result
 
-    async def get_message(
-        self, chat_id: int, message_id: int
-    ) -> MessageRecord | None:
+    async def get_message(self, chat_id: int, message_id: int) -> MessageRecord | None:
         entity = await self._allowed_entity(chat_id)
         message = await self.client.get_messages(entity, ids=int(message_id))
         if not message:
@@ -199,20 +200,18 @@ class TelegramReader:
     async def _allowed_entity(self, chat_id: int):
         self.whitelist.assert_allowed(chat_id)
         try:
-            # Numeric IDs require Telethon's entity cache. A normal SQLiteSession
-            # has that cache, while StringSession deliberately does not.
             return await self.client.get_input_entity(int(chat_id))
-        except ValueError as cache_exc:
-            # Rehydrate the exact InputPeer from Telegram's dialog list. Dialog
-            # objects carry access_hash, so iter_messages can work on a cold
-            # StringSession without persisting Telethon's entity database.
-            try:
-                async for dialog in self.client.iter_dialogs(limit=None):
-                    if int(dialog.id) == int(chat_id):
-                        return dialog.input_entity
-            except Exception as exc:
-                raise EntityResolutionError() from exc
-            raise EntityResolutionError() from cache_exc
+        except ValueError:
+            pass
+
+        try:
+            async for dialog in self.client.iter_dialogs(limit=None):
+                if int(dialog.id) == int(chat_id):
+                    return dialog.input_entity
+        except Exception as exc:
+            raise DialogTraversalError() from exc
+
+        raise EntityNotInDialogsError()
 
     def _message_record(self, chat_id: int, entity, message) -> MessageRecord:
         username = getattr(entity, "username", None)
