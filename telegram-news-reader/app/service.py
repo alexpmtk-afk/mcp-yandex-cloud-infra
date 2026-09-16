@@ -5,7 +5,7 @@ import hashlib
 import hmac
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone
 
 from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -70,6 +70,21 @@ async def _connect_reader_once() -> bool:
             except Exception:
                 pass
             return False
+
+
+async def _ensure_reader_ready() -> None:
+    if not reader.is_connected():
+        connected = await _connect_reader_once()
+        if not connected:
+            raise HTTPException(503, "TELEGRAM_UNAVAILABLE")
+    try:
+        authorized = await asyncio.wait_for(reader.is_authorized(), timeout=5)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "TELEGRAM_AUTH_TIMEOUT")
+    except Exception as exc:
+        raise HTTPException(503, f"TELEGRAM_UNAVAILABLE:{type(exc).__name__}")
+    if not authorized:
+        raise HTTPException(503, "TELEGRAM_AUTHORIZATION_REQUIRED")
 
 
 async def _telegram_runtime_loop() -> None:
@@ -163,7 +178,10 @@ def _admin_token_ok(request: Request) -> bool:
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    if request.url.path in {"/health", "/media/object"}:
+    # /internal/* is intentionally protected by the private Yandex Serverless
+    # invocation boundary rather than READER_API_TOKEN.  Smoke tests verify
+    # that unauthenticated platform invocation is denied before cutover.
+    if request.url.path in {"/health", "/media/object"} or request.url.path.startswith("/internal/"):
         return await call_next(request)
     if request.url.path == "/manage" or request.url.path.startswith("/api/admin/"):
         if _admin_token_ok(request):
@@ -282,6 +300,64 @@ async def health():
         "collector_last_result": {str(k): v for k, v in collector.last_result.items()},
         "collector_last_errors": {str(k): v for k, v in collector.last_errors.items()},
         "media_storage": "enabled" if object_storage.enabled else "disabled",
+    }
+
+
+@app.get("/internal/chats")
+async def internal_chats():
+    await _ensure_reader_ready()
+    result = []
+    for item in whitelist.list_allowed():
+        try:
+            entity = await reader._allowed_entity(item.chat_id)
+            title = (
+                getattr(entity, "title", None)
+                or " ".join(
+                    part
+                    for part in [
+                        getattr(entity, "first_name", None),
+                        getattr(entity, "last_name", None),
+                    ]
+                    if part
+                )
+                or item.name
+            )
+            result.append({"chat_id": item.chat_id, "name": str(title)})
+        except Exception as exc:
+            raise HTTPException(502, f"TELEGRAM_CHAT_RESOLUTION_FAILED:{type(exc).__name__}")
+    return {"chat_count": len(result), "chats": result}
+
+
+@app.get("/internal/chats/{chat_id}/messages")
+async def internal_messages(
+    chat_id: int,
+    date_from: datetime,
+    date_to: datetime | None = None,
+    limit: int = 2000,
+):
+    whitelist.assert_allowed(chat_id)
+    await _ensure_reader_ready()
+    high = date_to or datetime.now(timezone.utc)
+    try:
+        records = await reader.get_messages_between(
+            chat_id,
+            date_from,
+            high,
+            limit=min(max(limit, 1), 2000),
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"TELEGRAM_DIRECT_READ_FAILED:{type(exc).__name__}")
+    messages = []
+    for record in records:
+        row = record.to_dict()
+        row["media_asset"] = None
+        messages.append(row)
+    return {
+        "chat_id": chat_id,
+        "date_from": date_from.isoformat(),
+        "date_to": high.isoformat(),
+        "message_count": len(messages),
+        "messages": messages,
     }
 
 
