@@ -1,0 +1,33 @@
+name: Telegram Media Reuse Audit Temp
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-media-reuse-audit-temp.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Compare canonical media coverage to serverless rolling shadow
+        shell: bash
+        run: |
+          set -euo pipefail
+          old=telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json
+          cur=telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_SHADOW.json
+          test -s "$old" && test -s "$cur"
+          echo "OLD_MESSAGES=$(jq -r '.message_count // (.messages|length)' "$old")"
+          echo "OLD_MEDIA=$(jq '[.messages[]|select(.media_asset!=null)]|length' "$old")"
+          echo "OLD_PREVIEWS=$(jq '[.messages[]|select(.media_asset.preview_object_key?!=null)]|length' "$old")"
+          echo "CUR_MESSAGES=$(jq -r '.message_count' "$cur")"
+          echo "CUR_SUPPORTED=$(jq '[.messages[]|select(.media_type=="photo" or .media_type=="image" or .media_type=="gif" or .media_type=="animation")]|length' "$cur")"
+          jq -n --slurpfile old "$old" --slurpfile cur "$cur" '
+            ($old[0].messages | map(select(.media_asset!=null and .media_asset.object_key!=null and .media_asset.preview_object_key!=null)) | map({key:((.chat_id|tostring)+":"+(.message_id|tostring)),value:.media_asset}) | from_entries) as $m |
+            ($cur[0].messages | map(select(.media_type=="photo" or .media_type=="image" or .media_type=="gif" or .media_type=="animation"))) as $s |
+            {supported:($s|length), reusable:([$s[]|select($m[((.chat_id|tostring)+":"+(.message_id|tostring))]!=null)]|length), missing:([$s[]|select($m[((.chat_id|tostring)+":"+(.message_id|tostring))]==null)]|length)}
+          ' | tee /tmp/reuse.json
+          echo "REUSABLE=$(jq -r '.reusable' /tmp/reuse.json)"
+          echo "MISSING=$(jq -r '.missing' /tmp/reuse.json)"
+          echo MEDIA_REUSE_AUDIT_PASS
