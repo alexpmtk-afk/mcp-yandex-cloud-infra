@@ -1,0 +1,170 @@
+name: Marketplaces Archive Refresh Regression
+
+on:
+  pull_request:
+    paths:
+      - app/core/archive_refresh.py
+      - app/core/archive_refresh_advertising.py
+      - app/core/archive_tools.py
+      - app/core/archive_queue.py
+      - app/core/wb_advertising_archive_queue.py
+      - .github/workflows/marketplaces-archive-refresh-regression.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  complete-reopen:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install vendored MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet -e ./app
+
+      - name: COMPLETE refresh cycles reopen at DISCOVER
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import asyncio
+          from core.archive_refresh import enqueue_refresh_cycle
+
+
+          class FakeQueue:
+              def __init__(self, state):
+                  self.state = dict(state)
+                  self.saved = []
+                  self.scheduled = []
+
+              @staticmethod
+              def normalize_cabinet(seller):
+                  return str(seller)
+
+              @staticmethod
+              def job_id(cabinet, year):
+                  return f"job-{cabinet}-{year}"
+
+              async def _load(self, job_id):
+                  return dict(self.state)
+
+              async def _save(self, state):
+                  self.state = dict(state)
+                  self.saved.append(dict(state))
+
+              async def _schedule(self, job_id, delay_seconds=0):
+                  self.scheduled.append((job_id, float(delay_seconds)))
+
+
+          async def check_finance():
+              queue = FakeQueue({
+                  "job_id": "job-wb_demo-2026",
+                  "status": "COMPLETE",
+                  "phase": "DOWNLOAD",
+                  "discovery_offset": 1000,
+                  "fragments": [{"report_id": 1}],
+                  "report_index": 1,
+                  "current_rrd_id": 999,
+                  "completed_report_ids": [1],
+                  "provider_calls": 77,
+                  "finalize": {"report_id": 1, "phase": "COMMIT"},
+                  "finalize_telemetry": {"events": ["old"]},
+                  "last_error": "old error",
+                  "last_retry_after_seconds": 59,
+                  "refresh_generation": 4,
+              })
+              result = await enqueue_refresh_cycle(
+                  queue, family="finance", year=2026, seller="wb_demo"
+              )
+              assert result["refresh_action"] == "reopened_complete", result
+              assert result["refresh_generation"] == 5, result
+              assert result["scheduled"] is True, result
+              assert queue.state["status"] == "QUEUED", queue.state
+              assert queue.state["phase"] == "DISCOVER", queue.state
+              assert queue.state["discovery_offset"] == 0, queue.state
+              assert queue.state["fragments"] == [], queue.state
+              assert queue.state["report_index"] == 0, queue.state
+              assert queue.state["current_rrd_id"] == 0, queue.state
+              assert queue.state["completed_report_ids"] == [], queue.state
+              assert queue.state["provider_calls"] == 77, queue.state
+              assert queue.state["last_error"] is None, queue.state
+              assert "finalize" not in queue.state, queue.state
+              assert "finalize_telemetry" not in queue.state, queue.state
+              assert queue.scheduled == [("job-wb_demo-2026", 0.0)], queue.scheduled
+
+
+          async def check_advertising():
+              queue = FakeQueue({
+                  "job_id": "job-wb_demo-2026",
+                  "status": "COMPLETE",
+                  "phase": "COMPLETE",
+                  "provider_calls": 120,
+                  "fetch_plan": [{"old": True}],
+                  "fetch_index": 1,
+                  "cluster_plan": [{"old": True}],
+                  "cluster_index": 1,
+                  "completed_requests": [{"old": True}],
+                  "staged_datasets": {"ads_campaign_daily": {"rows": 10}},
+                  "campaign_ids": [1, 2],
+                  "fullstats_campaign_ids": [1],
+                  "commit": {"phase": "COMPLETE"},
+                  "refresh_generation": 1,
+              })
+              result = await enqueue_refresh_cycle(
+                  queue, family="advertising", year=2026, seller="wb_demo"
+              )
+              assert result["refresh_action"] == "reopened_complete", result
+              assert result["refresh_generation"] == 2, result
+              assert queue.state["status"] == "QUEUED", queue.state
+              assert queue.state["phase"] == "DISCOVER", queue.state
+              assert queue.state["provider_calls"] == 120, queue.state
+              assert queue.state["fetch_plan"] == [], queue.state
+              assert queue.state["cluster_plan"] == [], queue.state
+              assert queue.state["completed_requests"] == [], queue.state
+              assert queue.state["staged_datasets"] == {}, queue.state
+              assert queue.state["campaign_ids"] == [], queue.state
+              assert queue.state["fullstats_campaign_ids"] == [], queue.state
+              assert "commit" not in queue.state, queue.state
+              assert queue.scheduled == [("job-wb_demo-2026", 0.0)], queue.scheduled
+
+
+          async def check_active_job_dedupes():
+              original = {
+                  "job_id": "job-wb_demo-2026",
+                  "status": "DOWNLOAD",
+                  "phase": "DOWNLOAD",
+                  "report_index": 12,
+                  "provider_calls": 42,
+                  "refresh_generation": 3,
+              }
+              queue = FakeQueue(original)
+              result = await enqueue_refresh_cycle(
+                  queue, family="finance", year=2026, seller="wb_demo"
+              )
+              assert result["refresh_action"] == "resumed_existing", result
+              assert result["refresh_generation"] == 3, result
+              assert queue.state == original, queue.state
+              assert queue.saved == [], queue.saved
+              assert queue.scheduled == [("job-wb_demo-2026", 0.0)], queue.scheduled
+
+
+          async def main():
+              await check_finance()
+              await check_advertising()
+              await check_active_job_dedupes()
+
+
+          asyncio.run(main())
+          print("ARCHIVE_REFRESH_COMPLETE_REOPEN_REGRESSION=PASS")
+          PY
