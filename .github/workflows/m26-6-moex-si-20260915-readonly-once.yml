@@ -1,0 +1,34 @@
+name: M26.6 MOEX Si 2026-09-15 Readonly Once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/m26-6-moex-si-20260915-readonly-once.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Query official MOEX ISS exact SiU6 date
+        shell: bash
+        run: |
+          set -euo pipefail
+          URL='https://iss.moex.com/iss/history/engines/futures/markets/forts/boards/RFUD/securities/SiU6.json?iss.meta=off&iss.only=history&history.columns=TRADEDATE%2CNUMTRADES%2CVOLUME%2CVALUE&from=2026-09-15&till=2026-09-15'
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 "$URL" -o "$RUNNER_TEMP/moex.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'moex.json').read_text())
+          h=p.get('history') or {}
+          cols=h.get('columns') or []
+          rows=h.get('data') or []
+          print('MOEX_COLUMNS=' + json.dumps(cols,ensure_ascii=False,separators=(',',':')))
+          print('MOEX_ROWS=' + json.dumps(rows,ensure_ascii=False,separators=(',',':')))
+          assert cols == ['TRADEDATE','NUMTRADES','VOLUME','VALUE'], cols
+          print('MOEX_SIU6_20260915_READONLY=PASS')
+          PY
