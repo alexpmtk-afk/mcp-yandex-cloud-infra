@@ -348,7 +348,7 @@ jobs:
               r = c.post(os.environ['MCP_URL'], headers=headers0, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'13'}
+                      'clientInfo':{'name':'permanent-deploy-acceptance','version':'14'}
                   }})
               init = unpack(r); assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
@@ -363,6 +363,7 @@ jobs:
               assert 'FULL_COVERAGE' in instructions, instructions
               assert 'Advertising Archive V1' in instructions, instructions
               assert 'wb_ads_m0.v1' in instructions, instructions
+              assert 'CURRENT_STOCK' in instructions, instructions
               print('initialize=PASS', flush=True)
               h = dict(headers0)
               sid = r.headers.get('mcp-session-id')
@@ -398,7 +399,7 @@ jobs:
               print(f'tools_list=PASS count={len(names)}', flush=True)
 
               system_map = call('marketplace_system_map', {})
-              assert system_map.get('architecture_version') == '2026-09-15.v17', system_map
+              assert system_map.get('architecture_version') == '2026-09-16.v19', system_map
               assert system_map['storage_policy']['primary_archive_storage'] == 'Google Drive', system_map
               assert 'Apps Script' in system_map['storage_policy']['google_drive_auth'], system_map
               assert 'no Google OAuth refresh token' in system_map['storage_policy']['google_drive_auth'], system_map
@@ -414,12 +415,15 @@ jobs:
               semantic = system_map['semantic_core']
               assert semantic['status'] == 'TEST_RUNTIME_WIRED', semantic
               assert semantic['runtime_entry'] == 'marketplace_business_query', semantic
-              assert semantic['source_revision'].endswith('833eab826bfaa4691a05a21a5d00f1e8e0ba1b37'), semantic
+              assert semantic['source_revision'].endswith('303b7f6e732e8c6b0047ab4e81c43169acd6f040'), semantic
+              assert {'ORDERS','CURRENT_STOCK'} <= set(semantic['approved_operational_business_metrics']), semantic
+              assert 'semantic_current_stock.py' in semantic['operational_executor'], semantic
               assert 'advertising_performance' in semantic['approved_archive_executors'], semantic
               assert 'FULL_COVERAGE' in semantic['execution_gate'], semantic
               assert 'dataset_coverage_registry.csv' in semantic['execution_gate'], semantic
               assert 'agencyVat' in semantic['schema_drift_policy'], semantic
               print('SYSTEM_MAP_DATA_ROUTING=PASS', flush=True)
+              print('SYSTEM_MAP_SEMANTIC_OPERATIONAL=PASS', flush=True)
               print('SYSTEM_MAP_SEMANTIC_ADVERTISING=PASS', flush=True)
 
               catalog = call('marketplace_data_catalog', {})
@@ -461,6 +465,23 @@ jobs:
               assert resolution.get('route_id') == 'current_warehouse_tariff', semantic_fail
               assert resolution.get('resolution_type') == 'NOT_COVERED', semantic_fail
               print('SEMANTIC_CORE_FAIL_CLOSED=PASS', flush=True)
+
+              historical_stock = call('marketplace_business_query', {
+                  'marketplace':'wb',
+                  'seller':'wb_novokshenov',
+                  'date_from':'2026-09-01',
+                  'date_to':'2026-09-01',
+                  'question':'Сколько остатков было на 1 сентября?'
+              })
+              assert historical_stock.get('ok') is False, historical_stock
+              assert historical_stock.get('error') == 'source_not_suitable', historical_stock
+              hs_resolution = historical_stock.get('semantic_resolution') or (historical_stock.get('details') or {}).get('semantic_resolution') or {}
+              assert hs_resolution.get('resolution_type') == 'BUSINESS_METRIC', historical_stock
+              assert hs_resolution.get('metric_id') == 'CURRENT_STOCK', historical_stock
+              hs_details = historical_stock.get('details') or {}
+              assert hs_details.get('required_source_id') == 'wb_historical_stock', historical_stock
+              assert hs_details.get('rejected_substitute') == 'wb_current_stocks', historical_stock
+              print('SEMANTIC_CURRENT_STOCK_HISTORICAL_FAIL_CLOSED=PASS', flush=True)
 
               ads_gap = call('marketplace_business_query', {
                   'marketplace':'wb',
