@@ -50,7 +50,9 @@ concurrency:
 - перед повторным `UPLOAD_ANNUAL` обязательна reconciliation с внешним side effect;
 - большой annual-файл загружается resumable-чанками;
 - candidate проверяется по bytes + SHA256;
-- повторный запуск не должен повторять WB-запрос, PREPARE или upload, если точный canonical уже существует.
+- повторный запуск не должен повторять WB-запрос, PREPARE или upload, если точный canonical уже существует;
+- finalize обязан сохранять durable non-secret telemetry: стабильный correlation ID, `job_id/report_id`, candidate object ID + bytes/SHA256, staging/canonical file IDs, Drive-confirmed resumable offset и историю переходов `DOWNLOAD→PREPARE→UPLOAD_ANNUAL→COMMIT`;
+- bearer-like resumable `session_uri`, токены и секреты запрещено публиковать через status/telemetry.
 
 ## 6. Минимальный runtime acceptance
 
@@ -75,7 +77,8 @@ concurrency:
 - заменять Google Drive как canonical archive на Object Storage;
 - запускать обходной deploy вне общей `marketplaces-test-runtime-write` concurrency group;
 - повторно скачивать уже принятый reportId при recovery;
-- считать архив COMPLETE до доказанной canonical записи и registry commit.
+- считать архив COMPLETE до доказанной canonical записи и registry commit;
+- терять доказательства ambiguous finalize или раскрывать resumable session URI в status/log telemetry.
 
 ## 8. Правило изменения baseline
 
