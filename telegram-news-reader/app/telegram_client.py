@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
 from telethon import TelegramClient, connection
 from telethon.sessions import StringSession
+from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
 
 from app.config import Settings
 from app.errors import AuthorizationRequired
@@ -24,6 +27,10 @@ class DialogTraversalError(EntityResolutionError):
 
 class EntityNotInDialogsError(EntityResolutionError):
     """Dialog traversal completed but did not contain the whitelisted peer."""
+
+
+class PeerMapConfigError(EntityResolutionError):
+    """Runtime peer-map exists but is malformed."""
 
 
 class MessageFetchError(RuntimeError):
@@ -197,8 +204,36 @@ class TelegramReader:
             return None
         return self._message_record(chat_id, entity, message)
 
+    def _runtime_peer(self, chat_id: int):
+        raw = os.getenv("TELEGRAM_PEER_MAP_JSON", "").strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            item = payload.get(str(int(chat_id))) if isinstance(payload, dict) else None
+            if item is None:
+                return None
+            if not isinstance(item, dict):
+                raise ValueError("peer entry must be an object")
+            kind = str(item.get("kind") or "").strip().lower()
+            peer_id = int(item["peer_id"])
+            if kind == "channel":
+                return InputPeerChannel(peer_id, int(item["access_hash"]))
+            if kind == "user":
+                return InputPeerUser(peer_id, int(item["access_hash"]))
+            if kind == "chat":
+                return InputPeerChat(peer_id)
+            raise ValueError("unsupported peer kind")
+        except Exception as exc:
+            raise PeerMapConfigError() from exc
+
     async def _allowed_entity(self, chat_id: int):
         self.whitelist.assert_allowed(chat_id)
+
+        runtime_peer = self._runtime_peer(chat_id)
+        if runtime_peer is not None:
+            return runtime_peer
+
         try:
             return await self.client.get_input_entity(int(chat_id))
         except ValueError:
@@ -214,6 +249,7 @@ class TelegramReader:
         raise EntityNotInDialogsError()
 
     def _message_record(self, chat_id: int, entity, message) -> MessageRecord:
+        allowed = self.whitelist.assert_allowed(chat_id)
         username = getattr(entity, "username", None)
         title = (
             getattr(entity, "title", None)
@@ -225,6 +261,7 @@ class TelegramReader:
                 ]
                 if part
             )
+            or allowed.name
             or str(chat_id)
         )
         reply_to = getattr(message, "reply_to_msg_id", None)
