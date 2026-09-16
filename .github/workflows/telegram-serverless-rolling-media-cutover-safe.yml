@@ -1,0 +1,180 @@
+name: Telegram Serverless Rolling Media Cutover Safe
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-serverless-rolling-media-cutover-safe.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: telegram-serverless-rolling-media-cutover-safe
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-cutover-safe || true
+          yc config profile activate tg-cutover-safe
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Validate isolated private Reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="$(yc serverless container get telegram-reader-serverless-cutover-test --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.url')"
+          url="${url%/}"
+          test -n "$url" && test "$url" != null
+          token="$(yc iam create-token)"
+          body="$(curl -fsS --max-time 30 -H "Authorization: Bearer $token" "$url/health")"
+          echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null
+          code="$(curl -sS -o /dev/null -w '%{http_code}' "$url/internal/chats")"
+          test "$code" = 401 -o "$code" = 403
+          echo "READER_URL=$url" >> "$GITHUB_ENV"
+          echo SAFE_READER_PASS
+
+      - name: Build current 192h message set
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(yc iam create-token)"
+          generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          date_from="$(date -u -d '192 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          work="$RUNNER_TEMP/tg-cutover-safe"
+          mkdir -p "$work"
+          : > "$work/messages.ndjson"
+          chats="$(curl -fsS --retry 2 --retry-delay 2 --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/internal/chats")"
+          echo "$chats" | jq -e '.chat_count==9 and (.chats|length)==9' >/dev/null
+          while read -r cid; do
+            before=''; pages=0
+            while :; do
+              pages=$((pages+1)); test "$pages" -le 25
+              args=(--get --data-urlencode "date_from=$date_from" --data-urlencode "date_to=$generated_at" --data-urlencode 'limit=2000')
+              if [ -n "$before" ]; then args+=(--data-urlencode "before_id=$before"); fi
+              page="$(curl -fsS --retry 2 --retry-delay 2 --max-time 110 -H "Authorization: Bearer $token" "${args[@]}" "$READER_URL/internal/chats/$cid/messages")"
+              echo "$page" | jq -e --argjson id "$cid" '.chat_id==$id and (.messages|length)==.message_count' >/dev/null
+              echo "$page" | jq -c --arg collected_at "$generated_at" '.messages[]+{username:null,collected_at:$collected_at}' >> "$work/messages.ndjson"
+              full="$(echo "$page"|jq -r '.page_full')"; next="$(echo "$page"|jq -r '.next_before_id // empty')"
+              if [ "$full" != true ]; then break; fi
+              test -n "$next"; if [ -n "$before" ]; then test "$next" -lt "$before"; fi; before="$next"
+            done
+          done < <(echo "$chats"|jq -r '.chats[].chat_id')
+          jq -s 'unique_by([.chat_id,.message_id])|sort_by(.datetime)|reverse|.[:20000]' "$work/messages.ndjson" > "$work/messages.json"
+          echo "WORK=$work" >> "$GITHUB_ENV"
+          echo "GENERATED_AT=$generated_at" >> "$GITHUB_ENV"
+          echo "DATE_FROM=$date_from" >> "$GITHUB_ENV"
+          echo "CURRENT_MESSAGES=$(jq 'length' "$work/messages.json")"
+          echo SAFE_MESSAGES_PASS
+
+      - name: Reuse prior assets and sign fresh URLs
+        shell: bash
+        run: |
+          set -euo pipefail
+          prior=telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_MEDIA_CUTOVER_SAFE.json
+          if [ ! -s "$prior" ]; then prior=telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_MEDIA_OPT_V2.json; fi
+          if [ ! -s "$prior" ]; then prior=telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_MEDIA_SHADOW.json; fi
+          if [ ! -s "$prior" ]; then prior=telegram-news-reader/export/TELEGRAM_NEWS_LATEST.json; fi
+          test -s "$prior"
+          media_url="$(yc serverless container get telegram-reader-media --folder-id b1gk4p83brasi8g811jv --format json|jq -r '.url')"; media_url="${media_url%/}"
+          media_secret="$(yc lockbox secret list --folder-id b1gk4p83brasi8g811jv --format json|jq -r '.[]|select(.name=="telegram-reader-media-runtime")|.id'|head -1)"
+          cloud_token="$(yc iam create-token)"
+          curl -fsS -H "Authorization: Bearer $cloud_token" "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$media_secret/payload" -o "$RUNNER_TEMP/media-secret.json"
+          PRIOR="$prior" MEDIA_URL="$media_url" python3 - <<'PY'
+          import hashlib,hmac,json,os,time,urllib.parse
+          work=os.environ['WORK']; prior=json.load(open(os.environ['PRIOR'],encoding='utf-8')); cur=json.load(open(work+'/messages.json',encoding='utf-8')); sec=json.load(open(os.environ['RUNNER_TEMP']+'/media-secret.json',encoding='utf-8'))
+          vals={str(e.get('key') or ''):str(e.get('textValue') or '') for e in sec.get('entries',[])}; secret=vals.get('TELEGRAM_MEDIA_LINK_SECRET','')
+          if not secret: raise SystemExit('missing media link secret')
+          base=os.environ['MEDIA_URL'].rstrip('/'); exp=int(time.time())+7200
+          def fresh(key):
+              sig=hmac.new(secret.encode(),f'{key}\n{exp}'.encode(),hashlib.sha256).hexdigest(); return base+'/media/object?'+urllib.parse.urlencode({'key':key,'expires':exp,'sig':sig})
+          pmap={}
+          for r in prior.get('messages',[]):
+              a=r.get('media_asset')
+              if isinstance(a,dict) and a.get('object_key') and a.get('preview_object_key'): pmap[f"{r.get('chat_id')}:{r.get('message_id')}"]=a
+          supported={'photo','image','gif','animation'}; reused=[]; missing=[]
+          for r in cur:
+              if r.get('media_type') not in supported: continue
+              a=pmap.get(f"{r['chat_id']}:{r['message_id']}")
+              if a:
+                  reused.append({'chat_id':r['chat_id'],'message_id':r['message_id'],'media_asset':{'media_type':a.get('media_type') or r.get('media_type'),'size':a.get('size'),'object_key':a['object_key'],'media_url':fresh(a['object_key']),'preview_size':a.get('preview_size'),'preview_object_key':a['preview_object_key'],'preview_url':fresh(a['preview_object_key'])}})
+              else: missing.append((r['chat_id'],r['message_id'],r['media_type']))
+          with open(work+'/assets.ndjson','w',encoding='utf-8') as f:
+              for x in reused: f.write(json.dumps(x,ensure_ascii=False)+'\n')
+          with open(work+'/missing.tsv','w',encoding='utf-8') as f:
+              for x in missing: f.write('\t'.join(map(str,x))+'\n')
+          print('REUSED_MEDIA='+str(len(reused))); print('MISSING_MEDIA='+str(len(missing)))
+          PY
+          echo SAFE_REUSE_PASS
+
+      - name: Capture only missing assets
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(yc iam create-token)"
+          missing=0; if [ -s "$WORK/missing.tsv" ]; then missing="$(wc -l < "$WORK/missing.tsv"|tr -d ' ')"; fi
+          n=0
+          while IFS=$'\t' read -r cid mid mtype; do
+            [ -n "$cid" ] || continue
+            asset="$(curl -fsS --retry 2 --retry-delay 2 --max-time 105 -H "Authorization: Bearer $token" --get --data-urlencode "media_type=$mtype" "$READER_URL/internal/chats/$cid/messages/$mid/media")"
+            echo "$asset"|jq -e --argjson cid "$cid" --argjson mid "$mid" '.chat_id==$cid and .message_id==$mid and (.object_key|length)>0 and (.preview_object_key|length)>0 and (.media_url|length)>0 and (.preview_url|length)>0' >/dev/null
+            echo "$asset"|jq -c '{chat_id,message_id,media_asset:{media_type,size,object_key,media_url,preview_size,preview_object_key,preview_url}}' >> "$WORK/assets.ndjson"
+            n=$((n+1))
+          done < "$WORK/missing.tsv"
+          test "$n" -eq "$missing"
+          echo "CAPTURED_MISSING=$n"
+          echo SAFE_CAPTURE_PASS
+
+      - name: Validate and publish safe optimized shadow
+        shell: bash
+        run: |
+          set -euo pipefail
+          supported="$(jq '[.[]|select(.media_type=="photo" or .media_type=="image" or .media_type=="gif" or .media_type=="animation")]|length' "$WORK/messages.json")"
+          assets="$(wc -l < "$WORK/assets.ndjson"|tr -d ' ')"; test "$assets" -eq "$supported"; test "$assets" -ge 1
+          jq -s 'map({key:((.chat_id|tostring)+":"+(.message_id|tostring)),value:.media_asset})|from_entries' "$WORK/assets.ndjson" > "$WORK/assets.json"
+          jq --slurpfile a "$WORK/assets.json" '$a[0] as $m|map(. as $r|(($r.chat_id|tostring)+":"+($r.message_id|tostring)) as $k|.media_asset=($m[$k]//null))' "$WORK/messages.json" > "$WORK/enriched.json"
+          media="$(jq '[.[]|select(.media_asset!=null)]|length' "$WORK/enriched.json")"; previews="$(jq '[.[]|select(.media_asset.preview_url?!=null)]|length' "$WORK/enriched.json")"; test "$media" -eq "$supported"; test "$previews" -eq "$media"
+          jq -n --arg schema TELEGRAM_NEWS_READER_V1 --arg generated_at "$GENERATED_AT" --argjson window_hours 192 --argjson allowed_chats 9 --argjson media "$media" --argjson previews "$previews" --slurpfile messages "$WORK/enriched.json" '{schema:$schema,generated_at:$generated_at,window_hours:$window_hours,allowed_chats:$allowed_chats,message_count:($messages[0]|length),media_message_count:$media,preview_message_count:$previews,messages:$messages[0]}' > "$WORK/output.json"
+          jq -e '.schema=="TELEGRAM_NEWS_READER_V1" and .allowed_chats==9 and .window_hours==192 and .message_count==(.messages|length) and .media_message_count==([.messages[]|select(.media_asset!=null)]|length) and .preview_message_count==.media_message_count and ([.messages[]|select((.media_type=="photo" or .media_type=="image" or .media_type=="gif" or .media_type=="animation") and .media_asset==null)]|length)==0 and ([.messages[]|[.chat_id,.message_id]]|length)==([.messages[]|[.chat_id,.message_id]]|unique|length)' "$WORK/output.json" >/dev/null
+          preview="$(jq -r '[.messages[]|select(.media_asset.preview_url?!=null)][0].media_asset.preview_url' "$WORK/output.json")"; curl -fsS --max-time 30 "$preview" -o "$WORK/preview.bin"; test -s "$WORK/preview.bin"
+          mkdir -p telegram-news-reader/export; cp "$WORK/output.json" telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_MEDIA_CUTOVER_SAFE.json
+          echo "SAFE_MESSAGES=$(jq -r '.message_count' "$WORK/output.json")"; echo "SAFE_MEDIA=$media"; echo "SAFE_PREVIEWS=$previews"; echo "SAFE_PREVIEW_BYTES=$(wc -c < "$WORK/preview.bin")"; echo SERVERLESS_ROLLING_MEDIA_CUTOVER_SAFE_PASS
+          file=telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_MEDIA_CUTOVER_SAFE.json
+          git config user.name 'github-actions[bot]'; git config user.email '41898282+github-actions[bot]@users.noreply.github.com'; git add "$file"
+          if ! git diff --cached --quiet; then
+            git commit -m 'chore: update Telegram safe cutover media shadow'
+            for attempt in 1 2 3; do git fetch origin main; if git rebase origin/main && git push origin HEAD:main; then echo SAFE_SHADOW_PUBLISH_PASS; exit 0; fi; git rebase --abort >/dev/null 2>&1 || true; sleep 2; done; exit 1
+          fi
+          echo SAFE_SHADOW_UNCHANGED
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/media-secret.json"
