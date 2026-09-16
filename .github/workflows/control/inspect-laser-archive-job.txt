@@ -1,1 +1,1 @@
-2026-09-16 read-only Laser progress during restored scheduled drain after verified 25 checkpoint
+2026-09-16 read-only Laser progress check 2 during normal drain after 25 checkpoint
