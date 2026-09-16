@@ -1,0 +1,146 @@
+name: Telegram Serverless Rolling Shadow
+on:
+  push:
+    paths:
+      - '.github/workflows/telegram-serverless-rolling-shadow.yml'
+  workflow_dispatch:
+permissions:
+  contents: write
+concurrency:
+  group: telegram-serverless-rolling-shadow
+  cancel-in-progress: false
+jobs:
+  rolling-shadow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-serverless-rolling-shadow || true
+          yc config profile activate tg-serverless-rolling-shadow
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+      - name: Build rolling snapshot from direct Telegram reads
+        shell: bash
+        run: |
+          set -euo pipefail
+          url="$(yc serverless container get telegram-reader-serverless-smoke --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.url')"
+          test -n "$url" && test "$url" != "null"
+          url="${url%/}"
+          token="$(yc iam create-token)"
+          generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          date_from="$(date -u -d '192 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          date_to="$generated_at"
+
+          chats_raw="$(curl -fsS --retry 2 --retry-delay 2 --max-time 30 -H "Authorization: Bearer $token" "$url/internal/chats")"
+          echo "$chats_raw" | jq -e '.chat_count==9 and (.chats|length)==9' >/dev/null
+
+          work="$RUNNER_TEMP/tg-shadow"
+          mkdir -p "$work/pages"
+          : > "$work/messages.ndjson"
+          : > "$work/chats.ndjson"
+
+          while read -r chat_id; do
+            probe="$(curl -fsS --retry 2 --retry-delay 2 --max-time 45 -H "Authorization: Bearer $token" "$url/internal/chats/$chat_id/probe")"
+            echo "$probe" | jq -e --argjson id "$chat_id" '.resolved==true and .chat_id==$id and (.name|length)>0' >/dev/null
+            echo "$probe" | jq -c '{chat_id,name}' >> "$work/chats.ndjson"
+
+            before=""
+            page_no=0
+            while :; do
+              page_no=$((page_no+1))
+              test "$page_no" -le 25 || { echo "Too many Telegram pages for chat $chat_id"; exit 1; }
+              args=(--get --data-urlencode "date_from=$date_from" --data-urlencode "date_to=$date_to" --data-urlencode "limit=2000")
+              if [ -n "$before" ]; then args+=(--data-urlencode "before_id=$before"); fi
+              page="$(curl -fsS --retry 2 --retry-delay 2 --max-time 110 -H "Authorization: Bearer $token" "${args[@]}" "$url/internal/chats/$chat_id/messages")"
+              echo "$page" | jq -e --argjson id "$chat_id" '.chat_id==$id and (.message_count|tonumber)>=0 and (.messages|length)==.message_count' >/dev/null
+              echo "$page" | jq -c '.messages[]' >> "$work/messages.ndjson"
+              full="$(echo "$page" | jq -r '.page_full')"
+              next="$(echo "$page" | jq -r '.next_before_id // empty')"
+              if [ "$full" != "true" ]; then break; fi
+              test -n "$next" || { echo "Full page without cursor for chat $chat_id"; exit 1; }
+              if [ -n "$before" ]; then test "$next" -lt "$before" || { echo "Non-decreasing cursor for chat $chat_id"; exit 1; }; fi
+              before="$next"
+            done
+          done < <(echo "$chats_raw" | jq -r '.chats[].chat_id')
+
+          jq -s 'sort_by(.chat_id) | unique_by(.chat_id)' "$work/chats.ndjson" > "$work/chats.json"
+          test "$(jq 'length' "$work/chats.json")" -eq 9
+
+          if [ -s "$work/messages.ndjson" ]; then
+            jq -s 'unique_by([.chat_id,.message_id]) | sort_by(.datetime) | reverse | .[:20000]' "$work/messages.ndjson" > "$work/messages.json"
+          else
+            echo '[]' > "$work/messages.json"
+          fi
+
+          jq -n \
+            --arg schema "TELEGRAM_NEWS_READER_V1" \
+            --arg generated_at "$generated_at" \
+            --argjson window_hours 192 \
+            --slurpfile chats "$work/chats.json" \
+            --slurpfile messages "$work/messages.json" \
+            '{schema:$schema,generated_at:$generated_at,window_hours:$window_hours,allowed_chats:$chats[0],message_count:($messages[0]|length),messages:$messages[0]}' \
+            > "$work/output.json"
+
+          jq -e '
+            .schema=="TELEGRAM_NEWS_READER_V1" and
+            .window_hours==192 and
+            (.allowed_chats|length)==9 and
+            .message_count==(.messages|length) and
+            ([.messages[]|[.chat_id,.message_id]]|length)==([.messages[]|[.chat_id,.message_id]]|unique|length) and
+            ([.messages[]|select(.datetime < $from or .datetime > $to)]|length)==0
+          ' --arg from "$date_from" --arg to "$date_to" "$work/output.json" >/dev/null
+          jq -e '[.messages[]|select(.chat_id==-1001343028414)]|length>=1' "$work/output.json" >/dev/null
+
+          mkdir -p telegram-news-reader/export
+          cp "$work/output.json" telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_SHADOW.json
+          echo "SHADOW_MESSAGES=$(jq -r '.message_count' "$work/output.json")"
+          echo SERVERLESS_ROLLING_SHADOW_BUILD_PASS
+      - name: Commit shadow snapshot
+        shell: bash
+        run: |
+          set -euo pipefail
+          file="telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_SHADOW.json"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add "$file"
+          if git diff --cached --quiet; then
+            echo SERVERLESS_ROLLING_SHADOW_NO_CHANGE
+            exit 0
+          fi
+          for attempt in 1 2 3; do
+            git fetch origin main
+            git rebase origin/main
+            git add "$file"
+            git commit -m "chore: update Telegram serverless rolling shadow" || true
+            if git push origin HEAD:main; then
+              echo SERVERLESS_ROLLING_SHADOW_PUBLISH_PASS
+              exit 0
+            fi
+            git reset --soft HEAD~1 || true
+            sleep 2
+          done
+          exit 1
+      - name: Cleanup local credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
