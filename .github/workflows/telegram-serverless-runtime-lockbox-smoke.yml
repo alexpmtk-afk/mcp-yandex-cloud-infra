@@ -5,6 +5,9 @@ on:
       - '.github/workflows/telegram-serverless-runtime-lockbox-smoke.yml'
 permissions:
   contents: read
+concurrency:
+  group: telegram-serverless-runtime-lockbox-smoke
+  cancel-in-progress: false
 jobs:
   smoke:
     runs-on: ubuntu-latest
@@ -38,7 +41,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          image="cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:serverless-runtime-lockbox-98bf8458bc1f"
+          image="cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:serverless-runtime-lockbox-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           yc iam create-token | docker login --username iam --password-stdin cr.yandex >/dev/null
           docker build -t "$image" telegram-news-reader
           docker push "$image" >/dev/null
@@ -65,9 +68,21 @@ jobs:
             --environment COLLECT_INTERVAL_SECONDS=3600 \
             --environment OBJECT_STORAGE_ENABLED=false >/dev/null
           url="$(yc serverless container get telegram-reader-serverless-smoke --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.url')"
+          test -n "$url"
           echo "URL=${url%/}" >> "$GITHUB_ENV"
           echo DEPLOY_RUNTIME_LOCKBOX_PASS
-      - name: Verify Telegram runtime
+      - name: Verify private invocation boundary
+        shell: bash
+        run: |
+          set -euo pipefail
+          code="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/unauth-body" -w '%{http_code}' "$URL/internal/chats" || true)"
+          echo "UNAUTH_HTTP=$code"
+          case "$code" in
+            401|403) ;;
+            *) echo "Serverless internal endpoint is not private"; exit 1 ;;
+          esac
+          echo SERVERLESS_PRIVATE_BOUNDARY_PASS
+      - name: Verify Telegram runtime and production whitelist
         shell: bash
         run: |
           set -euo pipefail
@@ -76,15 +91,39 @@ jobs:
           for attempt in $(seq 1 12); do
             response="$(curl -sS --max-time 40 -H "Authorization: Bearer $token" "$URL/health" || true)"
             echo "$response" | jq -c '{status,telegram_status,telegram_connected,telegram_authorized,allowed_chats,messages,collector_last_result,collector_last_errors}' 2>/dev/null || true
-            if echo "$response" | jq -e '.status=="ok" and .telegram_authorized==true and (.messages|tonumber)>=1' >/dev/null 2>&1; then
+            if echo "$response" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and (.messages|tonumber)>=1' >/dev/null 2>&1; then
               ok=1
               break
             fi
             sleep 8
           done
           test "$ok" -eq 1
+
+          chats="$(curl -fsS --max-time 60 -H "Authorization: Bearer $token" "$URL/internal/chats")"
+          echo "$chats" | jq -c '{chat_count,chats}'
+          echo "$chats" | jq -e '.chat_count==9' >/dev/null
+          echo "$chats" | jq -e '.chats[] | select(.chat_id==-1001343028414 and (.name|length)>0)' >/dev/null
+          echo SERVERLESS_FULL_WHITELIST_PASS
+      - name: Verify direct Telegram range read
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(yc iam create-token)"
+          from="$(date -u -d '192 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          to="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          response="$(curl -fsS --max-time 90 \
+            -H "Authorization: Bearer $token" \
+            --get \
+            --data-urlencode "date_from=$from" \
+            --data-urlencode "date_to=$to" \
+            --data-urlencode "limit=20" \
+            "$URL/internal/chats/-1001343028414/messages")"
+          echo "$response" | jq -c '{chat_id,date_from,date_to,message_count,first:(.messages[0] // null)}'
+          echo "$response" | jq -e '.chat_id==-1001343028414 and .message_count>=1 and (.messages|length)>=1' >/dev/null
+          echo "$response" | jq -e '.messages[] | select(.chat_id==-1001343028414 and (.message_id|tonumber)>0 and (.datetime|length)>0)' >/dev/null
+          echo SERVERLESS_DIRECT_RANGE_READ_PASS
           echo SERVERLESS_TELEGRAM_SMOKE_PASS
       - name: Cleanup local credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json"
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/unauth-body"
