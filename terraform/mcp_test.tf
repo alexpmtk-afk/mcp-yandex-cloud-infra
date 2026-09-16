@@ -1,14 +1,14 @@
-# TEST-only foundation and MCP service. No credential values are stored here.
+# Canonical single Marketplace MCP foundation and service. No credential values are stored here.
 locals {
   labels = {
     project     = "marketplaces-mcp"
-    environment = "test"
+    environment = "production"
     managed_by  = "terraform"
   }
 
   # The CI key file is ephemeral and already supplied to the provider. Resolve
   # only its non-secret service-account ID so Terraform can manage the minimum
-  # service-specific roles required by TEST deployment.
+  # service-specific roles required by the canonical Marketplace deployment.
   terraform_deployer_service_account_id = var.yc_service_account_key_file == null ? null : try(
     jsondecode(file(var.yc_service_account_key_file)).service_account_id,
     jsondecode(file(var.yc_service_account_key_file)).serviceAccountId,
@@ -16,10 +16,13 @@ locals {
   )
 }
 
+# The historical Terraform address keeps the mcp_test suffix to preserve state
+# identity. The actual Yandex Cloud folder is the single canonical Marketplace
+# production folder and is renamed in place; no duplicate runtime is created.
 resource "yandex_resourcemanager_folder" "mcp_test" {
   cloud_id    = var.yc_cloud_id
-  name        = var.test_folder_name
-  description = "Isolated TEST environment for marketplaces MCP"
+  name        = var.marketplaces_folder_name
+  description = "Canonical production environment for Marketplace MCP"
   labels      = local.labels
 }
 
@@ -32,7 +35,7 @@ resource "yandex_container_registry" "mcp" {
 resource "yandex_iam_service_account" "runtime" {
   folder_id   = yandex_resourcemanager_folder.mcp_test.id
   name        = "marketplaces-mcp-runtime"
-  description = "Runtime identity for the TEST MCP container"
+  description = "Runtime identity for the canonical Marketplace MCP container"
 }
 
 resource "yandex_iam_service_account" "gateway" {
@@ -68,9 +71,8 @@ resource "yandex_resourcemanager_folder_iam_member" "deployer_archive_storage_ed
   member    = "serviceAccount:${local.terraform_deployer_service_account_id}"
 }
 
-# The GitHub Actions deployer builds the TEST image and pushes it to the TEST
-# Container Registry. Grant only the dedicated image-pusher role required for
-# that operation; runtime keeps the separate pull-only role above.
+# The GitHub Actions deployer builds the Marketplace image and pushes it to the
+# single canonical Container Registry. Runtime keeps the separate pull-only role above.
 resource "yandex_resourcemanager_folder_iam_member" "deployer_registry_image_pusher" {
   count     = local.terraform_deployer_service_account_id == null ? 0 : 1
   folder_id = yandex_resourcemanager_folder.mcp_test.id
@@ -81,7 +83,7 @@ resource "yandex_resourcemanager_folder_iam_member" "deployer_registry_image_pus
 resource "yandex_lockbox_secret" "marketplace_credentials" {
   folder_id           = yandex_resourcemanager_folder.mcp_test.id
   name                = "marketplaces-mcp-api-credentials"
-  description         = "TEST MCP marketplace credentials. Values are added out of band, never in Terraform."
+  description         = "Canonical Marketplace MCP credentials. Values are added out of band, never in Terraform."
   deletion_protection = true
   labels              = local.labels
 }
@@ -110,8 +112,8 @@ resource "yandex_storage_bucket" "marketplace_archive" {
 resource "yandex_serverless_container" "mcp" {
   count              = var.mcp_image_url == null ? 0 : 1
   folder_id          = yandex_resourcemanager_folder.mcp_test.id
-  name               = "marketplaces-mcp-test"
-  description        = "Private Streamable HTTP MCP service"
+  name               = "marketplaces-mcp"
+  description        = "Private Streamable HTTP Marketplace MCP service"
   memory             = 2048
   cores              = 1
   execution_timeout  = "600s"
@@ -133,7 +135,7 @@ resource "yandex_serverless_container_iam_member" "gateway_invoker" {
   member       = "serviceAccount:${yandex_iam_service_account.gateway.id}"
 }
 
-# The TEST gateway predates the persistent Terraform state and the provider
+# The canonical gateway predates the persistent Terraform state and the provider
 # does not implement import for yandex_api_gateway. Keep it read-only here:
 # its integration targets the stable container ID, not a mutable revision ID.
 data "yandex_api_gateway" "mcp_existing" {
