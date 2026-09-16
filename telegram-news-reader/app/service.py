@@ -15,6 +15,7 @@ from app.admin_page import ADMIN_PAGE
 from app.collector import Collector
 from app.errors import AccessDenied, AuthorizationRequired
 from app.mcp_server import build_mcp
+from app.media_pipeline import MediaPipeline
 from app.object_storage import ObjectStorage
 from app.runtime import build_runtime
 from app.service_config import load_service_settings
@@ -26,6 +27,7 @@ collector_enabled = os.getenv("COLLECTOR_ENABLED", "true").strip().lower() not i
 settings, whitelist, reader, storage = build_runtime()
 collector = Collector(reader, storage)
 object_storage = ObjectStorage()
+media_pipeline = MediaPipeline(reader, root=os.getenv("TELEGRAM_MEDIA_PATH", "/tmp/media"))
 mcp = build_mcp(whitelist, storage)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
@@ -357,6 +359,36 @@ async def internal_messages(
         "page_full": len(messages) >= page_limit,
         "next_before_id": next_before_id,
         "messages": messages,
+    }
+
+
+@app.get("/internal/chats/{chat_id}/messages/{message_id}/media")
+async def internal_message_media(chat_id: int, message_id: int, media_type: str):
+    whitelist.assert_allowed(chat_id)
+    await _ensure_reader_ready()
+    if not object_storage.enabled:
+        raise HTTPException(503, "MEDIA_STORAGE_DISABLED")
+    try:
+        asset = await asyncio.wait_for(
+            media_pipeline.ensure_asset(chat_id, message_id, media_type), timeout=90
+        )
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "MEDIA_CAPTURE_TIMEOUT")
+    except Exception as exc:
+        print(f"media_capture_error={type(exc).__name__}")
+        raise HTTPException(502, f"MEDIA_CAPTURE_FAILED:{type(exc).__name__}")
+    if not asset:
+        raise HTTPException(404, "MEDIA_NOT_AVAILABLE")
+    return {
+        "chat_id": chat_id,
+        "message_id": message_id,
+        "media_type": asset.get("media_type"),
+        "size": asset.get("size"),
+        "object_key": asset.get("object_key"),
+        "media_url": asset.get("media_url"),
+        "preview_size": asset.get("preview_size"),
+        "preview_object_key": asset.get("preview_object_key"),
+        "preview_url": asset.get("preview_url"),
     }
 
 
