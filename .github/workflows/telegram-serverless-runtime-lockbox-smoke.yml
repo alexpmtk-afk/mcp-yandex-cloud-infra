@@ -75,7 +75,7 @@ jobs:
           ok=0
           for attempt in $(seq 1 12); do
             response="$(curl -sS --max-time 40 -H "Authorization: Bearer $token" "$URL/health" || true)"
-            echo "$response" | jq -c '{status,telegram_status,telegram_connected,telegram_authorized,allowed_chats,messages}' 2>/dev/null || true
+            echo "$response" | jq -c '{status,telegram_status,telegram_connected,telegram_authorized,allowed_chats,messages,collector_last_result,collector_last_errors}' 2>/dev/null || true
             if echo "$response" | jq -e '.status=="ok" and .telegram_authorized==true and (.messages|tonumber)>=1' >/dev/null 2>&1; then
               ok=1
               break
