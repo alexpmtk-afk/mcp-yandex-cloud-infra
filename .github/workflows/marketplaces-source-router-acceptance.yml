@@ -67,7 +67,7 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           printf '%s' "https://${DOMAIN}/mcp" > "$RUNNER_TEMP/mcp-url"
 
-      - name: Accept query execution plan v2 and Clarification Gate on live TEST MCP
+      - name: Accept query plan, Clarification Gate, and Execution Controller V1 on live TEST MCP
         shell: bash
         run: |
           set -euo pipefail
@@ -95,7 +95,7 @@ jobs:
               response = client.post(os.environ['MCP_URL'], headers=headers, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'source-router-acceptance','version':'3'}
+                      'clientInfo':{'name':'source-router-acceptance','version':'4'}
                   }
               })
               init = unpack(response); assert init and 'result' in init, init
@@ -107,6 +107,10 @@ jobs:
               assert 'Never guess the closest metric' in instructions, instructions
               assert 'must not execute any data leg' in instructions, instructions
               assert 'Do not resume the old ambiguous plan directly' in instructions, instructions
+              assert 'marketplace_execution_control before every provider/archive/card executor' in instructions, instructions
+              assert 'exact executor_arguments' in instructions, instructions
+              assert 'Never pass the original compound multi-source user question unchanged' in instructions, instructions
+              assert 'dispatch_contracts must be empty' in instructions, instructions
               session = response.headers.get('mcp-session-id')
               if session: headers['Mcp-Session-Id'] = session
               headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
@@ -126,15 +130,25 @@ jobs:
 
               names = {tool['name'] for tool in rpc('tools/list')['tools']}
               assert 'marketplace_query_plan' in names, sorted(names)
+              assert 'marketplace_execution_control' in names, sorted(names)
 
               system_map = call('marketplace_system_map', {})
               router = system_map['request_source_router']
               assert router['status'] == 'EXECUTION_PLAN_V2', router
               assert router['source_revision'].endswith('4fe77f5359803e92230b7e7e7744cf61c1ec0c49'), router
               assert router['clarification_source_revision'].endswith('2bc3e48740400689de67360e02c6b1a7fcb12ded'), router
+              assert router['execution_controller_source_revision'].endswith('e1b62a70442ace8b511a1ba6635a6821065c1b74'), router
               assert router['execution_plan']['version'] == 'marketplace_execution_plan.v2', router
+              controller = router['execution_controller']
+              assert controller['status'] == 'CONTRACT_DISPATCH_V1', controller
+              assert controller['runtime_entry'] == 'marketplace_execution_control', controller
+              assert controller['controller_version'] == 'marketplace_execution_controller.v1', controller
+              assert controller['leg_contract_version'] == 'marketplace_leg_execution.v1', controller
+              assert 'no required leg is dispatchable' in controller['all_or_nothing_policy'], controller
+              assert 'prohibit arithmetic' in controller['join_policy'], controller
               assert router['availability_facts']['wb_orders_historical_archive'] is False, router
               assert router['availability_facts']['wb_stock_historical_archive'] is False, router
+
               clarification = router['clarification_gate']
               assert clarification['position'] == 'after marketplace_query_plan and before any data executor', clarification
               assert clarification['interaction_state'] == 'CLARIFICATION_REQUIRED', clarification
@@ -154,96 +168,105 @@ jobs:
               })
               assert current_stock['planner'] == 'marketplace_query_plan.v2', current_stock
               assert current_stock['source_family'] == 'LIVE_CABINET_API', current_stock
-              current_execution = current_stock['execution_plan']
-              assert current_execution['version'] == 'marketplace_execution_plan.v2', current_execution
-              assert current_execution['mode'] == 'SINGLE_SOURCE', current_execution
-              assert current_execution['status'] == 'READY', current_execution
-              assert current_execution['can_answer_without_more_validation'] is True, current_execution
-              assert current_execution['legs'][0]['executor'] == 'marketplace_business_query', current_execution
+              assert current_stock['execution_plan']['status'] == 'READY', current_stock
 
-              historical_stock = call('marketplace_query_plan', {
+              current_control = call('marketplace_execution_control', {
+                  'question':'Сколько остатков сейчас на Wildberries?',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-09-16','date_to':'2026-09-16','nm_ids':[12345]
+              })
+              assert current_control['controller'] == 'marketplace_execution_controller.v1', current_control
+              assert current_control['state'] == 'READY', current_control
+              assert current_control['can_dispatch'] is True, current_control
+              assert len(current_control['dispatch_contracts']) == 1, current_control
+              cc = current_control['dispatch_contracts'][0]
+              assert cc['contract_version'] == 'marketplace_leg_execution.v1', cc
+              assert cc['executor'] == 'marketplace_business_query', cc
+              assert cc['executor_arguments']['question'] == 'текущие остатки', cc
+              assert cc['executor_arguments']['nm_ids'] == [12345], cc
+              assert cc['semantic_target'] == {'type':'BUSINESS_METRIC','id':'CURRENT_STOCK'}, cc
+
+              historical_control = call('marketplace_execution_control', {
                   'question':'Сколько остатков было 1 сентября?',
                   'marketplace':'wb','seller':'wb_novokshenov',
                   'date_from':'2026-09-01','date_to':'2026-09-01'
               })
-              assert historical_stock['source_family'] == 'UNAVAILABLE', historical_stock
-              assert historical_stock['source_status'] == 'HISTORICAL_SOURCE_ABSENT', historical_stock
-              assert historical_stock['execution_plan']['status'] == 'BLOCKED', historical_stock
-              assert historical_stock['execution_plan']['can_start_execution'] is False, historical_stock
+              assert historical_control['state'] == 'BLOCKED', historical_control
+              assert historical_control['can_dispatch'] is False, historical_control
+              assert historical_control['dispatch_contracts'] == [], historical_control
+              assert historical_control['source_gap']['source_status'] == 'HISTORICAL_SOURCE_ABSENT', historical_control
 
-              recent_orders = call('marketplace_query_plan', {
-                  'question':'Сколько заказов было в августе?',
-                  'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-08-01','date_to':'2026-08-31'
-              })
-              assert recent_orders['source_family'] == 'LIVE_CABINET_API', recent_orders
-              assert recent_orders['source_status'] == 'AVAILABLE_WITH_LIMITATION', recent_orders
-              assert recent_orders['execution_plan']['status'] == 'READY_WITH_GATES', recent_orders
-              assert recent_orders['execution_plan']['legs'][0]['coverage_gate'] == 'LIVE_RETENTION_WINDOW', recent_orders
-              assert recent_orders['execution_plan']['can_answer_without_more_validation'] is False, recent_orders
-
-              old_orders = call('marketplace_query_plan', {
-                  'question':'Сколько заказов было в январе?',
-                  'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-01-01','date_to':'2026-01-31'
-              })
-              assert old_orders['source_family'] == 'UNAVAILABLE', old_orders
-              assert old_orders['source_status'] == 'NO_VERIFIED_ARCHIVE_HISTORY', old_orders
-              assert old_orders['execution_plan']['status'] == 'BLOCKED', old_orders
-
-              missing_marketplace = call('marketplace_query_plan', {
+              missing_control = call('marketplace_execution_control', {
                   'question':'Сколько заказов сегодня?', 'seller':'shop'
               })
-              assert missing_marketplace['source_status'] == 'MARKETPLACE_REQUIRED', missing_marketplace
-              assert missing_marketplace['execution_plan']['status'] == 'NEEDS_CONTEXT', missing_marketplace
-              assert missing_marketplace['execution_plan']['can_start_execution'] is False, missing_marketplace
-              assert missing_marketplace['execution_plan']['blockers'][0]['type'] == 'MISSING_CONTEXT', missing_marketplace
-              assert 'marketplace' in missing_marketplace.get('required_context', []), missing_marketplace
+              assert missing_control['state'] == 'CLARIFICATION_REQUIRED', missing_control
+              assert missing_control['can_dispatch'] is False, missing_control
+              assert missing_control['dispatch_contracts'] == [], missing_control
+              assert 'marketplace' in missing_control['required_context'], missing_control
+              assert missing_control['replan_required_after_clarification'] is True, missing_control
 
-              historical_compare = call('marketplace_query_plan', {
-                  'question':'Сравни продажи и рекламные расходы за август',
+              compound = 'Сравни продажи и рекламные расходы за август'
+              hybrid_control = call('marketplace_execution_control', {
+                  'question':compound,
                   'marketplace':'wb','seller':'wb_novokshenov',
                   'date_from':'2026-08-01','date_to':'2026-08-31'
               })
-              compare_execution = historical_compare['execution_plan']
-              assert historical_compare['source_family'] == 'HYBRID', historical_compare
-              assert compare_execution['mode'] == 'MULTI_SOURCE', compare_execution
-              assert compare_execution['status'] == 'READY_WITH_GATES', compare_execution
-              assert compare_execution['join']['strategy'] == 'SIDE_BY_SIDE_COMPARISON', compare_execution
-              assert compare_execution['join']['requires_all_required_legs'] is True, compare_execution
-              assert compare_execution['join']['allow_partial_answer'] is False, compare_execution
-              assert compare_execution['join']['arithmetic_allowed_without_explicit_semantic_contract'] is False, compare_execution
-              assert {leg['purpose'] for leg in compare_execution['legs']} >= {'advertising','sales_or_finance'}, compare_execution
-              assert all(leg['coverage_gate'] == 'FULL_COVERAGE' for leg in compare_execution['legs']), compare_execution
+              assert hybrid_control['state'] == 'READY_WITH_GATES', hybrid_control
+              assert hybrid_control['can_dispatch'] is True, hybrid_control
+              contracts = hybrid_control['dispatch_contracts']
+              assert len(contracts) == 2, hybrid_control
+              questions = {x['executor_arguments']['question'] for x in contracts}
+              assert questions == {'продажи','рекламные расходы'}, hybrid_control
+              assert compound not in questions, hybrid_control
+              assert all(x['original_compound_question_allowed'] is False for x in contracts), hybrid_control
+              assert all(x['coverage_gate'] == 'FULL_COVERAGE' for x in contracts), hybrid_control
+              targets = {(x['semantic_target']['type'],x['semantic_target']['id']) for x in contracts}
+              assert targets == {('CAPABILITY','sale_and_return_operations'),('CAPABILITY','advertising_performance')}, hybrid_control
+              policy = hybrid_control['dispatch_policy']
+              assert policy['use_only_returned_executor_and_arguments'] is True, policy
+              assert policy['do_not_rewrite_executor_arguments'] is True, policy
+              assert policy['do_not_pass_original_compound_question_to_each_leg'] is True, policy
+              join = hybrid_control['join_control']
+              assert join['requires_all_required_legs'] is True, join
+              assert join['allow_partial_answer'] is False, join
+              assert join['missing_required_leg_behavior'] == 'FAIL_CLOSED', join
+              assert join['arithmetic_allowed'] is False, join
+              assert join['explicit_calculation_contract_required_for_arithmetic'] is True, join
+              assert join['provenance_required'] is True, join
 
-              blocked_join = call('marketplace_query_plan', {
-                  'question':'Сравни цену на сайте и остатки товара на 1 сентября',
+              no_target = call('marketplace_execution_control', {
+                  'question':'Сравни цену на сайте и текущие остатки Wildberries',
                   'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-09-01','date_to':'2026-09-01'
+                  'date_from':'2026-09-16','date_to':'2026-09-16'
               })
-              blocked_execution = blocked_join['execution_plan']
-              assert blocked_execution['mode'] == 'MULTI_SOURCE', blocked_execution
-              assert blocked_execution['status'] == 'BLOCKED', blocked_execution
-              stock_leg = next(x for x in blocked_execution['legs'] if x['purpose'] == 'current_stock')
-              public_leg = next(x for x in blocked_execution['legs'] if x['purpose'] == 'public_card')
-              assert stock_leg['source_family'] == 'UNAVAILABLE', stock_leg
-              assert stock_leg['source_status'] == 'HISTORICAL_SOURCE_ABSENT', stock_leg
-              assert public_leg['source_family'] == 'PUBLIC_MARKETPLACE_SOURCE', public_leg
-              assert blocked_execution['join']['missing_required_leg_behavior'] == 'FAIL_CLOSED', blocked_execution
+              assert no_target['state'] == 'BLOCKED', no_target
+              assert no_target['can_dispatch'] is False, no_target
+              assert no_target['dispatch_contracts'] == [], no_target
+              assert any(x['type'] == 'PRODUCT_TARGET_REQUIRED' for x in no_target['blockers']), no_target
+              assert no_target['prepared_non_dispatchable_contracts'], no_target
 
-              public_rules = call('marketplace_query_plan', {
-                  'question':'Какие сейчас официальные правила Wildberries для продавцов?'
+              with_target = call('marketplace_execution_control', {
+                  'question':'Сравни цену на сайте и текущие остатки Wildberries',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-09-16','date_to':'2026-09-16',
+                  'target_ids':['wb-card-1']
               })
-              assert public_rules['source_family'] == 'PUBLIC_MARKETPLACE_SOURCE', public_rules
-              assert public_rules['source_status'] == 'NOT_CONNECTED_ON_DEMAND', public_rules
-              assert public_rules['execution_plan']['status'] == 'BLOCKED', public_rules
+              assert with_target['state'] == 'READY_WITH_GATES', with_target
+              assert {x['executor'] for x in with_target['dispatch_contracts']} == {'card_monitor_get_latest','marketplace_business_query'}, with_target
+              public = next(x for x in with_target['dispatch_contracts'] if x['executor'] == 'card_monitor_get_latest')
+              assert public['executor_arguments']['target_ids'] == ['wb-card-1'], public
+              assert public['executor_arguments']['marketplace'] == 'wildberries', public
 
-              internal = call('marketplace_query_plan', {
-                  'question':'Какие данные есть в базе и какие источники сейчас доступны?'
+              unknown = call('marketplace_execution_control', {
+                  'question':'Покажи мне коэффициент счастья товара за август',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-08-01','date_to':'2026-08-31'
               })
-              assert internal['source_family'] == 'SYSTEM_INTERNAL', internal
-              assert internal['execution_plan']['status'] == 'READY', internal
+              assert unknown['state'] == 'CLARIFICATION_REQUIRED', unknown
+              assert unknown['dispatch_contracts'] == [], unknown
+              assert unknown['semantic_resolution']['resolution_type'] == 'UNKNOWN', unknown
 
               print('MARKETPLACE_QUERY_EXECUTION_PLAN_V2_LIVE_ACCEPTANCE=PASS', flush=True)
               print('MARKETPLACE_CLARIFICATION_GATE_LIVE_ACCEPTANCE=PASS', flush=True)
+              print('MARKETPLACE_EXECUTION_CONTROLLER_V1_LIVE_ACCEPTANCE=PASS', flush=True)
           PY
