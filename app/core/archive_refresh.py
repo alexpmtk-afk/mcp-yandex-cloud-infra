@@ -223,3 +223,8 @@ async def enqueue_refresh_cycle(
         "scheduled": True,
         "refresh_generation": generation,
     }
+
+
+from .archive_refresh_advertising import install_advertising_coverage_planner
+
+install_advertising_coverage_planner()
