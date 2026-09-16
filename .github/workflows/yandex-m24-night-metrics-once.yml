@@ -1,0 +1,119 @@
+name: Yandex M24 overnight metrics once
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/yandex-m24-night-metrics-once.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  metrics:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    env:
+      YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+      FOLDER_ID: b1g00gqb66tbnfoumnkv
+      CONTAINER_ID: bbamdg0po6fkukhod2e9
+    steps:
+      - name: Install yc and authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl --fail --silent --show-error -o "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create m24-night-audit || true
+          yc config set service-account-key "$KEY_FILE"
+          yc config set cloud-id "$YC_CLOUD_ID"
+          TOKEN="$(yc iam create-token)"
+          echo "::add-mask::$TOKEN"
+          echo "IAM_TOKEN=$TOKEN" >> "$GITHUB_ENV"
+
+      - name: Read overnight Monitoring series
+        shell: bash
+        run: |
+          set -euo pipefail
+          FROM='2026-09-15T00:00:00Z'
+          TO='2026-09-16T05:35:00Z'
+          mkdir -p "$RUNNER_TEMP/metrics"
+          read_metric() {
+            local name="$1" query="$2"
+            jq -nc --arg q "$query" --arg f "$FROM" --arg t "$TO" '{query:$q,fromTime:$f,toTime:$t,downsampling:{maxPoints:"3000",gridAggregation:"AVG",gapFilling:"NONE"}}' > "$RUNNER_TEMP/metrics/body.json"
+            curl -sS --fail-with-body -X POST "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=$FOLDER_ID" -H "Authorization: Bearer $IAM_TOKEN" -H 'Content-Type: application/json' --data @"$RUNNER_TEMP/metrics/body.json" > "$RUNNER_TEMP/metrics/$name.json"
+          }
+          read_metric started 'serverless.containers.started_per_second{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}'
+          read_metric exec_sum 'serverless.containers.execution_time_milliseconds_sum{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}'
+          read_metric exec_count 'serverless.containers.execution_time_milliseconds_count{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}'
+          read_metric errors 'serverless.containers.errors_per_second{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}'
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          from datetime import datetime, timezone, timedelta
+          p=Path(os.environ['RUNNER_TEMP'])/'metrics'
+          def load(n): return json.loads((p/f'{n}.json').read_text())
+          def points(doc):
+              out=[]
+              for m in doc.get('metrics',[]):
+                  ts=(m.get('timeseries') or {}).get('timestamps') or []
+                  vals=(m.get('timeseries') or {}).get('doubleValues')
+                  if vals is None: vals=(m.get('timeseries') or {}).get('int64Values') or []
+                  for t,v in zip(ts,vals): out.append((float(t)/1000,float(v)))
+              return sorted(out)
+          def integrate_rate(pts):
+              total=0.0
+              hourly={}
+              for i in range(1,len(pts)):
+                  t0,v0=pts[i-1]; t1,v1=pts[i]
+                  dt=max(0,t1-t0); val=(v0+v1)*0.5*dt; total+=val
+                  mid=(t0+t1)/2
+                  d=datetime.fromtimestamp(mid,timezone.utc)+timedelta(hours=3)
+                  key=d.strftime('%Y-%m-%d %H:00 MSK')
+                  hourly[key]=hourly.get(key,0)+val
+              return total,hourly
+          def counter_delta(pts):
+              total=0.0; hourly={}
+              for i in range(1,len(pts)):
+                  t0,v0=pts[i-1]; t1,v1=pts[i]
+                  dv=v1-v0 if v1>=v0 else max(v1,0)
+                  total+=max(dv,0)
+                  d=datetime.fromtimestamp(t1,timezone.utc)+timedelta(hours=3)
+                  key=d.strftime('%Y-%m-%d %H:00 MSK')
+                  hourly[key]=hourly.get(key,0)+max(dv,0)
+              return total,hourly
+          started=points(load('started')); exec_sum=points(load('exec_sum')); exec_count=points(load('exec_count')); errors=points(load('errors'))
+          starts_total, starts_h=integrate_rate(started)
+          err_total, err_h=integrate_rate(errors)
+          ms_total, ms_h=counter_delta(exec_sum)
+          count_total, count_h=counter_delta(exec_count)
+          keys=sorted(set(starts_h)|set(ms_h)|set(count_h)|set(err_h))
+          print('=== M24_OVERNIGHT_SUMMARY ===')
+          print(json.dumps({'period_utc':['2026-09-15T00:00:00Z','2026-09-16T05:35:00Z'],'container_id':os.environ['CONTAINER_ID'],'estimated_starts':round(starts_total,2),'execution_counter_count_delta':round(count_total,2),'execution_time_ms_delta':round(ms_total,2),'execution_hours':round(ms_total/3600000,4),'estimated_errors':round(err_total,2)},ensure_ascii=False))
+          print('=== HOURLY_MSK_NONZERO ===')
+          for k in keys:
+              s=starts_h.get(k,0); ms=ms_h.get(k,0); c=count_h.get(k,0); e=err_h.get(k,0)
+              if s>0.01 or ms>0 or c>0 or e>0.01:
+                  print(json.dumps({'hour':k,'starts_est':round(s,2),'exec_count_delta':round(c,2),'exec_seconds':round(ms/1000,2),'errors_est':round(e,2)},ensure_ascii=False))
+          PY
+
+      - name: Verify timer and container configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless trigger get a1s4ho32v7dha59aeu60 --format json | jq '{id,name,status,created_at,rule}'
+          yc serverless container get "$CONTAINER_ID" --format json | jq '{id,name,status,created_at}'
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/metrics" "$RUNNER_TEMP/yc"
