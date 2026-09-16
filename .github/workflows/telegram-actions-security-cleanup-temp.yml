@@ -1,0 +1,33 @@
+name: Telegram Actions Security Cleanup Temp
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-actions-security-cleanup-temp.yml]
+permissions:
+  actions: write
+  contents: read
+jobs:
+  cleanup:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Cancel unsafe test runs and delete exposed logs
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          repo="${GITHUB_REPOSITORY}"
+          for run in 35080371127 35080560841; do
+            gh api --method POST "repos/$repo/actions/runs/$run/cancel" >/dev/null 2>&1 || true
+          done
+          for i in 1 2 3 4 5 6; do
+            s1="$(gh api "repos/$repo/actions/runs/35080371127" --jq '.status' 2>/dev/null || echo unknown)"
+            s2="$(gh api "repos/$repo/actions/runs/35080560841" --jq '.status' 2>/dev/null || echo unknown)"
+            if [ "$s1" = completed ] && [ "$s2" = completed ]; then break; fi
+            sleep 3
+          done
+          for run in 35077774978 35080371127 35080560841; do
+            gh api --method DELETE "repos/$repo/actions/runs/$run/logs" >/dev/null 2>&1 || true
+          done
+          echo TEST_RUNS_SECURITY_CLEANUP_DONE
