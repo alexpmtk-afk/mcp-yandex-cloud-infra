@@ -1,0 +1,55 @@
+name: Yandex billing exact audit once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/yandex-billing-exact-audit-once.yml']
+permissions:
+  contents: read
+jobs:
+  billing:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSLo "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          K="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$K"
+          chmod 600 "$K"
+          yc config profile create billing-exact || true
+          yc config profile activate billing-exact
+          yc config set service-account-key "$K"
+      - name: Resource usage report Sep 15-16
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc billing consumption-core get-resource-usage-report d01fl7g1trd2i5d8l7r6 \
+            --start-date 2026-09-15T00:00:00Z \
+            --end-date 2026-09-16T23:59:59Z \
+            --aggregation-period day --format json | tee "$RUNNER_TEMP/resource.json"
+      - name: Service usage report Sep 15-16
+        shell: bash
+        run: |
+          set -euo pipefail
+          sleep 65
+          yc billing consumption-core get-service-usage-report d01fl7g1trd2i5d8l7r6 \
+            --start-date 2026-09-15T00:00:00Z \
+            --end-date 2026-09-16T23:59:59Z \
+            --aggregation-period day --format json | tee "$RUNNER_TEMP/service.json"
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
