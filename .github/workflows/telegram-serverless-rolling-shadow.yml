@@ -55,7 +55,7 @@ jobs:
           echo "$chats_raw" | jq -e '.chat_count==9 and (.chats|length)==9' >/dev/null
 
           work="$RUNNER_TEMP/tg-shadow"
-          mkdir -p "$work/pages"
+          mkdir -p "$work"
           : > "$work/messages.ndjson"
           : > "$work/chats.ndjson"
 
@@ -106,10 +106,30 @@ jobs:
             .window_hours==192 and
             (.allowed_chats|length)==9 and
             .message_count==(.messages|length) and
-            ([.messages[]|[.chat_id,.message_id]]|length)==([.messages[]|[.chat_id,.message_id]]|unique|length) and
-            ([.messages[]|select(.datetime < $from or .datetime > $to)]|length)==0
-          ' --arg from "$date_from" --arg to "$date_to" "$work/output.json" >/dev/null
+            ([.messages[]|[.chat_id,.message_id]]|length)==([.messages[]|[.chat_id,.message_id]]|unique|length)
+          ' "$work/output.json" >/dev/null
           jq -e '[.messages[]|select(.chat_id==-1001343028414)]|length>=1' "$work/output.json" >/dev/null
+
+          python - "$work/output.json" "$date_from" "$date_to" <<'PY'
+          import json, sys
+          from datetime import datetime, timezone
+
+          path, low_raw, high_raw = sys.argv[1:]
+          def dt(value):
+              value = value.replace('Z', '+00:00')
+              parsed = datetime.fromisoformat(value)
+              if parsed.tzinfo is None:
+                  parsed = parsed.replace(tzinfo=timezone.utc)
+              return parsed.astimezone(timezone.utc)
+
+          low, high = dt(low_raw), dt(high_raw)
+          data = json.load(open(path, encoding='utf-8'))
+          for row in data['messages']:
+              moment = dt(row['datetime'])
+              if not (low <= moment <= high):
+                  raise SystemExit(f"message outside rolling window: {row['chat_id']}/{row['message_id']}")
+          print('SERVERLESS_ROLLING_RANGE_VALIDATION_PASS')
+          PY
 
           mkdir -p telegram-news-reader/export
           cp "$work/output.json" telegram-news-reader/export/TELEGRAM_NEWS_LATEST_SERVERLESS_SHADOW.json
@@ -127,18 +147,17 @@ jobs:
             echo SERVERLESS_ROLLING_SHADOW_NO_CHANGE
             exit 0
           fi
+          git commit -m "chore: update Telegram serverless rolling shadow"
           for attempt in 1 2 3; do
             git fetch origin main
-            git rebase origin/main
-            git add "$file"
-            git commit -m "chore: update Telegram serverless rolling shadow" || true
-            if git push origin HEAD:main; then
+            if git rebase origin/main && git push origin HEAD:main; then
               echo SERVERLESS_ROLLING_SHADOW_PUBLISH_PASS
               exit 0
             fi
-            git reset --soft HEAD~1 || true
+            git rebase --abort >/dev/null 2>&1 || true
             sleep 2
           done
+          echo SERVERLESS_ROLLING_SHADOW_PUBLISH_FAILED
           exit 1
       - name: Cleanup local credentials
         if: always()
