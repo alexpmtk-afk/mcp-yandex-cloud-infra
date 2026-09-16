@@ -1,0 +1,70 @@
+name: Telegram Lockbox Explicit Version Test
+on:
+  push:
+    paths:
+      - '.github/workflows/telegram-lockbox-explicit-version-test.yml'
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-lockbox-version-test || true
+          yc config profile activate tg-lockbox-version-test
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+      - name: Inspect secret bindings and resolve active version
+        shell: bash
+        run: |
+          set -euo pipefail
+          sid=e6qnt0bt655jltrr5sid
+          echo '=== SECRET BINDINGS ==='
+          yc lockbox secret list-access-bindings "$sid" || true
+          meta="$(yc lockbox secret get "$sid" --format json)"
+          vid="$(printf '%s' "$meta" | jq -r '.current_version.id // .currentVersion.id // .current_version_id // .currentVersionId // empty')"
+          if [ -z "$vid" ]; then
+            vid="$(yc lockbox secret list-versions "$sid" --format json | jq -r '.[0].id // empty')"
+          fi
+          test -n "$vid"
+          echo "VERSION_ID=$vid" >> "$GITHUB_ENV"
+          echo ACTIVE_VERSION_RESOLVED
+      - name: Deploy with one secret and explicit version
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --folder-id b1gk4p83brasi8g811jv \
+            --container-name telegram-reader-serverless-smoke \
+            --runtime http \
+            --image cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:serverless-reader-b5322b029103 \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id ajeaad0m00gncv22tagf \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment OBJECT_STORAGE_ENABLED=false \
+            --secret environment-variable=TELEGRAM_API_ID,id=e6qnt0bt655jltrr5sid,version-id="$VERSION_ID",key=TELEGRAM_API_ID
+          echo EXPLICIT_VERSION_ONE_SECRET_DEPLOY_PASS
+      - name: Cleanup local key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
