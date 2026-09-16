@@ -1,0 +1,174 @@
+name: Marketplaces Source Router Acceptance
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows:
+      - Deploy Marketplaces MCP TEST
+    types:
+      - completed
+
+permissions:
+  contents: read
+
+jobs:
+  accept:
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 15
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          ok=0
+          for attempt in $(seq 1 8); do
+            if timeout 75s wget --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              rm -f "$ARCHIVE"
+            fi
+            sleep 4
+          done
+          test "$ok" = 1
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate and resolve TEST endpoint
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create source-router-acceptance || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output | jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty')"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          test -n "$SECRET_ID"; test -n "$VERSION_ID"; test -n "$DOMAIN"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          printf '%s' "https://${DOMAIN}/mcp" > "$RUNNER_TEMP/mcp-url"
+
+      - name: Accept top-level source routing on live TEST MCP
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          export MCP_URL="$(cat "$RUNNER_TEMP/mcp-url")"
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -u - <<'PY'
+          import itertools, json, os
+          import httpx
+
+          def unpack(response):
+              response.raise_for_status()
+              for line in response.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return response.json() if response.text.strip() else None
+
+          headers = {
+              'Authorization': 'Bearer ' + os.environ['MCP_BEARER'],
+              'Accept': 'application/json, text/event-stream',
+              'Content-Type': 'application/json',
+          }
+          ids = itertools.count(1)
+          with httpx.Client(timeout=45.0, follow_redirects=True) as client:
+              response = client.post(os.environ['MCP_URL'], headers=headers, json={
+                  'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
+                      'protocolVersion':'2025-06-18','capabilities':{},
+                      'clientInfo':{'name':'source-router-acceptance','version':'1'}
+                  }
+              })
+              init = unpack(response); assert init and 'result' in init, init
+              instructions = init['result'].get('instructions','')
+              assert 'marketplace_query_plan as the first server-side planning step' in instructions, instructions
+              session = response.headers.get('mcp-session-id')
+              if session: headers['Mcp-Session-Id'] = session
+              headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
+              note = client.post(os.environ['MCP_URL'], headers=headers, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              assert note.status_code in (200,202), note.status_code
+
+              def rpc(method, params=None):
+                  r = client.post(os.environ['MCP_URL'], headers=headers, json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  data = unpack(r); assert data and 'result' in data, (method, data)
+                  return data['result']
+
+              def call(name, args):
+                  result = rpc('tools/call', {'name':name,'arguments':args})
+                  assert not result.get('isError'), (name, result)
+                  text = next(x.get('text') for x in result.get('content',[]) if x.get('type') == 'text')
+                  return json.loads(text)
+
+              names = {tool['name'] for tool in rpc('tools/list')['tools']}
+              assert 'marketplace_query_plan' in names, sorted(names)
+              system_map = call('marketplace_system_map', {})
+              router = system_map['request_source_router']
+              assert router['status'] == 'FOUNDATION_V1', router
+              assert router['source_revision'].endswith('700ee1d87c77a66e5e908a72998da2194d7f17a8'), router
+              assert router['availability_facts']['wb_orders_historical_archive'] is False, router
+              assert router['availability_facts']['wb_stock_historical_archive'] is False, router
+
+              current_stock = call('marketplace_query_plan', {
+                  'question':'Сколько остатков сейчас на Wildberries?',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-09-16','date_to':'2026-09-16'
+              })
+              assert current_stock['source_family'] == 'LIVE_CABINET_API', current_stock
+              assert current_stock['source_status'] == 'AVAILABLE', current_stock
+
+              historical_stock = call('marketplace_query_plan', {
+                  'question':'Сколько остатков было 1 сентября?',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-09-01','date_to':'2026-09-01'
+              })
+              assert historical_stock['source_family'] == 'UNAVAILABLE', historical_stock
+              assert historical_stock['source_status'] == 'HISTORICAL_SOURCE_ABSENT', historical_stock
+
+              recent_orders = call('marketplace_query_plan', {
+                  'question':'Сколько заказов было в августе?',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-08-01','date_to':'2026-08-31'
+              })
+              assert recent_orders['source_family'] == 'LIVE_CABINET_API', recent_orders
+              assert recent_orders['source_status'] == 'AVAILABLE_WITH_LIMITATION', recent_orders
+              assert recent_orders['availability_facts']['orders_historical_archive'] is False, recent_orders
+
+              old_orders = call('marketplace_query_plan', {
+                  'question':'Сколько заказов было в январе?',
+                  'marketplace':'wb','seller':'wb_novokshenov',
+                  'date_from':'2026-01-01','date_to':'2026-01-31'
+              })
+              assert old_orders['source_family'] == 'UNAVAILABLE', old_orders
+              assert old_orders['source_status'] == 'NO_VERIFIED_ARCHIVE_HISTORY', old_orders
+
+              public_rules = call('marketplace_query_plan', {
+                  'question':'Какие сейчас официальные правила Wildberries для продавцов?'
+              })
+              assert public_rules['source_family'] == 'PUBLIC_MARKETPLACE_SOURCE', public_rules
+              assert public_rules['source_status'] == 'NOT_CONNECTED_ON_DEMAND', public_rules
+
+              internal = call('marketplace_query_plan', {
+                  'question':'Какие данные есть в базе и какие источники сейчас доступны?'
+              })
+              assert internal['source_family'] == 'SYSTEM_INTERNAL', internal
+              print('MARKETPLACE_SOURCE_ROUTER_LIVE_ACCEPTANCE=PASS', flush=True)
+          PY
