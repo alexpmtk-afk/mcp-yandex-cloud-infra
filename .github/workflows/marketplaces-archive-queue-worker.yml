@@ -6,8 +6,11 @@ on:
     branches: [main]
     paths:
       - .github/workflows/control/run-marketplaces-archive-queue-worker.txt
+  # Keep the 5-minute cadence, but stagger away from minute 00 where GitHub
+  # documents the highest scheduled-workflow load. Rewriting this schedule on
+  # main also re-registers the workflow after the archive cron was restored.
   schedule:
-    - cron: '*/5 * * * *'
+    - cron: '2-57/5 * * * *'
 
 permissions:
   contents: read
