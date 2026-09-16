@@ -4,6 +4,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from telethon import TelegramClient, connection
+from telethon.sessions import StringSession
 
 from app.config import Settings
 from app.errors import AuthorizationRequired
@@ -22,7 +23,8 @@ class TelegramReader:
     def __init__(self, settings: Settings, whitelist: Whitelist | None = None):
         self.settings = settings
         self.whitelist = whitelist or Whitelist(settings.whitelist_path)
-        Path(settings.session_path).parent.mkdir(parents=True, exist_ok=True)
+        if not settings.session_string:
+            Path(settings.session_path).parent.mkdir(parents=True, exist_ok=True)
         self.relay = (
             WebSocketRelayAdapter(
                 settings.ws_relay_url,
@@ -38,8 +40,9 @@ class TelegramReader:
             kwargs["proxy"] = self.relay.mtproxy_tuple()
         else:
             kwargs["proxy"] = settings.telethon_proxy()
+        session = StringSession(settings.session_string) if settings.session_string else str(settings.session_path)
         self.client = TelegramClient(
-            str(settings.session_path),
+            session,
             settings.api_id,
             settings.api_hash,
             **kwargs,
