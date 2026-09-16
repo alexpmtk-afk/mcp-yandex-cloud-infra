@@ -1,1 +1,1 @@
-2026-09-15T18:28:00+03:00 read-only durable Laser state before Bridge v1 finalization continuation
+2026-09-16 read-only durable Laser state after telemetry runtime deploy; inspect report 751229976 resumable checkpoint only
