@@ -122,7 +122,7 @@ _ROUTER_MAP = {
             "formula_policy": "server-owned registered inputs and operation only; client-authored formulas are forbidden",
             "scope_policy": "marketplace, seller, date_from and date_to alignment are mandatory",
             "coverage_policy": "every input declares a real required coverage gate",
-            "currency_policy": "EXPLICIT_ONLY; implicit conversion is forbidden",
+            "currency_policy": "EXPLICIT_ONLY",
             "zero_denominator_policy": "ratio contracts must explicitly choose BLOCK or RETURN_NULL",
             "provenance_required": True,
         },
