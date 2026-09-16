@@ -1,0 +1,65 @@
+name: Telegram Serverless Deploy Isolation
+on:
+  push:
+    paths:
+      - '.github/workflows/telegram-serverless-deploy-isolation.yml'
+permissions:
+  contents: read
+jobs:
+  isolate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-deploy-isolation || true
+          yc config profile activate tg-deploy-isolation
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+      - name: Inspect relevant IAM metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo '=== RUNTIME SA BINDINGS ==='
+          yc iam service-account list-access-bindings ajeaad0m00gncv22tagf || true
+          echo '=== REGISTRY BINDINGS ==='
+          yc container registry list-access-bindings crphagvid8e8g5pp4fpe || true
+          echo '=== CONTAINER BINDINGS ==='
+          cid="$(yc serverless container list --format json | jq -r '.[] | select(.name=="telegram-reader-serverless-smoke") | .id' | head -n1)"
+          if [ -n "$cid" ]; then yc serverless container list-access-bindings "$cid" || true; fi
+      - name: Deploy same image without Lockbox secrets
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --folder-id b1gk4p83brasi8g811jv \
+            --container-name telegram-reader-serverless-smoke \
+            --runtime http \
+            --image cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:serverless-reader-b5322b029103 \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id ajeaad0m00gncv22tagf \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment OBJECT_STORAGE_ENABLED=false
+          echo DEPLOY_WITHOUT_SECRETS_PASS
+      - name: Cleanup local key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
