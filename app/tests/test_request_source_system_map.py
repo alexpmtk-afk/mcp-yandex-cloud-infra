@@ -101,6 +101,13 @@ def test_calculation_registry_v1_is_exposed_with_exact_app_provenance():
     assert registry["provenance_required"] is True
 
 
+def test_registry_technical_version_is_system_map_contract_not_instruction_literal():
+    join = SYSTEM_MAP["request_source_router"]["join_controller"]
+    assert join["calculation_contract_version"] == "marketplace_calculation_contract.v1"
+    assert "Calculation Contract Registry V1" in SYSTEM_INSTRUCTIONS
+    assert "Client-authored formulas and implicit currency conversion are forbidden" in SYSTEM_INSTRUCTIONS
+
+
 def test_system_instructions_keep_registry_validation_separate_from_execution():
     assert "Calculation Contract Registry V1 is the server-owned gate" in SYSTEM_INSTRUCTIONS
     assert "Client-authored formulas and implicit currency conversion are forbidden" in SYSTEM_INSTRUCTIONS

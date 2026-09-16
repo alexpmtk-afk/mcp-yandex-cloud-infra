@@ -167,7 +167,6 @@ jobs:
               assert 'marketplace_join_control' in instructions, instructions
               assert 'Join Controller V1' in instructions, instructions
               assert 'Join permission and arithmetic permission are separate' in instructions, instructions
-              assert 'marketplace_calculation_contract' in instructions, instructions
               assert 'Calculation Contract Registry V1' in instructions, instructions
               assert 'Client-authored formulas and implicit currency conversion are forbidden' in instructions, instructions
               session = response.headers.get('mcp-session-id')
