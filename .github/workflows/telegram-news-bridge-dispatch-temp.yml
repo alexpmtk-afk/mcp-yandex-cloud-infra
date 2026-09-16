@@ -1,0 +1,24 @@
+name: Telegram News Bridge Dispatch Temp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/telegram-news-bridge-dispatch-temp.yml
+
+permissions:
+  actions: write
+  contents: read
+
+jobs:
+  dispatch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Dispatch production rolling workflow
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh workflow run telegram-news-bridge.yml --ref main
+          echo TELEGRAM_PRODUCTION_ROLLING_DISPATCH_PASS
