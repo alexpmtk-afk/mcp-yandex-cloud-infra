@@ -9,7 +9,7 @@ from core.system_map import ARCHITECTURE_VERSION, SYSTEM_INSTRUCTIONS, SYSTEM_MA
 
 
 def test_canonical_map_fixes_storage_boundaries():
-    assert ARCHITECTURE_VERSION == "2026-09-15.v17"
+    assert ARCHITECTURE_VERSION == "2026-09-16.v19"
     assert SYSTEM_MAP["status"] == "CANONICAL"
     assert SYSTEM_MAP["runtime"]["cloud"] == "Yandex Cloud only"
     storage = SYSTEM_MAP["storage_policy"]
@@ -62,23 +62,46 @@ def test_archive_is_multi_dataset_and_finance_is_not_advertising():
     assert SYSTEM_MAP["data_routing_policy"]["canonical_business_query_tool"] == "marketplace_business_query"
 
 
-def test_semantic_core_includes_advertising_and_keeps_fail_closed_boundaries():
+def test_semantic_core_includes_operational_and_advertising_boundaries():
     semantic = SYSTEM_MAP["semantic_core"]
     assert semantic["status"] == "TEST_RUNTIME_WIRED"
     assert semantic["runtime_entry"] == "marketplace_business_query"
     assert "semantic_registry_extensions.yaml" in semantic["registry"]
     assert "core/semantic_advertising.py" in semantic["archive_executor"]
-    assert semantic["source_revision"].endswith("833eab826bfaa4691a05a21a5d00f1e8e0ba1b37")
+    assert "core/business_query_parser.py" in semantic["business_query_parser"]
+    assert "core/semantic_current_stock.py" in semantic["operational_executor"]
+    assert set(semantic["approved_operational_business_metrics"]) == {"ORDERS", "CURRENT_STOCK"}
+    assert "Seller Analytics" in semantic["current_stock_source"]
+    assert "warehouse-remains" in semantic["current_stock_source"]
+    assert semantic["source_revision"].endswith("303b7f6e732e8c6b0047ab4e81c43169acd6f040")
     assert "advertising_performance" in semantic["approved_archive_executors"]
     assert "FULL_COVERAGE" in semantic["execution_gate"]
+    assert any("historical stock" in item for item in semantic["fail_closed_for"])
     assert any("product/nm_id" in item for item in semantic["fail_closed_for"])
     assert any("campaign-scoped" in item for item in semantic["fail_closed_for"])
     assert any("current-day advertising" in item for item in semantic["fail_closed_for"])
     assert any("roster/fullstats FULL_COVERAGE" in item for item in semantic["fail_closed_for"])
     assert "advertising-attribution" in semantic["advertising_guardrail"]
     assert "agencyVat" in semantic["schema_drift_policy"]
+    assert "operational business metric" in semantic["question_policy"]["current_state_precedence"]
+    assert "CURRENT_STOCK" in semantic["runtime_integration"]
     assert SYSTEM_MAP["change_control"]["bypass_semantic_guardrails"] == "FORBIDDEN"
     assert SYSTEM_MAP["change_control"]["bypass_full_coverage_gate"] == "FORBIDDEN"
+
+
+def test_current_stock_routing_is_current_only():
+    semantic = SYSTEM_MAP["semantic_core"]
+    rules = "\n".join(semantic["operational_rules"])
+    assert "ORDERS" in rules
+    assert "CURRENT_STOCK" in rules
+    assert "seller-aware" in rules
+    assert "warehouse-remains" in rules
+    assert "past-date stock request fails closed" in rules
+    assert "generic current-state marker" in rules
+    routing = SYSTEM_MAP["routing_policy"]["current_stock"]
+    assert "current WB Seller Analytics stock snapshot" in routing
+    assert "historical stock dates" in routing
+    assert "today's snapshot" in routing
 
 
 def test_wb_advertising_live_and_archive_boundaries_are_explicit():
@@ -108,6 +131,7 @@ def test_server_instructions_contain_hard_boundaries():
         "marketplace_business_query", "Semantic Core", "FULL_COVERAGE", "orderDt/orderUid",
         "dlvPrc", "agencyVat", "marketplace_metric_route", "Advertising Archive V1",
         "wb_ads_m0.v1", "Product/nm_id", "actual business profit", "fail closed",
+        "CURRENT_STOCK", "warehouse-remains", "Statistics Orders",
     ):
         assert required in SYSTEM_INSTRUCTIONS
 
