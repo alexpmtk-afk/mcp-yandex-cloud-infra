@@ -30,4 +30,4 @@ ENV TELEGRAM_SESSION_PATH=/state/telegram_news \
     TELEGRAM_WHITELIST_PATH=/app/config/allowed_chats.yaml
 
 EXPOSE 8080
-CMD ["uvicorn", "app.service:app", "--host", "0.0.0.0", "--port", "8080", "--workers", "1"]
+CMD ["python", "-m", "app.serverless_bootstrap"]
