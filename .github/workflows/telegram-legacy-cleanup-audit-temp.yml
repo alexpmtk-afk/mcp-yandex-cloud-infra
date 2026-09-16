@@ -34,45 +34,53 @@ jobs:
           key="$RUNNER_TEMP/yc-key.json"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
           chmod 600 "$key"
-          yc config profile create telegram-cleanup-audit || true
-          yc config profile activate telegram-cleanup-audit
+          yc config profile create telegram-post-cleanup-audit || true
+          yc config profile activate telegram-post-cleanup-audit
           yc config set service-account-key "$key"
           yc config set folder-id b1gk4p83brasi8g811jv
 
-      - name: Audit Telegram legacy resources
+      - name: Assert final Telegram cloud state
         shell: bash
         run: |
           set -euo pipefail
           folder=b1gk4p83brasi8g811jv
-          builder_boot=fhmrot9tje8e7pg7teqb
+          prod_vm=fhm7p41jpj4uc2c6buou
           prod_boot=fhm3d8hhmujlu7akkstn
           state_disk=fhm6hcjd5blbrbg8oine
+          builder_vm=fhm4dcokf4herjhn8aiv
+          builder_disk=fhmrot9tje8e7pg7teqb
+          builder_subnet=e9b8k00chkpj4dd11uui
+          builder_rt=enpgequlsevs5jl4gtl6
+          builder_gw=enpkq16qa4ismtl2lap5
+          old_address=e9bv4ec7lo22sahplcpj
 
-          echo '=== INSTANCES ==='
-          yc compute instance list --folder-id "$folder" --format json | jq -c '[.[] | select((.name // "")|startswith("telegram")) | {id,name,status,boot_disk:(.boot_disk.disk_id // null),secondary_disks:[.secondary_disks[]?.disk_id],network_interfaces:[.network_interfaces[]? | {subnet_id,primary_v4_address:(.primary_v4_address.address // null),one_to_one_nat_address:(.primary_v4_address.one_to_one_nat.address // null)}]}]'
+          vm="$(yc compute instance get --id "$prod_vm" --folder-id "$folder" --format json)"
+          echo "$vm" | jq -e --arg s "$state_disk" --arg b "$prod_boot" '.name=="telegram-news-reader" and .status=="STOPPED" and .boot_disk.disk_id==$b and any(.secondary_disks[]?; .disk_id==$s) and ((.network_interfaces[0].primary_v4_address.one_to_one_nat.address // "")=="")' >/dev/null
+          state="$(yc compute disk get --id "$state_disk" --folder-id "$folder" --format json)"
+          echo "$state" | jq -e '.name=="telegram-reader-state" and .status=="READY" and .size=="10737418240"' >/dev/null
+          yc compute disk get --id "$prod_boot" --folder-id "$folder" >/dev/null
 
-          echo '=== TELEGRAM DISKS BY ATTACHED IDS ==='
-          yc compute disk list --folder-id "$folder" --format json | jq -c --arg a "$builder_boot" --arg b "$prod_boot" --arg c "$state_disk" '[.[] | select(.id==$a or .id==$b or .id==$c) | {id,name,status,size,type_id,instance_ids:(.instance_ids // [])}]'
+          ! yc vpc address get --id "$old_address" --folder-id "$folder" >/dev/null 2>&1
+          ! yc compute instance get --id "$builder_vm" --folder-id "$folder" >/dev/null 2>&1
+          ! yc compute disk get --id "$builder_disk" --folder-id "$folder" >/dev/null 2>&1
+          ! yc vpc subnet get --id "$builder_subnet" --folder-id "$folder" >/dev/null 2>&1
+          ! yc vpc route-table get --id "$builder_rt" --folder-id "$folder" >/dev/null 2>&1
+          ! yc vpc gateway get --id "$builder_gw" --folder-id "$folder" >/dev/null 2>&1
 
-          echo '=== ADDRESSES ==='
-          yc vpc address list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,reserved,used,external_ipv4_address:(.external_ipv4_address.address // null),zone_id:(.external_ipv4_address.zone_id // null)}]'
+          for name in telegram-relay-serverless-smoke telegram-reader-serverless-cutover-test telegram-reader-serverless-smoke; do
+            ! yc serverless container get "$name" --folder-id "$folder" >/dev/null 2>&1
+          done
+          yc serverless container get telegram-reader-serverless --folder-id "$folder" >/dev/null
+          yc serverless container get telegram-reader-media --folder-id "$folder" >/dev/null
 
-          echo '=== NAT GATEWAYS ==='
-          yc vpc gateway list --folder-id "$folder" --format json | jq -c '[.[] | {id,name}]'
+          sg="$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json)"
+          ! echo "$sg" | jq -e 'any(.rules[]?; .id=="enpbefq221lqv8qh15h9" or .description=="telegram-builder-internal-ssh")' >/dev/null
 
-          echo '=== ROUTE TABLES ==='
-          yc vpc route-table list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,network_id,static_routes}]'
-
-          echo '=== SUBNETS ==='
-          yc vpc subnet list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,network_id,route_table_id,v4_cidr_blocks}]'
-
-          echo '=== SERVERLESS CONTAINERS ==='
-          yc serverless container list --folder-id "$folder" --format json | jq -c '[.[] | select((.name // "")|startswith("telegram")) | {id,name,url,created_at}]'
-
-          echo '=== SECURITY GROUP TELEGRAM RULES ==='
-          yc vpc security-group list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,rules:[.rules[]? | select((.description // "")|contains("telegram")) | {id,description,direction,ports,protocol_name,v4_cidr_blocks}]} | select((.rules|length)>0)]'
-
-          echo TELEGRAM_LEGACY_CLEANUP_AUDIT_PASS
+          echo POST_CLEANUP_NO_STATIC_IP_PASS
+          echo POST_CLEANUP_NO_BUILDER_PASS
+          echo POST_CLEANUP_NO_TEST_CONTAINERS_PASS
+          echo POST_CLEANUP_ROLLBACK_STATE_PRESERVED_PASS
+          echo TELEGRAM_POST_CLEANUP_AUDIT_PASS
 
       - name: Cleanup credential file
         if: always()
