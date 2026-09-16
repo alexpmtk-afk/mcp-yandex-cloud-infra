@@ -1,0 +1,210 @@
+name: Telegram Serverless Media Fix Smoke
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-serverless-media-fix-smoke.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-serverless-media-fix-smoke
+  cancel-in-progress: false
+
+jobs:
+  fix-and-smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-media-fix || true
+          yc config profile activate tg-media-fix
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Grant media SA pull access to the exact registry
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          media_sa="$(yc iam service-account list --folder-id "$folder" --format json | jq -r '.[] | select(.name=="telegram-reader-media-proxy") | .id' | head -1)"
+          test -n "$media_sa"
+          yc container registry add-access-binding crphagvid8e8g5pp4fpe \
+            --role container-registry.images.puller \
+            --service-account-id "$media_sa" >/dev/null
+          echo "MEDIA_SA=$media_sa" >> "$GITHUB_ENV"
+          echo REGISTRY_PULLER_PASS
+
+      - name: Deploy and verify public media-only revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          media_secret="$(yc lockbox secret list --folder-id "$folder" --format json | jq -r '.[] | select(.name=="telegram-reader-media-runtime") | .id' | head -1)"
+          test -n "$media_secret"
+          image='cr.yandex/crphagvid8e8g5pp4fpe/telegram-reader-media:media-ebe405f2765d'
+          yc serverless container revision deploy \
+            --folder-id "$folder" \
+            --container-name telegram-reader-media \
+            --runtime http \
+            --image "$image" \
+            --cores 1 \
+            --memory 256MB \
+            --concurrency 4 \
+            --execution-timeout 30s \
+            --service-account-id "$MEDIA_SA" \
+            --environment LOCKBOX_MEDIA_SECRET_ID="$media_secret" >/dev/null
+          yc serverless container allow-unauthenticated-invoke telegram-reader-media --folder-id "$folder" >/dev/null
+          media_url="$(yc serverless container get telegram-reader-media --folder-id "$folder" --format json | jq -r '.url')"
+          media_url="${media_url%/}"
+          test -n "$media_url" && test "$media_url" != null
+          echo "MEDIA_URL=$media_url" >> "$GITHUB_ENV"
+          ok=0
+          for attempt in $(seq 1 18); do
+            code="$(curl -sS --max-time 15 -o "$RUNNER_TEMP/media-health.json" -w '%{http_code}' "$media_url/health" || true)"
+            if [ "$code" = 200 ] && jq -e '.status=="ok" and .media_storage=="enabled"' "$RUNNER_TEMP/media-health.json" >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+          invalid="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$media_url/media/object?key=x&expires=1&sig=x")"
+          internal="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$media_url/internal/chats")"
+          test "$invalid" = 403
+          test "$internal" = 404
+          echo MEDIA_PUBLIC_BOUNDARY_PASS
+
+      - name: Merge media settings into the existing Reader Lockbox payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          secret=e6qnt0bt655jltrr5sid
+          token="$(yc iam create-token)"
+          curl -fsS -H "Authorization: Bearer $token" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$secret/payload" \
+            -o "$RUNNER_TEMP/current-reader.json"
+          MEDIA_URL="$MEDIA_URL" python3 - <<'PY' > "$RUNNER_TEMP/merged-reader-payload.json"
+          import json, os
+          src=json.load(open(os.environ['RUNNER_TEMP']+'/current-reader.json', encoding='utf-8'))
+          vals={}
+          for e in src.get('entries',[]):
+              k=str(e.get('key') or '')
+              if k:
+                  vals[k]=str(e.get('textValue') or '')
+          required=['TELEGRAM_API_ID','TELEGRAM_API_HASH','TELEGRAM_SESSION_STRING','TELEGRAM_PROXY_URL','TELEGRAM_PEER_MAP_JSON','READER_API_TOKEN']
+          missing=[k for k in required if not vals.get(k)]
+          if missing:
+              raise SystemExit('refuse partial Lockbox merge: missing '+','.join(missing))
+          vals['TELEGRAM_MEDIA_BUCKET']='telegram-reader-media-alexpmtk-20260910'
+          vals['TELEGRAM_MEDIA_PREFIX']='telegram-media'
+          vals['TELEGRAM_PUBLIC_BASE_URL']=os.environ['MEDIA_URL']
+          print(json.dumps([{'key':k,'text_value':v} for k,v in vals.items()]))
+          PY
+          before_count="$(jq '.entries|length' "$RUNNER_TEMP/current-reader.json")"
+          after_count="$(jq 'length' "$RUNNER_TEMP/merged-reader-payload.json")"
+          test "$after_count" -ge "$before_count"
+          yc lockbox secret add-version "$secret" \
+            --description 'Merge Serverless media settings without dropping Telegram runtime keys' \
+            --payload - < "$RUNNER_TEMP/merged-reader-payload.json" >/dev/null
+          echo "READER_LOCKBOX_KEYS_BEFORE=$before_count"
+          echo "READER_LOCKBOX_KEYS_AFTER=$after_count"
+          echo READER_LOCKBOX_MERGE_PASS
+
+      - name: Deploy private Reader revision with media capture
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          image='cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:media-ebe405f2765d'
+          yc serverless container revision deploy \
+            --folder-id "$folder" \
+            --container-name telegram-reader-serverless-smoke \
+            --runtime http \
+            --image "$image" \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id ajeaad0m00gncv22tagf \
+            --environment LOCKBOX_RUNTIME_SECRET_ID=e6qnt0bt655jltrr5sid \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment TELEGRAM_MEDIA_PATH=/tmp/media \
+            --environment COLLECTOR_ENABLED=false >/dev/null
+          reader_url="$(yc serverless container get telegram-reader-serverless-smoke --folder-id "$folder" --format json | jq -r '.url')"
+          reader_url="${reader_url%/}"
+          token="$(yc iam create-token)"
+          echo "READER_URL=$reader_url" >> "$GITHUB_ENV"
+          echo "IAM_TOKEN=$token" >> "$GITHUB_ENV"
+          ok=0
+          for attempt in $(seq 1 18); do
+            body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$reader_url/health" || true)"
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+          public_code="$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "$reader_url/internal/chats")"
+          test "$public_code" = 401 -o "$public_code" = 403
+          echo PRIVATE_READER_MEDIA_REVISION_PASS
+
+      - name: Capture and fetch one real Telegram media object end-to-end
+        shell: bash
+        run: |
+          set -euo pipefail
+          date_from="$(date -u -d '192 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
+          date_to="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          chats="$(curl -fsS --max-time 30 -H "Authorization: Bearer $IAM_TOKEN" "$READER_URL/internal/chats")"
+          found=''
+          while read -r cid; do
+            page="$(curl -fsS --retry 2 --retry-delay 2 --max-time 110 -H "Authorization: Bearer $IAM_TOKEN" --get \
+              --data-urlencode "date_from=$date_from" --data-urlencode "date_to=$date_to" --data-urlencode 'limit=500' \
+              "$READER_URL/internal/chats/$cid/messages")" || continue
+            row="$(echo "$page" | jq -c '[.messages[] | select(.media_type=="photo" or .media_type=="image" or .media_type=="gif" or .media_type=="animation")][0] // empty')"
+            if [ -n "$row" ]; then found="$row"; break; fi
+          done < <(echo "$chats" | jq -r '.chats[].chat_id')
+          test -n "$found"
+          cid="$(echo "$found" | jq -r '.chat_id')"
+          mid="$(echo "$found" | jq -r '.message_id')"
+          mtype="$(echo "$found" | jq -r '.media_type')"
+          asset="$(curl -fsS --retry 1 --max-time 100 -H "Authorization: Bearer $IAM_TOKEN" --get \
+            --data-urlencode "media_type=$mtype" "$READER_URL/internal/chats/$cid/messages/$mid/media")"
+          echo "$asset" | jq -e '.object_key!=null and (.object_key|length)>0 and .media_url!=null and (.media_url|length)>0 and .preview_object_key!=null and (.preview_object_key|length)>0 and .preview_url!=null and (.preview_url|length)>0' >/dev/null
+          media_url="$(echo "$asset" | jq -r '.media_url')"
+          preview_url="$(echo "$asset" | jq -r '.preview_url')"
+          curl -fsS --max-time 30 "$media_url" -o "$RUNNER_TEMP/media.bin"
+          curl -fsS --max-time 30 "$preview_url" -o "$RUNNER_TEMP/preview.bin"
+          test -s "$RUNNER_TEMP/media.bin"
+          test -s "$RUNNER_TEMP/preview.bin"
+          echo "MEDIA_TEST_CHAT=$cid"
+          echo "MEDIA_TEST_MESSAGE=$mid"
+          echo "MEDIA_TEST_TYPE=$mtype"
+          echo "MEDIA_TEST_BYTES=$(wc -c < "$RUNNER_TEMP/media.bin")"
+          echo "MEDIA_TEST_PREVIEW_BYTES=$(wc -c < "$RUNNER_TEMP/preview.bin")"
+          echo SERVERLESS_MEDIA_E2E_PASS
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/media-health.json" "$RUNNER_TEMP/current-reader.json" "$RUNNER_TEMP/merged-reader-payload.json" "$RUNNER_TEMP/media.bin" "$RUNNER_TEMP/preview.bin"
