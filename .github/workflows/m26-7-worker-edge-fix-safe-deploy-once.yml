@@ -1,17 +1,17 @@
-name: M26.7 Worker Edge Fix Safe Deploy Once
+name: M26.9 First Real Forecast
 
 on:
   push:
     branches: [main]
     paths:
-      - ".github/workflows/m26-7-worker-edge-fix-safe-deploy-once.yml"
+      - "control/run-m26-9-first-real-forecast.txt"
 
 permissions:
   contents: read
   id-token: write
 
 concurrency:
-  group: birzha-m26-7-worker-edge-fix-safe-deploy-once
+  group: birzha-m26-9-first-real-forecast
   cancel-in-progress: false
 
 env:
@@ -19,25 +19,13 @@ env:
   DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
   OIDC_AUDIENCE: https://github.com/alexpmtk-afk
   EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
-  TARGET_APP_SHA: 24a2c04d0ff5433609d080ab6d24913bc441bad7
-  TARGET_WORKER_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:3d80d7ca2f5f8e7cca68777cdf114ac5e7f3a0b5b35020cfb816b64d60963f9d
-  PUBLIC_IMAGE: cr.yandex/crpk5qvf4p7kcqil2u3v/birzha-mcp-forecast@sha256:d6dad1f3efc8687cb93f7a745bd480eddff8dbefabab384ff785b57cdae8823c
-  PUBLIC_SHA: 301f4880f555b4d6fd7cbdc509fa8e99af19ff33
-  PUBLIC_HOSTS: d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net,d5d6sgh96p1fs4mnlfsr.0ly8ed4d.apigw.yandexcloud.net:*
-  PUBLIC_ORIGINS: https://chatgpt.com
-  WORKER_ID: bbamdg0po6fkukhod2e9
-  TIMER_ID: a1s4ho32v7dha59aeu60
-  BRIDGE_URL: https://script.google.com/macros/s/AKfycbxRqmudGWqwCSgEuikPi23pe9YjqK5wfSk4syldQQmI9cDMxcYfKz6DzftRnSgGm69H9g/exec
-  BRIDGE_ROOT: 1A7IzjXYSCWReZXdtrPZgZgLTnFIifsT2
-  BRIDGE_CHUNK_ROWS: "500"
-  BRIDGE_SECRET_ID: e6qecl857uj9b21reng9
-  BRIDGE_SECRET_VERSION: e6qrir8bf747fu333qdi
+  FORECAST_SYMBOL: SBER
 
 jobs:
-  deploy:
+  first-real-forecast:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
         with:
@@ -46,8 +34,11 @@ jobs:
         with:
           terraform_version: "1.9.8"
           terraform_wrapper: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065
+        with:
+          python-version: "3.12"
 
-      - name: Mint Yandex token
+      - name: Mint Yandex IAM token
         shell: bash
         run: |
           set -euo pipefail
@@ -65,34 +56,15 @@ jobs:
           assert c.get('ref')=='refs/heads/main'
           assert c.get('environment')=='test'
           PY
-          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth-token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          X="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
           T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
           test -n "$T"
           echo "::add-mask::$T"
           umask 077
           printf '%s' "$T" > "$RUNNER_TEMP/iam-token"
-          echo 'M26_7_CLOUD_ACCESS=PASS'
+          echo 'M26_9_YANDEX_AUTH=PASS'
 
-      - name: Install YC and prove timer paused
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p "$RUNNER_TEMP/yc"
-          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --location https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tar.gz"
-          tar -xzf "$RUNNER_TEMP/yc.tar.gz" -C "$RUNNER_TEMP/yc"
-          chmod +x "$RUNNER_TEMP/yc/yc"
-          YC_IAM_TOKEN="$(cat "$RUNNER_TEMP/iam-token")" "$RUNNER_TEMP/yc/yc" serverless trigger get "$TIMER_ID" --format=json > "$RUNNER_TEMP/timer-before.json"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'timer-before.json').read_text())
-          assert d.get('id')==os.environ['TIMER_ID']
-          assert d.get('status')=='PAUSED', d.get('status')
-          assert os.environ['WORKER_ID'] in json.dumps(d)
-          print('M26_7_TIMER_PREDEPLOY_PAUSED=PASS')
-          PY
-
-      - name: Initialize and protect current state
+      - name: Resolve protected runtime endpoints
         shell: bash
         env:
           YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
@@ -102,117 +74,154 @@ jobs:
           terraform -chdir="$TF_DIR" init -reconfigure -input=false -lockfile=readonly \
             -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
             -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
-          terraform -chdir="$TF_DIR" validate
-          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-before.json"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-before.json').read_text())
-          by={r['address']:r['values'] for r in s['values']['root_module']['resources']}
-          p=by['yandex_serverless_container.mcp[0]']['image'][0]; pe=p.get('environment') or {}
-          w=by['yandex_serverless_container.orchestrator_worker[0]']; we=w['image'][0].get('environment') or {}
-          assert p['url']==os.environ['PUBLIC_IMAGE']
-          assert pe.get('BIRZHA_SOURCE_COMMIT')==os.environ['PUBLIC_SHA']
-          assert pe.get('MCP_ALLOWED_HOSTS','')==os.environ['PUBLIC_HOSTS']
-          assert pe.get('MCP_ALLOWED_ORIGINS','')==os.environ['PUBLIC_ORIGINS']
-          assert w['id']==os.environ['WORKER_ID']
-          assert we.get('BIRZHA_MARKET_MIRROR_REQUIRED')=='true'
-          assert we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')==os.environ['BRIDGE_URL']
-          assert we.get('BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID')==os.environ['BRIDGE_ROOT']
-          m=[x for x in (w.get('secrets') or []) if x.get('environment_variable')=='BIRZHA_MARKET_MIRROR_BRIDGE_SECRET']
-          assert len(m)==1 and m[0].get('id')==os.environ['BRIDGE_SECRET_ID'] and m[0].get('version_id')==os.environ['BRIDGE_SECRET_VERSION']
-          assert by['yandex_function_trigger.orchestrator_timer[0]']['id']==os.environ['TIMER_ID']
-          print('M26_7_BASELINE_PROTECTED=PASS')
-          PY
+          terraform -chdir="$TF_DIR" output -raw ydb_connection_string > "$RUNNER_TEMP/ydb"
+          terraform -chdir="$TF_DIR" output -raw mcp_endpoint > "$RUNNER_TEMP/mcp-endpoint"
+          terraform -chdir="$TF_DIR" output -raw mcp_auth_secret_id > "$RUNNER_TEMP/mcp-secret-id"
+          terraform -chdir="$TF_DIR" output -raw mcp_auth_secret_version_id > "$RUNNER_TEMP/mcp-secret-version"
+          test -s "$RUNNER_TEMP/ydb" && test -s "$RUNNER_TEMP/mcp-endpoint" && test -s "$RUNNER_TEMP/mcp-secret-id" && test -s "$RUNNER_TEMP/mcp-secret-version"
+          echo 'M26_9_RUNTIME_OUTPUTS=PASS'
 
-      - name: Plan only worker update
+      - name: Install exact clients
+        run: python -m pip install --disable-pip-version-check --quiet 'mcp==2.1.1' ydb httpx2
+
+      - name: Fail closed unless D1 gate is fully PASS
         shell: bash
         run: |
           set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
-          terraform -chdir="$TF_DIR" plan -input=false -no-color -out="$RUNNER_TEMP/plan" \
-            -var="mcp_image_url=${PUBLIC_IMAGE}" -var="source_commit_sha=${PUBLIC_SHA}" \
-            -var="mcp_allowed_hosts=${PUBLIC_HOSTS}" -var="mcp_allowed_origins=${PUBLIC_ORIGINS}" \
-            -var="m24_worker_image_url=${TARGET_WORKER_IMAGE}" -var="m24_worker_source_sha=${TARGET_APP_SHA}" \
-            -var="m24_infra_oidc_bootstrap_enabled=false" -var="m24_observability_probe_enabled=false" \
-            -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}" -var="m25_birzha_bridge_v1_required=true" \
-            -var="m25_birzha_bridge_v1_root_folder_id=${BRIDGE_ROOT}" \
-            -var="m25_birzha_bridge_v1_secret_id=${BRIDGE_SECRET_ID}" \
-            -var="m25_birzha_bridge_v1_secret_version_id=${BRIDGE_SECRET_VERSION}" \
-            -var="m25_birzha_bridge_v1_chunk_rows=${BRIDGE_CHUNK_ROWS}"
-          terraform -chdir="$TF_DIR" show -json "$RUNNER_TEMP/plan" > "$RUNNER_TEMP/plan.json"
           python - <<'PY'
-          import json,os
+          import json,os,ydb
           from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'plan.json').read_text())
-          changed=[]
-          for r in p.get('resource_changes') or []:
-              a=(r.get('change') or {}).get('actions') or []
-              if a not in (['no-op'],['read']): changed.append((r.get('address'),a))
-          assert changed==[('yandex_serverless_container.orchestrator_worker[0]',['update'])], changed
-          print('M26_7_ONLY_WORKER_CHANGES=PASS')
+          token=(Path(os.environ['RUNNER_TEMP'])/'iam-token').read_text()
+          ep=(Path(os.environ['RUNNER_TEMP'])/'ydb').read_text().strip()
+          d=ydb.Driver(connection_string=ep,credentials=ydb.AccessTokenCredentials(token)); d.wait(timeout=10,fail_fast=True); p=ydb.QuerySessionPool(d)
+          def rows(x):
+              out=[]
+              for rs in x or []: out += list(getattr(rs,'rows',[]) or [])
+              return out
+          def g(r,k,default=None):
+              try:return r[k]
+              except:return getattr(r,k,default)
+          run=rows(p.execute_with_retries("SELECT workflow_id,status,last_error FROM `orchestration_runs` WHERE kind='D1_ARCHIVE_REFRESH_V1' ORDER BY updated_at DESC,workflow_id DESC LIMIT 1;")); assert len(run)==1
+          wid=str(g(run[0],'workflow_id') or ''); status=str(g(run[0],'status') or ''); err=str(g(run[0],'last_error') or '')
+          assert status=='PASS', (wid,status,err)
+          q="DECLARE $wid AS Utf8; SELECT kind,status,payload_json,last_error FROM `orchestration_actions` WHERE workflow_id=$wid ORDER BY sequence,action_id;"
+          aa=rows(p.execute_with_retries(q,{'$wid':(wid,ydb.PrimitiveType.Utf8)}))
+          expected={'SBER':7,'Si':24,'BR':24,'GOLD':24,'IMOEX':7,'RTSI':7}; seen={k:0 for k in expected}; failures=[]
+          for a in aa:
+              try: payload=json.loads(str(g(a,'payload_json') or '{}'))
+              except: payload={}
+              sym=str(payload.get('symbol') or ''); st=str(g(a,'status') or ''); le=str(g(a,'last_error') or '')
+              if sym in expected:
+                  if st=='PASS': seen[sym]+=1
+                  else: failures.append((sym,str(g(a,'kind') or ''),st,le[:200]))
+          assert not failures, failures
+          assert seen==expected, (seen,expected)
+          candle=rows(p.execute_with_retries("SELECT secid,begin,payload_json FROM `historical_candles` WHERE secid='SiU6' AND timeframe='D1' AND begin>='2026-09-15' AND begin<'2026-09-16';"))
+          assert len(candle)==1
+          vr=rows(p.execute_with_retries("SELECT symbol,timeframe,from_date,till_date FROM `historical_candles_verified_ranges` WHERE symbol='SI' AND timeframe='D1' AND from_date<='2026-09-15' AND till_date>='2026-09-15';"))
+          svr=rows(p.execute_with_retries("SELECT symbol,from_date,till_date FROM `historical_candles_session_verified_ranges` WHERE symbol='SI' AND from_date<='2026-09-15' AND till_date>='2026-09-15';"))
+          assert vr and svr
+          evidence={'workflow_id':wid,'status':status,'counts':seen,'si_2026_09_15_candle':True,'si_verified':True,'si_session_verified':True}
+          Path(os.environ['RUNNER_TEMP']+'/d1-gate.json').write_text(json.dumps(evidence,indent=2,sort_keys=True)+'\n')
+          print('M26_9_D1_GATE='+json.dumps(evidence,sort_keys=True))
+          p.stop(); d.stop(timeout=5)
           PY
 
-      - name: Apply exact saved plan
+      - name: Fetch MCP bearer from Lockbox without exposing it
         shell: bash
         run: |
           set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
-          terraform -chdir="$TF_DIR" apply -input=false -auto-approve "$RUNNER_TEMP/plan"
-          echo 'M26_7_APPLY=PASS'
-
-      - name: Verify worker and timer safety
-        shell: bash
-        run: |
-          set -euo pipefail
-          terraform -chdir="$TF_DIR" show -json > "$RUNNER_TEMP/state-after.json"
+          SID="$(cat "$RUNNER_TEMP/mcp-secret-id")"; VER="$(cat "$RUNNER_TEMP/mcp-secret-version")"; T="$(cat "$RUNNER_TEMP/iam-token")"
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${T}" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/${SID}/payload?versionId=${VER}" > "$RUNNER_TEMP/mcp-payload.json"
           python - <<'PY'
           import json,os
           from pathlib import Path
-          s=json.loads((Path(os.environ['RUNNER_TEMP'])/'state-after.json').read_text())
-          by={r['address']:r['values'] for r in s['values']['root_module']['resources']}
-          p=by['yandex_serverless_container.mcp[0]']['image'][0]; pe=p.get('environment') or {}
-          w=by['yandex_serverless_container.orchestrator_worker[0]']; wi=w['image'][0]; we=wi.get('environment') or {}
-          assert p['url']==os.environ['PUBLIC_IMAGE'] and pe.get('BIRZHA_SOURCE_COMMIT')==os.environ['PUBLIC_SHA']
-          assert wi['url']==os.environ['TARGET_WORKER_IMAGE'] and we.get('BIRZHA_SOURCE_COMMIT')==os.environ['TARGET_APP_SHA']
-          assert we.get('BIRZHA_MARKET_MIRROR_BRIDGE_URL')==os.environ['BRIDGE_URL']
-          assert we.get('BIRZHA_MARKET_MIRROR_ROOT_FOLDER_ID')==os.environ['BRIDGE_ROOT']
-          print('M26_7_NEW_WORKER_ACTIVE=PASS')
-          print('M26_7_PUBLIC_SERVICE_UNCHANGED=PASS')
-          print('M26_7_GOOGLE_BRIDGE_UNCHANGED=PASS')
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'mcp-payload.json').read_text())
+          vals=[x.get('textValue') for x in d.get('entries',[]) if x.get('key')=='bearer_token' and x.get('textValue')]
+          assert len(vals)==1
+          p=Path(os.environ['RUNNER_TEMP'])/'mcp-bearer'; p.write_text(vals[0]); p.chmod(0o600)
+          print('M26_9_MCP_BEARER_RESOLVED=PASS')
           PY
-          YC_IAM_TOKEN="$(cat "$RUNNER_TEMP/iam-token")" "$RUNNER_TEMP/yc/yc" serverless trigger get "$TIMER_ID" --format=json > "$RUNNER_TEMP/timer-after.json"
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'timer-after.json').read_text())
-          assert d.get('id')==os.environ['TIMER_ID']
-          assert d.get('status')=='PAUSED', d.get('status')
-          assert os.environ['WORKER_ID'] in json.dumps(d)
-          print('M26_7_TIMER_POSTDEPLOY_PAUSED=PASS')
-          PY
+          B="$(cat "$RUNNER_TEMP/mcp-bearer")"; echo "::add-mask::$B"
 
-      - name: Verify zero drift
+      - name: Create first real forecast and verify MCP journal views
         shell: bash
         run: |
           set -euo pipefail
-          export TF_VAR_yc_token="$(cat "$RUNNER_TEMP/iam-token")"
-          set +e
-          terraform -chdir="$TF_DIR" plan -detailed-exitcode -input=false -no-color \
-            -var="mcp_image_url=${PUBLIC_IMAGE}" -var="source_commit_sha=${PUBLIC_SHA}" \
-            -var="mcp_allowed_hosts=${PUBLIC_HOSTS}" -var="mcp_allowed_origins=${PUBLIC_ORIGINS}" \
-            -var="m24_worker_image_url=${TARGET_WORKER_IMAGE}" -var="m24_worker_source_sha=${TARGET_APP_SHA}" \
-            -var="m24_infra_oidc_bootstrap_enabled=false" -var="m24_observability_probe_enabled=false" \
-            -var="m25_birzha_bridge_v1_url=${BRIDGE_URL}" -var="m25_birzha_bridge_v1_required=true" \
-            -var="m25_birzha_bridge_v1_root_folder_id=${BRIDGE_ROOT}" \
-            -var="m25_birzha_bridge_v1_secret_id=${BRIDGE_SECRET_ID}" \
-            -var="m25_birzha_bridge_v1_secret_version_id=${BRIDGE_SECRET_VERSION}" \
-            -var="m25_birzha_bridge_v1_chunk_rows=${BRIDGE_CHUNK_ROWS}" > "$RUNNER_TEMP/zero.txt"
-          rc=$?; set -e
-          test "$rc" = 0 || { cat "$RUNNER_TEMP/zero.txt"; exit "$rc"; }
-          echo 'M26_7_ZERO_DRIFT=PASS'
+          python - <<'PY'
+          import asyncio,json,os
+          from pathlib import Path
+          import httpx2
+          from mcp import Client
+          from mcp.client.streamable_http import streamable_http_client
 
-      - name: Cleanup
+          endpoint=(Path(os.environ['RUNNER_TEMP'])/'mcp-endpoint').read_text().strip().rstrip('/') + '/mcp'
+          token=(Path(os.environ['RUNNER_TEMP'])/'mcp-bearer').read_text()
+          symbol=os.environ['FORECAST_SYMBOL']
+          async def main():
+              timeout=httpx2.Timeout(30.0,read=300.0)
+              async with httpx2.AsyncClient(headers={'Authorization':f'Bearer {token}'},timeout=timeout) as hc:
+                  transport=streamable_http_client(endpoint,http_client=hc)
+                  async with Client(transport) as client:
+                      created=await client.call_tool('forecast.create',{'symbol':symbol})
+                      assert not created.is_error
+                      c=created.structured_content or {}
+                      forecast=c.get('forecast') or {}
+                      journal=c.get('journal') or {}
+                      fid=str(forecast.get('forecast_id') or '')
+                      assert fid and forecast.get('symbol')==symbol
+                      assert journal.get('status') in {'APPENDED','DUPLICATE_IDENTICAL'}
+                      got=await client.call_tool('forecast.get',{'forecast_id':fid}); assert not got.is_error
+                      g=got.structured_content or {}
+                      get_record=g.get('forecast') if isinstance(g.get('forecast'),dict) else g
+                      assert get_record==forecast
+                      listed=await client.call_tool('forecast.list',{'limit':20,'symbol':symbol}); assert not listed.is_error
+                      l=listed.structured_content or {}; records=l.get('forecasts') or []
+                      assert any(isinstance(x,dict) and x.get('forecast_id')==fid for x in records)
+                      out={'forecast':forecast,'journal':journal,'storage_scope':c.get('storage_scope'),'get_verified':True,'list_verified':True}
+                      Path(os.environ['RUNNER_TEMP']+'/forecast-result.json').write_text(json.dumps(out,indent=2,sort_keys=True,ensure_ascii=False)+'\n')
+                      Path(os.environ['RUNNER_TEMP']+'/forecast-id').write_text(fid)
+                      print('M26_9_FORECAST_CREATE=PASS')
+                      print('M26_9_FORECAST_ID='+fid)
+                      print('M26_9_FORECAST_GET_LIST=PASS')
+          asyncio.run(main())
+          PY
+
+      - name: Prove immutable Forecast Journal row directly in YDB
+        shell: bash
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json,os,ydb
+          from pathlib import Path
+          token=(Path(os.environ['RUNNER_TEMP'])/'iam-token').read_text(); ep=(Path(os.environ['RUNNER_TEMP'])/'ydb').read_text().strip(); fid=(Path(os.environ['RUNNER_TEMP'])/'forecast-id').read_text().strip()
+          expected=json.loads((Path(os.environ['RUNNER_TEMP'])/'forecast-result.json').read_text())['forecast']
+          d=ydb.Driver(connection_string=ep,credentials=ydb.AccessTokenCredentials(token)); d.wait(timeout=10,fail_fast=True); p=ydb.QuerySessionPool(d)
+          q="DECLARE $fid AS Utf8; SELECT payload_hash,payload_json,symbol,secid,created_at_t0,engine_version FROM `forecast_records` WHERE forecast_id=$fid;"
+          out=[]
+          for rs in p.execute_with_retries(q,{'$fid':(fid,ydb.PrimitiveType.Utf8)}): out += list(getattr(rs,'rows',[]) or [])
+          assert len(out)==1
+          r=out[0]
+          try: payload=str(r['payload_json']); symbol=str(r['symbol'])
+          except: payload=str(getattr(r,'payload_json')); symbol=str(getattr(r,'symbol'))
+          actual=json.loads(payload)
+          assert actual==expected and symbol==os.environ['FORECAST_SYMBOL']
+          print('M26_9_DIRECT_YDB_JOURNAL=PASS')
+          p.stop(); d.stop(timeout=5)
+          PY
+
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: birzha-first-real-forecast
+          path: |
+            ${{ runner.temp }}/d1-gate.json
+            ${{ runner.temp }}/forecast-result.json
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup secrets
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz" "$RUNNER_TEMP/timer-before.json" "$RUNNER_TEMP/timer-after.json" "$RUNNER_TEMP/state-before.json" "$RUNNER_TEMP/state-after.json" "$RUNNER_TEMP/plan" "$RUNNER_TEMP/plan.json" "$RUNNER_TEMP/zero.txt"
+        run: rm -f "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/mcp-bearer" "$RUNNER_TEMP/mcp-payload.json" "$RUNNER_TEMP/mcp-secret-id" "$RUNNER_TEMP/mcp-secret-version" "$RUNNER_TEMP/mcp-endpoint" "$RUNNER_TEMP/ydb" "$RUNNER_TEMP/forecast-id"
