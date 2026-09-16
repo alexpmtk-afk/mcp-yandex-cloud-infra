@@ -67,7 +67,7 @@ jobs:
           printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
           printf '%s' "https://${DOMAIN}/mcp" > "$RUNNER_TEMP/mcp-url"
 
-      - name: Accept query execution plan v2 on live TEST MCP
+      - name: Accept query execution plan v2 and Clarification Gate on live TEST MCP
         shell: bash
         run: |
           set -euo pipefail
@@ -95,7 +95,7 @@ jobs:
               response = client.post(os.environ['MCP_URL'], headers=headers, json={
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'source-router-acceptance','version':'2'}
+                      'clientInfo':{'name':'source-router-acceptance','version':'3'}
                   }
               })
               init = unpack(response); assert init and 'result' in init, init
@@ -103,6 +103,10 @@ jobs:
               assert 'marketplace_query_plan as the first server-side planning step' in instructions, instructions
               assert 'marketplace_execution_plan.v2' in instructions, instructions
               assert 'cross-source arithmetic' in instructions, instructions
+              assert 'Clarification Gate' in instructions, instructions
+              assert 'Never guess the closest metric' in instructions, instructions
+              assert 'must not execute any data leg' in instructions, instructions
+              assert 'Do not resume the old ambiguous plan directly' in instructions, instructions
               session = response.headers.get('mcp-session-id')
               if session: headers['Mcp-Session-Id'] = session
               headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
@@ -127,9 +131,21 @@ jobs:
               router = system_map['request_source_router']
               assert router['status'] == 'EXECUTION_PLAN_V2', router
               assert router['source_revision'].endswith('4fe77f5359803e92230b7e7e7744cf61c1ec0c49'), router
+              assert router['clarification_source_revision'].endswith('2bc3e48740400689de67360e02c6b1a7fcb12ded'), router
               assert router['execution_plan']['version'] == 'marketplace_execution_plan.v2', router
               assert router['availability_facts']['wb_orders_historical_archive'] is False, router
               assert router['availability_facts']['wb_stock_historical_archive'] is False, router
+              clarification = router['clarification_gate']
+              assert clarification['position'] == 'after marketplace_query_plan and before any data executor', clarification
+              assert clarification['interaction_state'] == 'CLARIFICATION_REQUIRED', clarification
+              triggers = ' '.join(clarification['triggers'])
+              assert 'NEEDS_CONTEXT' in triggers, clarification
+              assert 'AMBIGUOUS' in triggers, clarification
+              assert 'UNKNOWN' in triggers, clarification
+              assert 'must not execute' in clarification['assistant_response_policy'], clarification
+              assert 'call marketplace_query_plan again' in clarification['resume_policy'], clarification
+              assert 'source gap' in clarification['known_source_gap_behavior'], clarification
+              assert 'do not ask for clarification' in clarification['recognized_multi_source_behavior'], clarification
 
               current_stock = call('marketplace_query_plan', {
                   'question':'Сколько остатков сейчас на Wildberries?',
@@ -180,7 +196,9 @@ jobs:
               })
               assert missing_marketplace['source_status'] == 'MARKETPLACE_REQUIRED', missing_marketplace
               assert missing_marketplace['execution_plan']['status'] == 'NEEDS_CONTEXT', missing_marketplace
+              assert missing_marketplace['execution_plan']['can_start_execution'] is False, missing_marketplace
               assert missing_marketplace['execution_plan']['blockers'][0]['type'] == 'MISSING_CONTEXT', missing_marketplace
+              assert 'marketplace' in missing_marketplace.get('required_context', []), missing_marketplace
 
               historical_compare = call('marketplace_query_plan', {
                   'question':'Сравни продажи и рекламные расходы за август',
@@ -227,4 +245,5 @@ jobs:
               assert internal['execution_plan']['status'] == 'READY', internal
 
               print('MARKETPLACE_QUERY_EXECUTION_PLAN_V2_LIVE_ACCEPTANCE=PASS', flush=True)
+              print('MARKETPLACE_CLARIFICATION_GATE_LIVE_ACCEPTANCE=PASS', flush=True)
           PY
