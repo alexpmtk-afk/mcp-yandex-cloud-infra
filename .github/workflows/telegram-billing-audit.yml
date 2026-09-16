@@ -1,0 +1,64 @@
+name: Telegram Billing Audit
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-billing-audit.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  billing:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-billing-audit || true
+          yc config profile activate telegram-billing-audit
+          yc config set service-account-key "$key"
+      - name: Billing breakdown
+        shell: bash
+        run: |
+          set +e
+          folder="b1gk4p83brasi8g811jv"
+          start="2026-09-01T00:00:00Z"
+          end="2026-09-16T23:59:59Z"
+          echo '=== BILLING ACCOUNTS ==='
+          accounts="$(yc billing account list --format json 2>&1)"
+          echo "$accounts"
+          account_id="$(printf '%s' "$accounts" | jq -r 'if type=="array" then (.[0].id // empty) else empty end' 2>/dev/null)"
+          if [ -z "$account_id" ]; then echo BILLING_ACCOUNT_UNAVAILABLE; exit 0; fi
+          echo "BILLING_ACCOUNT_ID=$account_id"
+          echo '=== SERVICE USAGE SEP 1-16 / PROJECT FOLDER ==='
+          yc billing consumption-core get-service-usage-report "$account_id" --start-date "$start" --end-date "$end" --folder-ids "$folder" --aggregation-period day --format json
+          echo '=== WAIT RATE LIMIT ==='; sleep 61
+          echo '=== RESOURCE USAGE SEP 1-16 / PROJECT FOLDER ==='
+          yc billing consumption-core get-resource-usage-report "$account_id" --start-date "$start" --end-date "$end" --folder-ids "$folder" --aggregation-period day --format json
+          echo '=== WAIT RATE LIMIT ==='; sleep 61
+          echo '=== SKU USAGE SEP 1-16 / PROJECT FOLDER ==='
+          yc billing consumption-core get-sku-usage-report "$account_id" --start-date "$start" --end-date "$end" --folder-ids "$folder" --aggregation-period day --format json
+          exit 0
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json"
