@@ -1,0 +1,44 @@
+name: Yandex M24 night raw once
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/yandex-m24-night-raw-once.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    steps:
+      - name: Authenticate and read metrics
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsS -o "$RUNNER_TEMP/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          Y="$RUNNER_TEMP/yc/yc"
+          K="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$K"
+          chmod 600 "$K"
+          "$Y" config profile create m24-raw || true
+          "$Y" config set service-account-key "$K"
+          T="$($Y iam create-token)"; echo "::add-mask::$T"
+          F='b1g00gqb66tbnfoumnkv'
+          FROM='2026-09-15T00:00:00Z'; TO='2026-09-16T05:35:00Z'
+          for N in started exec_sum exec_count errors; do
+            case "$N" in
+              started) Q='serverless.containers.started_per_second{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}' ;;
+              exec_sum) Q='serverless.containers.execution_time_milliseconds_sum{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}' ;;
+              exec_count) Q='serverless.containers.execution_time_milliseconds_count{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}' ;;
+              errors) Q='serverless.containers.errors_per_second{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}' ;;
+            esac
+            B="$(jq -nc --arg q "$Q" --arg f "$FROM" --arg t "$TO" '{query:$q,fromTime:$f,toTime:$t,downsampling:{maxPoints:"3000",gridAggregation:"AVG",gapFilling:"NONE"}}')"
+            echo "=== $N ==="
+            curl -fsS -X POST "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=$F" -H "Authorization: Bearer $T" -H 'Content-Type: application/json' --data "$B" | jq -c '.'
+          done
+          echo '=== TIMER ==='
+          "$Y" serverless trigger get a1s4ho32v7dha59aeu60 --format json | jq -c '{id,name,status,rule}'
+          rm -f "$K"
