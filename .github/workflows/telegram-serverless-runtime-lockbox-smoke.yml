@@ -11,7 +11,7 @@ concurrency:
 jobs:
   smoke:
     runs-on: ubuntu-latest
-    timeout-minutes: 12
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
         with:
@@ -47,7 +47,7 @@ jobs:
           docker push "$image" >/dev/null
           echo "IMAGE=$image" >> "$GITHUB_ENV"
           echo IMAGE_PUSH_PASS
-      - name: Deploy without injected secrets
+      - name: Deploy direct-read runtime
         shell: bash
         run: |
           set -euo pipefail
@@ -64,64 +64,61 @@ jobs:
             --environment LOCKBOX_RUNTIME_SECRET_ID=e6qnt0bt655jltrr5sid \
             --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
             --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
-            --environment COLLECT_BOOTSTRAP_LIMIT=3 \
-            --environment COLLECT_INTERVAL_SECONDS=3600 \
+            --environment COLLECTOR_ENABLED=false \
             --environment OBJECT_STORAGE_ENABLED=false >/dev/null
           url="$(yc serverless container get telegram-reader-serverless-smoke --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.url')"
           test -n "$url"
           echo "URL=${url%/}" >> "$GITHUB_ENV"
-          echo DEPLOY_RUNTIME_LOCKBOX_PASS
+          echo DEPLOY_DIRECT_READ_PASS
       - name: Verify private invocation boundary
         shell: bash
         run: |
           set -euo pipefail
           code="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/unauth-body" -w '%{http_code}' "$URL/internal/chats" || true)"
           echo "UNAUTH_HTTP=$code"
-          case "$code" in
-            401|403) ;;
-            *) echo "Serverless internal endpoint is not private"; exit 1 ;;
-          esac
+          case "$code" in 401|403) ;; *) exit 1 ;; esac
           echo SERVERLESS_PRIVATE_BOUNDARY_PASS
-      - name: Verify Telegram runtime and production whitelist
+      - name: Verify runtime and all production peers
         shell: bash
         run: |
           set -euo pipefail
           token="$(yc iam create-token)"
           ok=0
           for attempt in $(seq 1 12); do
-            response="$(curl -sS --max-time 40 -H "Authorization: Bearer $token" "$URL/health" || true)"
-            echo "$response" | jq -c '{status,telegram_status,telegram_connected,telegram_authorized,allowed_chats,messages,collector_last_result,collector_last_errors}' 2>/dev/null || true
-            if echo "$response" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and (.messages|tonumber)>=1' >/dev/null 2>&1; then
-              ok=1
-              break
-            fi
-            sleep 8
+            response="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$URL/health" || true)"
+            echo "$response" | jq -c '{status,telegram_status,telegram_connected,telegram_authorized,allowed_chats,collector_enabled}' 2>/dev/null || true
+            if echo "$response" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .collector_enabled==false' >/dev/null 2>&1; then ok=1; break; fi
+            sleep 5
           done
           test "$ok" -eq 1
-
-          chats="$(curl -fsS --max-time 60 -H "Authorization: Bearer $token" "$URL/internal/chats")"
+          chats="$(curl -fsS --max-time 20 -H "Authorization: Bearer $token" "$URL/internal/chats")"
           echo "$chats" | jq -c '{chat_count,chats}'
           echo "$chats" | jq -e '.chat_count==9' >/dev/null
-          echo "$chats" | jq -e '.chats[] | select(.chat_id==-1001343028414 and (.name|length)>0)' >/dev/null
-          echo SERVERLESS_FULL_WHITELIST_PASS
-      - name: Verify direct Telegram range read
+          while read -r chat_id; do
+            probe="$(curl -fsS --max-time 45 -H "Authorization: Bearer $token" "$URL/internal/chats/$chat_id/probe")"
+            echo "$probe" | jq -c '.'
+            echo "$probe" | jq -e --argjson id "$chat_id" '.resolved==true and .chat_id==$id and (.name|length)>0' >/dev/null
+          done < <(echo "$chats" | jq -r '.chats[].chat_id')
+          echo SERVERLESS_ALL_PEERS_PASS
+      - name: Verify direct range read and pagination
         shell: bash
         run: |
           set -euo pipefail
           token="$(yc iam create-token)"
           from="$(date -u -d '192 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
           to="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
-          response="$(curl -fsS --max-time 90 \
-            -H "Authorization: Bearer $token" \
-            --get \
-            --data-urlencode "date_from=$from" \
-            --data-urlencode "date_to=$to" \
-            --data-urlencode "limit=20" \
-            "$URL/internal/chats/-1001343028414/messages")"
-          echo "$response" | jq -c '{chat_id,date_from,date_to,message_count,first:(.messages[0] // null)}'
-          echo "$response" | jq -e '.chat_id==-1001343028414 and .message_count>=1 and (.messages|length)>=1' >/dev/null
-          echo "$response" | jq -e '.messages[] | select(.chat_id==-1001343028414 and (.message_id|tonumber)>0 and (.datetime|length)>0)' >/dev/null
+          page1="$(curl -fsS --max-time 60 -H "Authorization: Bearer $token" --get --data-urlencode "date_from=$from" --data-urlencode "date_to=$to" --data-urlencode "limit=1" "$URL/internal/chats/-1001343028414/messages")"
+          echo "$page1" | jq -c '{chat_id,message_count,page_full,next_before_id,first:(.messages[0] // null)}'
+          echo "$page1" | jq -e '.chat_id==-1001343028414 and .message_count==1 and .page_full==true and (.next_before_id|tonumber)>0' >/dev/null
+          cursor="$(echo "$page1" | jq -r '.next_before_id')"
+          first_id="$(echo "$page1" | jq -r '.messages[0].message_id')"
+          page2="$(curl -fsS --max-time 60 -H "Authorization: Bearer $token" --get --data-urlencode "date_from=$from" --data-urlencode "date_to=$to" --data-urlencode "limit=1" --data-urlencode "before_id=$cursor" "$URL/internal/chats/-1001343028414/messages")"
+          echo "$page2" | jq -c '{chat_id,message_count,page_full,next_before_id,first:(.messages[0] // null)}'
+          second_id="$(echo "$page2" | jq -r '.messages[0].message_id // empty')"
+          test -n "$second_id"
+          test "$second_id" -lt "$first_id"
           echo SERVERLESS_DIRECT_RANGE_READ_PASS
+          echo SERVERLESS_PAGINATION_PASS
           echo SERVERLESS_TELEGRAM_SMOKE_PASS
       - name: Cleanup local credentials
         if: always()
