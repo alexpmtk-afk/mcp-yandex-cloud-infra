@@ -2,24 +2,62 @@ name: Marketplaces Source Router Acceptance
 
 on:
   workflow_dispatch:
-  workflow_run:
-    workflows:
-      - Deploy Marketplaces MCP TEST
-    types:
-      - completed
+  push:
+    branches:
+      - main
+    paths:
+      - app/**
+      - terraform/*.tf
+      - terraform/*.tftpl
+      - .github/workflows/deploy-mcp-test.yml
 
 permissions:
   contents: read
+  actions: read
 
 jobs:
   accept:
-    if: >-
-      github.event_name == 'workflow_dispatch' ||
-      (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.head_branch == 'main')
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 15
+    timeout-minutes: 35
     steps:
+      - name: Wait for successful TEST deploy of this exact commit
+        if: github.event_name == 'push'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          state=''
+          for attempt in $(seq 1 150); do
+            runs="$(gh api --method GET "/repos/${GITHUB_REPOSITORY}/actions/workflows/deploy-mcp-test.yml/runs" \
+              -f branch=main -f event=push -f per_page=30)"
+            row="$(jq -r --arg sha "$GITHUB_SHA" '
+              [.workflow_runs[] | select(.head_sha == $sha)]
+              | sort_by(.run_number)
+              | last
+              | if . == null then "" else (.status + "|" + (.conclusion // "") + "|" + (.html_url // "")) end
+            ' <<<"$runs")"
+            if [[ -z "$row" ]]; then
+              echo "deploy wait $attempt/150: run not created yet"
+              sleep 10
+              continue
+            fi
+            IFS='|' read -r status conclusion url <<<"$row"
+            echo "deploy wait $attempt/150: status=$status conclusion=${conclusion:-pending} url=$url"
+            if [[ "$status" == completed ]]; then
+              if [[ "$conclusion" == success ]]; then
+                state=success
+                break
+              fi
+              echo "TEST deploy for $GITHUB_SHA completed with conclusion=$conclusion"
+              exit 1
+            fi
+            sleep 10
+          done
+          test "$state" = success
+          echo 'EXACT_COMMIT_TEST_DEPLOY=PASS'
+
       - name: Install Yandex Cloud CLI
         shell: bash
         run: |
@@ -27,10 +65,14 @@ jobs:
           mkdir -p "$RUNNER_TEMP/yc"
           URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
           ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          rm -f "$ARCHIVE"
           ok=0
           for attempt in $(seq 1 8); do
             if timeout 75s wget --continue --timeout=30 --tries=2 --retry-connrefused --output-document="$ARCHIVE" "$URL"; then
-              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then ok=1; break; fi
+              if tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
+                ok=1
+                break
+              fi
               rm -f "$ARCHIVE"
             fi
             sleep 4
@@ -59,7 +101,9 @@ jobs:
           SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
           VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output | jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty')"
           DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
-          test -n "$SECRET_ID"; test -n "$VERSION_ID"; test -n "$DOMAIN"
+          test -n "$SECRET_ID"
+          test -n "$VERSION_ID"
+          test -n "$DOMAIN"
           yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
           BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
           test -n "$BEARER"
@@ -75,8 +119,14 @@ jobs:
           export MCP_URL="$(cat "$RUNNER_TEMP/mcp-url")"
           export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
           python -u - <<'PY'
-          import itertools, json, os
+          import datetime
+          import itertools
+          import json
+          import os
+          import time
           import httpx
+
+          TRANSIENT = {502, 503, 504}
 
           def unpack(response):
               response.raise_for_status()
@@ -91,14 +141,28 @@ jobs:
               'Content-Type': 'application/json',
           }
           ids = itertools.count(1)
-          with httpx.Client(timeout=45.0, follow_redirects=True) as client:
-              response = client.post(os.environ['MCP_URL'], headers=headers, json={
+          timeout = httpx.Timeout(connect=10.0, read=45.0, write=30.0, pool=10.0)
+
+          with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+              def post(payload):
+                  last = None
+                  for attempt in range(1, 9):
+                      response = client.post(os.environ['MCP_URL'], headers=headers, json=payload)
+                      last = response
+                      if response.status_code not in TRANSIENT:
+                          return response
+                      print(f'transient_gateway_status={response.status_code} attempt={attempt}/8', flush=True)
+                      time.sleep(3)
+                  return last
+
+              response = post({
                   'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{
                       'protocolVersion':'2025-06-18','capabilities':{},
-                      'clientInfo':{'name':'source-router-acceptance','version':'4'}
+                      'clientInfo':{'name':'source-router-acceptance','version':'5'}
                   }
               })
-              init = unpack(response); assert init and 'result' in init, init
+              init = unpack(response)
+              assert init and 'result' in init, init
               instructions = init['result'].get('instructions','')
               assert 'marketplace_query_plan as the first server-side planning step' in instructions, instructions
               assert 'marketplace_execution_plan.v2' in instructions, instructions
@@ -112,14 +176,16 @@ jobs:
               assert 'Never pass the original compound multi-source user question unchanged' in instructions, instructions
               assert 'dispatch_contracts must be empty' in instructions, instructions
               session = response.headers.get('mcp-session-id')
-              if session: headers['Mcp-Session-Id'] = session
+              if session:
+                  headers['Mcp-Session-Id'] = session
               headers['MCP-Protocol-Version'] = init['result'].get('protocolVersion','2025-06-18')
-              note = client.post(os.environ['MCP_URL'], headers=headers, json={'jsonrpc':'2.0','method':'notifications/initialized'})
+              note = post({'jsonrpc':'2.0','method':'notifications/initialized'})
               assert note.status_code in (200,202), note.status_code
 
               def rpc(method, params=None):
-                  r = client.post(os.environ['MCP_URL'], headers=headers, json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
-                  data = unpack(r); assert data and 'result' in data, (method, data)
+                  response = post({'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  data = unpack(response)
+                  assert data and 'result' in data, (method, data)
                   return data['result']
 
               def call(name, args):
@@ -161,10 +227,11 @@ jobs:
               assert 'source gap' in clarification['known_source_gap_behavior'], clarification
               assert 'do not ask for clarification' in clarification['recognized_multi_source_behavior'], clarification
 
+              today = datetime.date.today().isoformat()
               current_stock = call('marketplace_query_plan', {
                   'question':'Сколько остатков сейчас на Wildberries?',
                   'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-09-16','date_to':'2026-09-16'
+                  'date_from':today,'date_to':today
               })
               assert current_stock['planner'] == 'marketplace_query_plan.v2', current_stock
               assert current_stock['source_family'] == 'LIVE_CABINET_API', current_stock
@@ -173,7 +240,7 @@ jobs:
               current_control = call('marketplace_execution_control', {
                   'question':'Сколько остатков сейчас на Wildberries?',
                   'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-09-16','date_to':'2026-09-16','nm_ids':[12345]
+                  'date_from':today,'date_to':today,'nm_ids':[12345]
               })
               assert current_control['controller'] == 'marketplace_execution_controller.v1', current_control
               assert current_control['state'] == 'READY', current_control
@@ -237,7 +304,7 @@ jobs:
               no_target = call('marketplace_execution_control', {
                   'question':'Сравни цену на сайте и текущие остатки Wildberries',
                   'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-09-16','date_to':'2026-09-16'
+                  'date_from':today,'date_to':today
               })
               assert no_target['state'] == 'BLOCKED', no_target
               assert no_target['can_dispatch'] is False, no_target
@@ -248,7 +315,7 @@ jobs:
               with_target = call('marketplace_execution_control', {
                   'question':'Сравни цену на сайте и текущие остатки Wildberries',
                   'marketplace':'wb','seller':'wb_novokshenov',
-                  'date_from':'2026-09-16','date_to':'2026-09-16',
+                  'date_from':today,'date_to':today,
                   'target_ids':['wb-card-1']
               })
               assert with_target['state'] == 'READY_WITH_GATES', with_target
@@ -270,3 +337,8 @@ jobs:
               print('MARKETPLACE_CLARIFICATION_GATE_LIVE_ACCEPTANCE=PASS', flush=True)
               print('MARKETPLACE_EXECUTION_CONTROLLER_V1_LIVE_ACCEPTANCE=PASS', flush=True)
           PY
+
+      - name: Cleanup ephemeral credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/mcp-url"
