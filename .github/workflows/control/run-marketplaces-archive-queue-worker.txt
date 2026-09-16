@@ -1,1 +1,1 @@
-2026-09-16 resume normal Laser Master drain after verified 24->25 checkpoint; continue 25->38 with V3 durable telemetry
+2026-09-16 resume Laser Master from verified durable state 31/38; report 798899890 at PREPARE; Drive/Yandex health PASS; schedule re-registered and staggered
