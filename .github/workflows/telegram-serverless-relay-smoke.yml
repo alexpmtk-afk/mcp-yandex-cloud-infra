@@ -85,13 +85,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+          base="${URL%/}"
           for attempt in $(seq 1 12); do
-            if curl -fsS --max-time 20 "$URL/health" > "$RUNNER_TEMP/health.json"; then break; fi
+            if curl -fsS --max-time 20 "$base/health" > "$RUNNER_TEMP/health.json"; then break; fi
             sleep 5
           done
           jq -e '.status=="ok"' "$RUNNER_TEMP/health.json" >/dev/null
           echo SERVERLESS_HEALTH_PASS
-          curl -fsS --max-time 30 "$URL/probe" > "$RUNNER_TEMP/probe.json"
+          curl -fsS --max-time 30 "$base/probe" > "$RUNNER_TEMP/probe.json"
           cat "$RUNNER_TEMP/probe.json"
           jq -e '.status=="pass" and .websocket_open==true' "$RUNNER_TEMP/probe.json" >/dev/null
           echo SERVERLESS_RELAY_WEBSOCKET_PASS
