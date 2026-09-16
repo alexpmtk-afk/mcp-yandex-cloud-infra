@@ -1,0 +1,187 @@
+name: Telegram Peer Map To Lockbox
+
+on:
+  push:
+    branches: [telegram-serverless-smoke-20260916]
+    paths: [.github/workflows/telegram-peer-map-to-lockbox.yml]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: telegram-peer-map-to-lockbox
+  cancel-in-progress: false
+
+jobs:
+  migrate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create tg-peer-map || true
+          yc config profile activate tg-peer-map
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Temporarily grant Lockbox writer to donor service account
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc resource-manager folder add-access-binding b1gk4p83brasi8g811jv \
+            --role lockbox.admin \
+            --service-account-id ajeaad0m00gncv22tagf >/dev/null
+          echo LOCKBOX_TEMP_ROLE_PASS
+
+      - name: Start donor VM and prepare transient SSH
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder="b1gk4p83brasi8g811jv"
+          status="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.status')"
+          if [ "$status" != "RUNNING" ]; then yc compute instance start telegram-news-reader --folder-id "$folder" >/dev/null; fi
+          for _ in $(seq 1 30); do
+            status="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.status')"
+            [ "$status" = "RUNNING" ] && break
+            sleep 5
+          done
+          [ "$status" = "RUNNING" ]
+
+          runner_ip="$(curl -fsS https://api.ipify.org)"
+          ssh-keygen -q -t ed25519 -N '' -f "$RUNNER_TEMP/tgkey"
+          old_keys="$(yc compute instance get telegram-news-reader --folder-id "$folder" --format json | jq -r '.metadata["ssh-keys"] // ""')"
+          printf '%s' "$old_keys" > "$RUNNER_TEMP/oldkeys"
+          { printf '%s\n' "$old_keys"; printf 'ubuntu:'; cat "$RUNNER_TEMP/tgkey.pub"; } > "$RUNNER_TEMP/newkeys"
+          yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/newkeys" >/dev/null
+          yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" \
+            --add-rule "description=github-tg-peer-map,direction=ingress,port=22,protocol=tcp,v4-cidrs=$runner_ip/32" >/dev/null
+
+          ssh_opts=(-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey")
+          for attempt in $(seq 1 18); do
+            if ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 true >/dev/null 2>&1; then
+              echo SSH_READY_PASS
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 255
+
+      - name: Merge cached Telegram peers into existing Lockbox payload
+        shell: bash
+        run: |
+          set -euo pipefail
+          ssh_opts=(-o StrictHostKeyChecking=no -o IdentitiesOnly=yes -o BatchMode=yes -o ConnectTimeout=20 -i "$RUNNER_TEMP/tgkey")
+          ssh "${ssh_opts[@]}" ubuntu@111.88.248.156 'bash -s' <<'REMOTE'
+          set -euo pipefail
+          mkdir -p /tmp/yc-peer-map
+          wget -q -O /tmp/yc-peer-map/yc.tgz https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf /tmp/yc-peer-map/yc.tgz -C /tmp/yc-peer-map
+          YC=/tmp/yc-peer-map/yc
+          "$YC" config profile create vm-peer-map >/dev/null 2>&1 || true
+          "$YC" config profile activate vm-peer-map >/dev/null
+          "$YC" config set instance-service-account true >/dev/null
+          "$YC" config set folder-id b1gk4p83brasi8g811jv >/dev/null
+
+          for _ in $(seq 1 24); do
+            if sudo docker ps --format '{{.Names}}' | grep -qx telegram-reader; then break; fi
+            sleep 5
+          done
+          sudo docker ps --format '{{.Names}}' | grep -qx telegram-reader
+
+          peer_file=/tmp/telegram-peer-map.json
+          sudo docker exec telegram-reader python -c '
+          import json
+          from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
+          from app.runtime import build_runtime
+          _, whitelist, reader, _ = build_runtime()
+          result = {}
+          for item in whitelist.list_allowed():
+              peer = reader.client.session.get_input_entity(item.chat_id)
+              if isinstance(peer, InputPeerChannel):
+                  result[str(item.chat_id)] = {"kind":"channel","peer_id":str(peer.channel_id),"access_hash":str(peer.access_hash)}
+              elif isinstance(peer, InputPeerUser):
+                  result[str(item.chat_id)] = {"kind":"user","peer_id":str(peer.user_id),"access_hash":str(peer.access_hash)}
+              elif isinstance(peer, InputPeerChat):
+                  result[str(item.chat_id)] = {"kind":"chat","peer_id":str(peer.chat_id)}
+              else:
+                  raise RuntimeError("unsupported cached peer type")
+          if not result:
+              raise RuntimeError("no allowed peers found in donor cache")
+          print(json.dumps(result, separators=(",",":")))
+          ' > "$peer_file"
+          chmod 600 "$peer_file"
+
+          secret_id="$($YC lockbox secret list --format json | python3 -c 'import json,sys; a=json.load(sys.stdin); print(next((x["id"] for x in a if x.get("name")=="telegram-reader-serverless-runtime"),""))')"
+          [ -n "$secret_id" ]
+          token="$($YC iam create-token)"
+          curl -fsS -H "Authorization: Bearer $token" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$secret_id/payload" \
+            -o /tmp/current-lockbox.json
+
+          PEER_FILE="$peer_file" python3 - <<'PY' > /tmp/merged-lockbox.json
+          import json, os
+          current=json.load(open('/tmp/current-lockbox.json', encoding='utf-8'))
+          values={}
+          for entry in current.get('entries', []):
+              key=str(entry.get('key') or '')
+              if key:
+                  values[key]=str(entry.get('textValue') or '')
+          peer_json=open(os.environ['PEER_FILE'], encoding='utf-8').read().strip()
+          peer_map=json.loads(peer_json)
+          if not peer_map:
+              raise SystemExit('empty peer map')
+          values['TELEGRAM_PEER_MAP_JSON']=peer_json
+          print(json.dumps([{'key':k,'text_value':v} for k,v in values.items()]))
+          PY
+          chmod 600 /tmp/merged-lockbox.json
+          "$YC" lockbox secret add-version "$secret_id" \
+            --description 'Add Telegram peer cache for serverless 2026-09-16' \
+            --payload - >/dev/null < /tmp/merged-lockbox.json
+          count="$(python3 -c 'import json; print(len(json.load(open("/tmp/telegram-peer-map.json"))))')"
+          rm -f "$peer_file" /tmp/current-lockbox.json /tmp/merged-lockbox.json
+          rm -rf /tmp/yc-peer-map
+          echo "PEER_MAP_LOCKBOX_PASS peers=$count"
+          REMOTE
+
+      - name: Revoke temporary Lockbox admin role
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate tg-peer-map >/dev/null 2>&1 || true
+          yc resource-manager folder remove-access-binding b1gk4p83brasi8g811jv \
+            --role lockbox.admin \
+            --service-account-id ajeaad0m00gncv22tagf >/dev/null 2>&1
+          echo LOCKBOX_TEMP_ROLE_REMOVED
+
+      - name: Cleanup donor access and stop VM
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc config profile activate tg-peer-map >/dev/null 2>&1 || true
+          folder="b1gk4p83brasi8g811jv"
+          ids=$(yc vpc security-group get enpocnvnpdu2goj9nkjn --folder-id "$folder" --format json 2>/dev/null | jq -r '.rules[] | select(.description=="github-tg-peer-map") | .id')
+          for id in $ids; do yc vpc security-group update-rules enpocnvnpdu2goj9nkjn --folder-id "$folder" --delete-rule-id "$id" >/dev/null; done
+          if [ -f "$RUNNER_TEMP/oldkeys" ]; then
+            yc compute instance add-metadata telegram-news-reader --folder-id "$folder" --metadata-from-file ssh-keys="$RUNNER_TEMP/oldkeys" >/dev/null
+          fi
+          yc compute instance stop telegram-news-reader --folder-id "$folder" >/dev/null 2>&1 || true
+          rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/tgkey" "$RUNNER_TEMP/tgkey.pub" "$RUNNER_TEMP/oldkeys" "$RUNNER_TEMP/newkeys"
+          echo DONOR_CLEANUP_DONE
