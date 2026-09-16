@@ -11,8 +11,13 @@ from typing import Any
 from mcp.server.fastmcp import FastMCP
 
 from .archive_queue import WBFinanceArchiveJobQueue
+from .archive_refresh import enqueue_refresh_cycle, normalize_refresh_family, refresh_catalog
+from .archive_refresh_verify import verify_registered_archive
 from .archive_resumable_diagnostic import WBFinanceResumableDiagnostic
 from .archive_resumable_worker import WBFinanceResumableWorker
+from .wb_advertising_archive import ARCHIVE_CABINETS as ADS_ARCHIVE_CABINETS
+from .wb_advertising_archive_queue import WBAdvertisingArchiveJobQueue
+from .wb_advertising_archive_verified_worker import VerifiedWBAdvertisingArchiveWorker
 from .wb_finance_archive import ARCHIVE_CABINETS, WBFinanceArchiveManager
 
 _BLOCKED_SQL = re.compile(
@@ -59,9 +64,7 @@ async def _query_year(store: Any, year: int, sql: str) -> dict[str, Any]:
         conn = duckdb.connect(database=":memory:")
         try:
             for cabinet in ARCHIVE_CABINETS:
-                folder = await store.ensure_folder_path(
-                    ["База данных", "WB", cabinet, str(year), "finance", "weekly", "main"]
-                )
+                folder = await store.ensure_folder_path(["База данных", "WB", cabinet, str(year), "finance", "weekly", "main"])
                 name = f"{cabinet}__weekly_main__{year}.csv"
                 item, data = await store.download_named(folder, name)
                 if item is None or data is None:
@@ -77,12 +80,7 @@ async def _query_year(store: Any, year: int, sql: str) -> dict[str, Any]:
                 )
                 available.append(cabinet)
             if not available:
-                return {
-                    "ok": False,
-                    "error": "archive_year_not_found",
-                    "year": year,
-                    "message": "No WB annual archive files are available for this year.",
-                }
+                return {"ok": False, "error": "archive_year_not_found", "year": year, "message": "No WB annual archive files are available for this year."}
             union_sql = " UNION ALL BY NAME ".join(f"SELECT * FROM {name}" for name in available)
             conn.execute(f"CREATE VIEW wb_all AS {union_sql}")
             cursor = conn.execute(statement)
@@ -90,15 +88,7 @@ async def _query_year(store: Any, year: int, sql: str) -> dict[str, Any]:
             rows = cursor.fetchmany(1001)
             truncated = len(rows) > 1000
             rows = rows[:1000]
-            return {
-                "ok": True,
-                "year": year,
-                "views": [*available, "wb_all"],
-                "columns": columns,
-                "rows": [list(row) for row in rows],
-                "row_count": len(rows),
-                "truncated": truncated,
-            }
+            return {"ok": True, "year": year, "views": [*available, "wb_all"], "columns": columns, "rows": [list(row) for row in rows], "row_count": len(rows), "truncated": truncated}
         finally:
             conn.close()
 
@@ -106,94 +96,143 @@ async def _query_year(store: Any, year: int, sql: str) -> dict[str, Any]:
 def register_archive_tools(mcp: FastMCP, modules: dict[str, Any], store: Any | None) -> None:
     wb = modules["wb"]
 
-    @mcp.tool(
-        name="marketplace_archive_update",
-        annotations={"title": "Queue central marketplace database archive update", "readOnlyHint": False, "openWorldHint": True},
-    )
-    async def marketplace_archive_update(
-        year: int = date.today().year,
-        seller: str = "all",
-        max_reports_per_cabinet: int = 4,
-    ) -> str:
-        """Queue a durable WB archive job instead of holding one long MCP call."""
+    @mcp.tool(name="marketplace_database_refresh_catalog", annotations={"title": "Marketplace database refresh contracts", "readOnlyHint": True, "openWorldHint": False})
+    async def marketplace_database_refresh_catalog() -> str:
+        return _j({
+            "ok": True,
+            "contracts": refresh_catalog(),
+            "rule": "A database refresh always re-runs dataset-specific discovery/coverage reconciliation. COMPLETE means the previous refresh cycle completed; it never means the annual database is permanently final.",
+        })
+
+    @mcp.tool(name="marketplace_database_verify", annotations={"title": "Verify canonical marketplace database integrity", "readOnlyHint": True, "openWorldHint": False})
+    async def marketplace_database_verify(marketplace: str = "wb", year: int = date.today().year, seller: str = "all", dataset_family: str = "all") -> str:
+        if store is None:
+            return _not_configured()
+        marketplace = str(marketplace).strip().lower()
+        families = normalize_refresh_family(dataset_family)
+        finance_cabinets: tuple[str, ...] = ()
+        advertising_cabinets: tuple[str, ...] = ()
+        if "finance" in families:
+            finance_queue = WBFinanceArchiveJobQueue(wb, store)
+            finance_cabinets = ARCHIVE_CABINETS if seller.strip().lower() == "all" else (finance_queue.normalize_cabinet(seller),)
+        if "advertising" in families:
+            advertising_queue = WBAdvertisingArchiveJobQueue(wb, store)
+            advertising_cabinets = ADS_ARCHIVE_CABINETS if seller.strip().lower() == "all" else (advertising_queue.normalize_cabinet(seller),)
+        return _j(await verify_registered_archive(store, marketplace=marketplace, year=int(year), finance_cabinets=finance_cabinets, advertising_cabinets=advertising_cabinets, families=families))
+
+    @mcp.tool(name="marketplace_database_update", annotations={"title": "Update canonical marketplace databases", "readOnlyHint": False, "openWorldHint": True})
+    async def marketplace_database_update(marketplace: str = "wb", year: int = date.today().year, seller: str = "all", dataset_family: str = "all") -> str:
+        if store is None:
+            return _not_configured()
+        marketplace = str(marketplace).strip().lower()
+        if marketplace != "wb":
+            return _j({"ok": False, "error": "archive_refresh_not_registered", "marketplace": marketplace, "message": "No generic archive refresh adapter is registered for this marketplace yet.", "registered": refresh_catalog()})
+        families = normalize_refresh_family(dataset_family)
+        jobs: list[dict[str, Any]] = []
+        worker_tools: set[str] = set()
+        for family in families:
+            if family == "finance":
+                queue = WBFinanceArchiveJobQueue(wb, store)
+                sellers = ARCHIVE_CABINETS if seller.strip().lower() == "all" else (seller,)
+                jobs.extend([await enqueue_refresh_cycle(queue, family="finance", year=int(year), seller=item) for item in sellers])
+                worker_tools.add("marketplace_archive_worker_step")
+            elif family == "advertising":
+                queue = WBAdvertisingArchiveJobQueue(wb, store)
+                sellers = ADS_ARCHIVE_CABINETS if seller.strip().lower() == "all" else (seller,)
+                jobs.extend([await enqueue_refresh_cycle(queue, family="advertising", year=int(year), seller=item) for item in sellers])
+                worker_tools.add("marketplace_advertising_archive_worker_step")
+        scheduled = [job for job in jobs if job.get("scheduled")]
+        return _j({
+            "ok": True,
+            "marketplace": marketplace,
+            "year": int(year),
+            "dataset_families": list(families),
+            "queued": bool(scheduled),
+            "queued_jobs": len(scheduled),
+            "jobs": jobs,
+            "worker_tools": sorted(worker_tools),
+            "verification_tool": "marketplace_database_verify",
+            "completion_policy": "Do not report the database as updated merely because jobs were queued. Each job must reach COMPLETE after dataset-specific discovery, stable-key merge, canonical publication and coverage/registry commit; then call marketplace_database_verify.",
+        })
+
+    @mcp.tool(name="marketplace_archive_update", annotations={"title": "Queue WB weekly-finance archive refresh", "readOnlyHint": False, "openWorldHint": True})
+    async def marketplace_archive_update(year: int = date.today().year, seller: str = "all", max_reports_per_cabinet: int = 4) -> str:
         del max_reports_per_cabinet
         if store is None:
             return _not_configured()
         queue = WBFinanceArchiveJobQueue(wb, store)
         sellers = ARCHIVE_CABINETS if seller.strip().lower() == "all" else (seller,)
-        jobs = [await queue.enqueue(year=int(year), seller=item) for item in sellers]
+        jobs = [await enqueue_refresh_cycle(queue, family="finance", year=int(year), seller=item) for item in sellers]
+        scheduled = [job for job in jobs if job.get("scheduled")]
         return _j({
-            "ok": True,
-            "marketplace": "wb",
-            "dataset": "wb_weekly_finance_main",
-            "year": int(year),
-            "queued": True,
-            "jobs": jobs,
-            "instruction": "Process queued jobs with marketplace_archive_worker_step; no long quota wait occurs inside MCP.",
+            "ok": True, "marketplace": "wb", "dataset": "wb_weekly_finance_main", "year": int(year),
+            "queued": bool(scheduled), "queued_jobs": len(scheduled), "jobs": jobs,
+            "verification_tool": "marketplace_database_verify",
+            "instruction": "Process queued jobs with marketplace_archive_worker_step. A previously COMPLETE annual job is reopened at DISCOVER; reports_registry.csv filters old reportId values so only missing provider reports are ingested. After COMPLETE, call marketplace_database_verify for canonical row/date/dedup checks.",
         })
 
-    @mcp.tool(
-        name="marketplace_archive_worker_step",
-        annotations={"title": "Process one durable archive queue step", "readOnlyHint": False, "openWorldHint": True},
-    )
+    @mcp.tool(name="marketplace_archive_worker_step", annotations={"title": "Process one durable archive queue step", "readOnlyHint": False, "openWorldHint": True})
     async def marketplace_archive_worker_step(job_id: str = "") -> str:
-        """Run one bounded durable archive step."""
         if store is None:
             return _not_configured()
         queue = WBFinanceArchiveJobQueue(wb, store)
         worker = WBFinanceResumableWorker(queue, store)
         return _j(await worker.worker_step(job_id))
 
-    @mcp.tool(
-        name="marketplace_archive_resumable_diagnostic_step",
-        annotations={
-            "title": "Verify existing archive candidate through temporary Drive resumable copy",
-            "readOnlyHint": False,
-            "destructiveHint": False,
-            "openWorldHint": True,
-        },
-    )
+    @mcp.tool(name="marketplace_archive_resumable_diagnostic_step", annotations={"title": "Verify existing archive candidate through temporary Drive resumable copy", "readOnlyHint": False, "destructiveHint": False, "openWorldHint": True})
     async def marketplace_archive_resumable_diagnostic_step(job_id: str) -> str:
-        """Upload only a temporary copy of an existing PREPARE candidate.
-
-        This diagnostic never advances completed_count, never calls WB, never
-        repeats PREPARE, and never overwrites the canonical annual filename.
-        After exact Drive size/SHA256 verification the temporary copy is trashed.
-        """
         if store is None:
             return _not_configured()
         queue = WBFinanceArchiveJobQueue(wb, store)
         diagnostic = WBFinanceResumableDiagnostic(queue, store)
         return _j(await diagnostic.step(job_id))
 
-    @mcp.tool(
-        name="marketplace_archive_job_status",
-        annotations={"title": "Durable archive job status", "readOnlyHint": True, "openWorldHint": False},
-    )
+    @mcp.tool(name="marketplace_archive_job_status", annotations={"title": "Durable archive job status", "readOnlyHint": True, "openWorldHint": False})
     async def marketplace_archive_job_status(job_id: str) -> str:
-        """Show persisted progress for an archive queue job."""
         if store is None:
             return _not_configured()
         queue = WBFinanceArchiveJobQueue(wb, store)
         return _j(await queue.status(job_id))
 
-    @mcp.tool(
-        name="marketplace_archive_status",
-        annotations={"title": "Marketplace archive status", "readOnlyHint": True, "openWorldHint": False},
-    )
+    @mcp.tool(name="marketplace_archive_status", annotations={"title": "Marketplace archive status", "readOnlyHint": True, "openWorldHint": False})
     async def marketplace_archive_status(year: int = date.today().year) -> str:
-        """Show central WB archive coverage and canonical annual-file state."""
         if store is None:
             return _not_configured()
         manager = WBFinanceArchiveManager(wb, store)
         return _j(await manager.status(int(year)))
 
-    @mcp.tool(
-        name="marketplace_archive_query",
-        annotations={"title": "Query WB annual archive", "readOnlyHint": True, "openWorldHint": False},
-    )
+    @mcp.tool(name="marketplace_archive_query", annotations={"title": "Query WB annual archive", "readOnlyHint": True, "openWorldHint": False})
     async def marketplace_archive_query(year: int, sql: str) -> str:
-        """Run safe read-only SQL over canonical annual WB CSV files on Drive."""
         if store is None:
             return _not_configured()
         return _j(await _query_year(store, int(year), sql))
+
+    @mcp.tool(name="marketplace_advertising_archive_update", annotations={"title": "Queue WB advertising archive refresh", "readOnlyHint": False, "openWorldHint": True})
+    async def marketplace_advertising_archive_update(year: int = date.today().year, seller: str = "all") -> str:
+        if store is None:
+            return _not_configured()
+        queue = WBAdvertisingArchiveJobQueue(wb, store)
+        sellers = ADS_ARCHIVE_CABINETS if seller.strip().lower() == "all" else (seller,)
+        jobs = [await enqueue_refresh_cycle(queue, family="advertising", year=int(year), seller=item) for item in sellers]
+        scheduled = [job for job in jobs if job.get("scheduled")]
+        return _j({
+            "ok": True, "marketplace": "wb", "dataset_family": "advertising", "year": int(year),
+            "queued": bool(scheduled), "queued_jobs": len(scheduled), "jobs": jobs,
+            "verification_tool": "marketplace_database_verify",
+            "instruction": "Process queued jobs with marketplace_advertising_archive_worker_step. The same worker performs provider reconciliation, stable-key annual upsert, verified Drive publication and coverage commit. After COMPLETE, call marketplace_database_verify for canonical row/date/dedup checks.",
+        })
+
+    @mcp.tool(name="marketplace_advertising_archive_worker_step", annotations={"title": "Process one WB advertising archive step", "readOnlyHint": False, "openWorldHint": True})
+    async def marketplace_advertising_archive_worker_step(job_id: str = "") -> str:
+        if store is None:
+            return _not_configured()
+        queue = WBAdvertisingArchiveJobQueue(wb, store)
+        worker = VerifiedWBAdvertisingArchiveWorker(queue, store)
+        return _j(await worker.worker_step(job_id))
+
+    @mcp.tool(name="marketplace_advertising_archive_job_status", annotations={"title": "WB advertising archive status", "readOnlyHint": True, "openWorldHint": False})
+    async def marketplace_advertising_archive_job_status(job_id: str) -> str:
+        if store is None:
+            return _not_configured()
+        queue = WBAdvertisingArchiveJobQueue(wb, store)
+        return _j(await queue.status(job_id))
