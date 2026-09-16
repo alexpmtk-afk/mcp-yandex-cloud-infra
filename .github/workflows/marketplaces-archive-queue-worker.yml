@@ -6,11 +6,8 @@ on:
     branches: [main]
     paths:
       - .github/workflows/control/run-marketplaces-archive-queue-worker.txt
-
-# Temporary recovery guard: scheduled drain is paused while Laser Master report
-# 743994450 is advanced through the verified 23 -> 24 checkpoint. Manual drain
-# remains available and uses the same concurrency group. Restore the schedule
-# only after targeted checkpoint acceptance is complete.
+  schedule:
+    - cron: '*/5 * * * *'
 
 permissions:
   contents: read
@@ -55,7 +52,7 @@ jobs:
           test -n "$FOLDER_ID"
           yc config set folder-id "$FOLDER_ID"
           SECRET_ID="$(timeout 45s yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
-          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")][0].id')"
+          VERSION_ID="$(timeout 45s yc lockbox secret list-versions --id "$SECRET_ID" --format json | jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)|select((.payload_entry_keys // [])|index("gdrive_bridge_v1_secret") == null)]|sort_by(.created_at)|last|.id // empty')"
           DOMAIN="$(timeout 45s yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
           test -n "$SECRET_ID"
           test -n "$VERSION_ID"
