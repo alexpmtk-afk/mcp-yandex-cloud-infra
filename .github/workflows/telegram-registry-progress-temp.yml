@@ -1,0 +1,58 @@
+name: Telegram Registry Progress Temp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/telegram-registry-progress-temp.yml
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-registry-progress || true
+          yc config profile activate telegram-registry-progress
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+      - name: Read-only registry progress
+        shell: bash
+        run: |
+          set -euo pipefail
+          registry=crphagvid8e8g5pp4fpe
+          folder=b1gk4p83brasi8g811jv
+          yc container image list --registry-id "$registry" --folder-id "$folder" --limit 1000 --format json > "$RUNNER_TEMP/images.json"
+          count="$(jq 'length' "$RUNNER_TEMP/images.json")"
+          bytes="$(jq '[.[].compressed_size|tonumber]|add // 0' "$RUNNER_TEMP/images.json")"
+          echo "REGISTRY_VISIBLE_COUNT=$count"
+          echo "REGISTRY_VISIBLE_COMPRESSED_BYTES=$bytes"
+          for id in crpttddondkva0249ck1 crp5f3l4odahojjing58 crp4hlidsd72g7kuu9oc crpguje4oluuh2e7m3qn; do
+            jq -e --arg id "$id" 'any(.[]; .id==$id)' "$RUNNER_TEMP/images.json" >/dev/null
+          done
+          echo REGISTRY_KEEP_SET_VISIBLE_PASS
+      - name: Cleanup credential file
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/images.json"
