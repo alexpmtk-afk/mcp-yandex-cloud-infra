@@ -1,3 +1,3 @@
-run=2026-09-16T19:05:30Z
-expected_worker_sha=24a2c04d0ff5433609d080ab6d24913bc441bad7
-purpose=complete D1 archive and revalidate fresh right edge
+run=2026-09-16T19:38:00Z
+expected_worker_sha=fc4d205adc806446a98ebda5d3b210771f84d489
+purpose=complete D1 archive, finalize Si mirror, prove core 6 markets
