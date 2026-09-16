@@ -178,7 +178,16 @@ class TelegramReader:
 
     async def _allowed_entity(self, chat_id: int):
         self.whitelist.assert_allowed(chat_id)
-        return await self.client.get_entity(int(chat_id))
+        try:
+            return await self.client.get_entity(int(chat_id))
+        except ValueError:
+            # StringSession intentionally stores authorization only and does not
+            # carry Telethon's SQLite entity cache. Rehydrate the exact allowed
+            # entity from the account dialog list on a cold serverless start.
+            async for dialog in self.client.iter_dialogs():
+                if int(dialog.id) == int(chat_id):
+                    return dialog.entity
+            raise
 
     def _message_record(self, chat_id: int, entity, message) -> MessageRecord:
         username = getattr(entity, "username", None)
