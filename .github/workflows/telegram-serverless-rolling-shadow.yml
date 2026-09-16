@@ -39,7 +39,7 @@ jobs:
           yc config profile activate tg-serverless-rolling-shadow
           yc config set service-account-key "$key"
           yc config set folder-id b1gk4p83brasi8g811jv
-      - name: Build rolling snapshot from direct Telegram reads
+      - name: Build canonical V1 rolling snapshot from direct Telegram reads
         shell: bash
         run: |
           set -euo pipefail
@@ -73,7 +73,7 @@ jobs:
               if [ -n "$before" ]; then args+=(--data-urlencode "before_id=$before"); fi
               page="$(curl -fsS --retry 2 --retry-delay 2 --max-time 110 -H "Authorization: Bearer $token" "${args[@]}" "$url/internal/chats/$chat_id/messages")"
               echo "$page" | jq -e --argjson id "$chat_id" '.chat_id==$id and (.message_count|tonumber)>=0 and (.messages|length)==.message_count' >/dev/null
-              echo "$page" | jq -c '.messages[]' >> "$work/messages.ndjson"
+              echo "$page" | jq -c --arg collected_at "$generated_at" '.messages[] + {username:null,collected_at:$collected_at}' >> "$work/messages.ndjson"
               full="$(echo "$page" | jq -r '.page_full')"
               next="$(echo "$page" | jq -r '.next_before_id // empty')"
               if [ "$full" != "true" ]; then break; fi
@@ -96,17 +96,20 @@ jobs:
             --arg schema "TELEGRAM_NEWS_READER_V1" \
             --arg generated_at "$generated_at" \
             --argjson window_hours 192 \
-            --slurpfile chats "$work/chats.json" \
+            --argjson allowed_chats 9 \
             --slurpfile messages "$work/messages.json" \
-            '{schema:$schema,generated_at:$generated_at,window_hours:$window_hours,allowed_chats:$chats[0],message_count:($messages[0]|length),messages:$messages[0]}' \
+            '{schema:$schema,generated_at:$generated_at,window_hours:$window_hours,allowed_chats:$allowed_chats,message_count:($messages[0]|length),media_message_count:0,preview_message_count:0,messages:$messages[0]}' \
             > "$work/output.json"
 
           jq -e '
             .schema=="TELEGRAM_NEWS_READER_V1" and
             .window_hours==192 and
-            (.allowed_chats|length)==9 and
+            .allowed_chats==9 and
             .message_count==(.messages|length) and
-            ([.messages[]|[.chat_id,.message_id]]|length)==([.messages[]|[.chat_id,.message_id]]|unique|length)
+            .media_message_count==([.messages[]|select(.media_asset != null)]|length) and
+            .preview_message_count==0 and
+            ([.messages[]|[.chat_id,.message_id]]|length)==([.messages[]|[.chat_id,.message_id]]|unique|length) and
+            ([.messages[]|select((has("chat_id") and has("message_id") and has("chat_title") and has("datetime") and has("text") and has("sender_id") and has("views") and has("forwards") and has("reply_to_message_id") and has("media_type") and has("url") and has("username") and has("collected_at") and has("media_asset"))|not)]|length)==0
           ' "$work/output.json" >/dev/null
           jq -e '[.messages[]|select(.chat_id==-1001343028414)]|length>=1' "$work/output.json" >/dev/null
 
