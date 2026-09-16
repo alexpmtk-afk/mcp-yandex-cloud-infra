@@ -1,1 +1,1 @@
-2026-09-16 read-only durable Laser state after telemetry runtime deploy; inspect report 751229976 resumable checkpoint only
+2026-09-16 read-only Laser progress during restored scheduled drain after verified 25 checkpoint
