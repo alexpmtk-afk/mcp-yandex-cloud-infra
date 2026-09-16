@@ -79,6 +79,14 @@ jobs:
           terraform -chdir="$TF_DIR" output -raw mcp_auth_secret_id > "$RUNNER_TEMP/mcp-secret-id"
           terraform -chdir="$TF_DIR" output -raw mcp_auth_secret_version_id > "$RUNNER_TEMP/mcp-secret-version"
           test -s "$RUNNER_TEMP/ydb" && test -s "$RUNNER_TEMP/mcp-endpoint" && test -s "$RUNNER_TEMP/mcp-secret-id" && test -s "$RUNNER_TEMP/mcp-secret-version"
+          python - <<'PY'
+          import os
+          from pathlib import Path
+          endpoint=(Path(os.environ['RUNNER_TEMP'])/'mcp-endpoint').read_text().strip().rstrip('/')
+          assert endpoint.startswith('https://'), endpoint
+          assert endpoint.endswith('/mcp'), endpoint
+          assert endpoint.count('/mcp')==1, endpoint
+          PY
           echo 'M26_9_RUNTIME_OUTPUTS=PASS'
 
       - name: Install exact clients
@@ -157,7 +165,7 @@ jobs:
           from mcp import Client
           from mcp.client.streamable_http import streamable_http_client
 
-          endpoint=(Path(os.environ['RUNNER_TEMP'])/'mcp-endpoint').read_text().strip().rstrip('/') + '/mcp'
+          endpoint=(Path(os.environ['RUNNER_TEMP'])/'mcp-endpoint').read_text().strip().rstrip('/')
           token=(Path(os.environ['RUNNER_TEMP'])/'mcp-bearer').read_text()
           symbol=os.environ['FORECAST_SYMBOL']
           async def main():
