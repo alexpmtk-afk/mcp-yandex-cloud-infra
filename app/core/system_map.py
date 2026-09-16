@@ -6,7 +6,7 @@ from typing import Any
 
 from mcp.server.fastmcp import FastMCP
 
-ARCHITECTURE_VERSION = "2026-09-15.v17"
+ARCHITECTURE_VERSION = "2026-09-16.v19"
 
 SYSTEM_MAP: dict[str, Any] = {
     "architecture_version": ARCHITECTURE_VERSION,
@@ -125,7 +125,7 @@ SYSTEM_MAP: dict[str, Any] = {
             "ads_payments",
         ],
         "historical_routing": "closed cabinet-level campaign advertising analytics are archive-first only when roster plus campaign fullstats FULL_COVERAGE is proven; current state/control stays live",
-        "semantic_v1_scope": "cabinet-level ads_campaign_daily only; product/nm_id questions fail closed until ads_product_daily receives its own approved semantic execution contract; campaign-scoped selectors/grouping are also fail-closed",
+        "semantic_v1_scope": "cabinet-level ads_campaign_daily only; product/nm_id questions fail closed until ads_product_daily receives its own Semantic execution contract; campaign-scoped selectors/grouping are also fail-closed",
         "write_control_status": "not accepted in M0; dedicated start/pause/stop/bid/budget/product/cluster control tools require a later safety-reviewed phase",
         "safety_override": "provider GET endpoints that mutate campaign state (start/pause/stop/delete) are WRITE/DESTRUCTIVE at MCP level regardless of HTTP verb",
     },
@@ -134,11 +134,16 @@ SYSTEM_MAP: dict[str, Any] = {
         "runtime_entry": "marketplace_business_query",
         "registry": "core/semantic_registry.yaml + validated core/semantic_registry_extensions.yaml",
         "intent_catalog": "core/semantic_intents.yaml",
+        "business_query_parser": "core/business_query_parser.py normalizes metric-independent measure/grouping/period/filter dimensions before source selection",
+        "resolver": "core/semantic_resolver.py",
         "execution_registry": "core/semantic_execution.yaml for weekly finance",
         "archive_executor": "core/semantic_archive.py for weekly finance; core/semantic_advertising.py for advertising",
+        "operational_executor": "core/semantic_current_stock.py for seller-aware current WB stock; ORDERS uses the approved legacy operational executor",
+        "approved_operational_business_metrics": ["ORDERS", "CURRENT_STOCK"],
+        "current_stock_source": "WB Seller Analytics current stocks endpoint; Base-token fallback is the official asynchronous warehouse-remains report",
         "current_archive_datasets": ["wb_weekly_finance_main", "ads_campaign_daily", "ads_campaign_roster_snapshots"],
         "current_archive_schema": "92 official-help-audited weekly-finance columns plus WB Advertising V1 campaign-daily and roster schemas",
-        "source_revision": "alexpmtk-afk/marketplaces-mcp-ru@833eab826bfaa4691a05a21a5d00f1e8e0ba1b37",
+        "source_revision": "alexpmtk-afk/marketplaces-mcp-ru@303b7f6e732e8c6b0047ab4e81c43169acd6f040",
         "approved_archive_executors": [
             "penalties",
             "storage_charge",
@@ -153,9 +158,16 @@ SYSTEM_MAP: dict[str, Any] = {
             "advertising_performance",
         ],
         "execution_gate": "FULL_COVERAGE from the dataset-specific canonical registry plus canonical annual-file presence; weekly finance uses reports_registry.csv, advertising uses dataset_coverage_registry.csv with roster/fullstats scope proof",
-        "question_policy": "preserve the original natural-language question; execute only an explicitly registered capability; do not substitute a similar legacy metric",
+        "question_policy": {
+            "preferred_input": "preserve the user's original natural-language question",
+            "legacy_metric": "retained only for backward compatibility",
+            "precedence": "question overrides a conflicting legacy metric",
+            "current_state_precedence": "a specific registered operational business metric may outrank the generic current-state guard only for its explicitly approved live/operational source",
+            "clarification": "fail closed when meaning/source cannot be safely resolved; never silently substitute a similar metric",
+        },
         "fail_closed_for": [
             "complete marketplace order flow from weekly-finance orderDt/orderUid",
+            "historical stock requested from the current WB stock snapshot",
             "current stock from historical finance rows",
             "current fulfillment configuration from historical deliveryMethod",
             "current live warehouse tariff from historical dlvPrc/warehouseLogisticsCoeff",
@@ -166,10 +178,18 @@ SYSTEM_MAP: dict[str, Any] = {
             "current-day advertising from the closed historical archive",
             "historical advertising when roster/fullstats FULL_COVERAGE is not proven",
         ],
+        "operational_rules": [
+            "business_query_parser extracts measure/grouping/period/filter before source selection and does not choose provider fields",
+            "ordinary ORDERS questions, including today, use the approved operational WB Statistics Orders source; explicit complete-order-flow wording remains separate and fail-closed without a complete order-feed source",
+            "CURRENT_STOCK uses the seller-aware live WB Seller Analytics stock source for the named cabinet; Base tokens may use the official asynchronous warehouse-remains report fallback",
+            "CURRENT_STOCK is a present snapshot only; any past-date stock request fails closed until a separate historical stock source/contract is approved",
+            "the generic current-state marker is only a fallback and must not block a more specific registered operational metric",
+        ],
         "advertising_guardrail": "DRR/ROAS and attributed order metrics under advertising_performance are WB advertising-attribution metrics, not total seller revenue, complete orders, or business profitability",
         "money_policy": "never combine different currencies and never silently net unrelated financial components",
         "dlvPrc_policy": "historical coefficient fixed when the supply was planned; not proof of the coefficient actually charged after fixation expiry and never current tariff truth",
         "schema_drift_policy": "provider fields outside the audited 92-column weekly-finance archive, including agencyVat, are not executable merely because the live API exposes them",
+        "runtime_integration": "marketplace_business_query preserves the original question and normalizes source-independent business dimensions before source selection; approved historical archive capabilities remain FULL_COVERAGE-gated, ORDERS routes to the operational WB Statistics Orders source, and CURRENT_STOCK routes to the seller-aware live WB stock executor without substituting today's snapshot for historical dates",
     },
     "data_routing_policy": {
         "canonical_catalog_tool": "marketplace_data_catalog",
@@ -184,10 +204,11 @@ SYSTEM_MAP: dict[str, Any] = {
     },
     "routing_policy": {
         "update_database": "route to the server archive update workflow for the selected dataset; compare canonical Drive registry and fetch only missing provider data",
-        "natural_business_question": "preserve the user's original wording and resolve it through Semantic Core before selecting or executing a source",
+        "natural_business_question": "preserve the user's original wording, normalize business dimensions, and resolve through Semantic Core before selecting or executing a source",
         "historical_queries": "execute an approved Semantic Core archive capability only after matching source semantics and FULL_COVERAGE are proven",
         "current_or_uncovered": "use an explicitly suitable live/provider source or return a controlled source/coverage gap; never fall back to a similar historical field",
-        "complete_orders": "never use weekly-finance orderDt/orderUid as the complete customer-order flow",
+        "complete_orders": "never use weekly-finance orderDt/orderUid as the complete customer-order flow; explicit complete-order wording must not be silently substituted with operational Statistics Orders",
+        "current_stock": "CURRENT_STOCK uses the current WB Seller Analytics stock snapshot for the named cabinet; historical stock dates require a separate approved source and never receive today's snapshot",
         "current_tariffs": "never use historical dlvPrc or warehouseLogisticsCoeff as current live tariff truth",
         "advertising_live_vs_archive": "campaign state/current control remains live; closed cabinet-level advertising analytics are archive-first after roster/fullstats FULL_COVERAGE proof; product-level and campaign-scoped semantic requests remain fail-closed until separately approved",
         "multi_client": "all clients must see the same remote canonical Drive state, data catalog and Semantic Core rules; no chat-local architecture decisions",
@@ -224,12 +245,15 @@ Large annual CSV files must NOT be transported through Apps Script/base64. Apps 
 Large writes must target a non-canonical staging filename first. The existing canonical file remains untouched until Drive size/SHA256 verification and the byte-for-byte Yandex backup pass; then Apps Script promotes the verified staging file and only afterward may COMMIT advance registry/job progress.
 The large-file worker trusts Drive-confirmed offsets, never blindly resends after ambiguous interruption, restarts unusable sessions from the immutable candidate, applies bounded backoff to throttling/transient errors, and never logs the bearer-like session URI.
 The marketplace archive is MULTI-DATASET. No single report or annual CSV is the complete WB/Ozon business database.
-For natural-language business questions, preserve the user's original wording and route it through marketplace_business_query / Semantic Core before archive execution. Only explicitly approved capabilities may execute.
+For natural-language business questions, preserve the user's original wording and route it through marketplace_business_query / Semantic Core. The server first normalizes source-independent measure/grouping/period/filter dimensions; only explicitly approved archive capabilities or operational business metrics may execute.
+The generic words `today/current/сегодня/текущий` are a fail-closed fallback, not a global veto: a more specific registered operational business metric may outrank them only for its explicitly approved live/operational source.
+Ordinary WB ORDERS questions, including today, use the approved operational WB Statistics Orders source. That source is operational/preliminary and must never be described as the complete marketplace order flow; explicit complete-order-flow wording remains a separate fail-closed concept until a complete source is approved.
+CURRENT_STOCK uses the seller-aware current WB Seller Analytics stock snapshot for the named cabinet. Base-token cabinets may use the official asynchronous warehouse-remains report fallback. It is present-state only: a historical stock date must fail closed and must never receive today's snapshot.
 The current WB weekly reportType=1 archive is only the first financial-realization dataset. It is NOT authoritative for the complete customer-order flow, daily stock history, advertising/promotion metrics, or sales-funnel metrics.
 Weekly-finance orderDt/orderUid are context attached to reported financial operations and must never be used as the complete customer-order funnel.
 Archive calculations require FULL_COVERAGE from the dataset-specific canonical registry plus the canonical annual file. Different currencies are never combined and unrelated financial components are never silently netted.
 Historical deliveryMethod may describe observed fulfillment only. Historical dlvPrc is the coefficient fixed when the supply was planned; after fixation expiry it is not proof of the coefficient actually charged and it is never current tariff truth. warehouseLogisticsCoeff is also historical context, not a current tariff source.
-Current-state questions, complete-order-flow questions, unsupported Ozon semantics and unknown fields fail closed rather than falling back to similar weekly-finance data.
+Current-state questions without an approved operational source, complete-order-flow questions, unsupported Ozon semantics and unknown fields fail closed rather than falling back to similar weekly-finance data.
 The current provider API may expose agencyVat, but it is not part of the audited 92-column canonical archive and has no approved Semantic Core binding; do not execute it until it is explicitly audited and registered.
 Before answering other historical business questions, use marketplace_metric_route / marketplace_data_catalog to identify the correct dataset. Generic 'sales/продажи' must have an explicit business meaning and must never be silently reinterpreted as customer orders.
 Never silently substitute the weekly finance dataset for orders, stocks, advertising, funnels, or any other missing dataset. Surface the gap or use the matching official provider API/backfill path.
