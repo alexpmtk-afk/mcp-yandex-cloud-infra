@@ -1,0 +1,1 @@
+2026-09-16 guarded one-step COMMIT for Laser report 751229976; expected 24->25; provider_calls must remain 51
