@@ -73,7 +73,6 @@ async def _connect_reader_once() -> bool:
 
 
 async def _telegram_runtime_loop() -> None:
-    """Keep Telegram connectivity alive without blocking HTTP application startup."""
     collector_task: asyncio.Task | None = None
     try:
         while True:
@@ -92,7 +91,6 @@ async def _telegram_runtime_loop() -> None:
 
 
 async def _list_dialogs_resilient():
-    """Fetch dialogs with a hard timeout and one clean reconnect attempt."""
     if not reader.is_connected():
         connected = await _connect_reader_once()
         if not connected:
@@ -281,6 +279,8 @@ async def health():
         "telegram_authorized": authorized,
         "allowed_chats": len(whitelist.list_allowed()),
         "messages": storage.count_messages(),
+        "collector_last_result": {str(k): v for k, v in collector.last_result.items()},
+        "collector_last_errors": {str(k): v for k, v in collector.last_errors.items()},
         "media_storage": "enabled" if object_storage.enabled else "disabled",
     }
 
