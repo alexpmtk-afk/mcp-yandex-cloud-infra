@@ -74,6 +74,7 @@ class TelegramReader:
             settings.api_hash,
             **kwargs,
         )
+        self._runtime_entities: dict[int, object] = {}
 
     async def connect(self, *, interactive_login: bool = False) -> None:
         if self.relay is not None:
@@ -150,13 +151,48 @@ class TelegramReader:
         *,
         limit: int = 1000,
     ) -> list[MessageRecord]:
+        return await self.get_messages_between(
+            chat_id,
+            datetime_from,
+            datetime.now(timezone.utc),
+            limit=limit,
+        )
+
+    async def get_messages_between(
+        self,
+        chat_id: int,
+        datetime_from: datetime,
+        datetime_to: datetime,
+        *,
+        limit: int = 1000,
+    ) -> list[MessageRecord]:
         entity = await self._allowed_entity(chat_id)
-        cutoff = _as_utc(datetime_from)
+        low = _as_utc(datetime_from)
+        high = _as_utc(datetime_to)
+        if low > high:
+            low, high = high, low
         result: list[MessageRecord] = []
-        async for message in self.client.iter_messages(entity, limit=max(1, limit)):
-            if message.date and _as_utc(message.date) < cutoff:
-                break
-            result.append(self._message_record(chat_id, entity, message))
+        try:
+            async for message in self.client.iter_messages(
+                entity,
+                offset_date=high,
+                limit=max(1, limit),
+            ):
+                if not message.date:
+                    continue
+                moment = _as_utc(message.date)
+                if moment > high:
+                    continue
+                if moment < low:
+                    break
+                try:
+                    result.append(self._message_record(chat_id, entity, message))
+                except Exception as exc:
+                    raise MessageDecodeError() from exc
+        except MessageDecodeError:
+            raise
+        except Exception as exc:
+            raise MessageFetchError() from exc
         return result
 
     async def get_messages_after_id(self, chat_id: int, last_message_id: int) -> list[MessageRecord]:
@@ -230,19 +266,31 @@ class TelegramReader:
     async def _allowed_entity(self, chat_id: int):
         self.whitelist.assert_allowed(chat_id)
 
+        cached = self._runtime_entities.get(int(chat_id))
+        if cached is not None:
+            return cached
+
         runtime_peer = self._runtime_peer(chat_id)
         if runtime_peer is not None:
-            return runtime_peer
+            try:
+                entity = await self.client.get_entity(runtime_peer)
+            except Exception as exc:
+                raise EntityResolutionError() from exc
+            self._runtime_entities[int(chat_id)] = entity
+            return entity
 
         try:
-            return await self.client.get_input_entity(int(chat_id))
+            entity = await self.client.get_input_entity(int(chat_id))
+            self._runtime_entities[int(chat_id)] = entity
+            return entity
         except ValueError:
             pass
 
         try:
             async for dialog in self.client.iter_dialogs(limit=None):
                 if int(dialog.id) == int(chat_id):
-                    return dialog.input_entity
+                    self._runtime_entities[int(chat_id)] = dialog.entity
+                    return dialog.entity
         except Exception as exc:
             raise DialogTraversalError() from exc
 
