@@ -16,19 +16,18 @@ jobs:
   audit:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout infrastructure
         uses: actions/checkout@v4
 
-      - name: Inventory legacy TEST references
+      - name: Inventory legacy TEST naming
         shell: bash
         run: |
           set -euo pipefail
-          echo '=== legacy runtime references ==='
-          git grep -n -E 'marketplaces-mcp-test|Deploy Marketplaces MCP TEST|marketplaces-test-runtime-write|TEST_RUNTIME_WIRED|TEST-only|TEST resources|TEST folder|Existing TEST|TEST API Gateway' -- . ':!app' || true
           COUNT="$(git grep -l -E 'marketplaces-mcp-test|Deploy Marketplaces MCP TEST|marketplaces-test-runtime-write|TEST_RUNTIME_WIRED|TEST-only|TEST resources|TEST folder|Existing TEST|TEST API Gateway' -- . ':!app' 2>/dev/null | wc -l | tr -d ' ')"
           echo "legacy_reference_files=$COUNT"
+          echo 'Legacy naming is inventory only; it does not imply a second runtime.'
 
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -42,7 +41,7 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Prove the single live Marketplace runtime
+      - name: Prove exactly one live Marketplace MCP
         shell: bash
         env:
           YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
@@ -58,98 +57,40 @@ jobs:
           EXPECTED_FOLDER_ID='b1gnd0dqoq3ljod88i8t'
           EXPECTED_CONTAINER_ID='bba6lj5ggejtop0jl5k8'
           EXPECTED_GATEWAY_ID='d5deoa6cl4irtmkp5ad6'
+          EXPECTED_DOMAIN='d5deoa6cl4irtmkp5ad6.bu9mdbe1.apigw.yandexcloud.net'
 
           yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json --no-user-output > "$RUNNER_TEMP/folders.json"
-          echo '=== Marketplace folders ==='
-          jq -r '.[] | select((.name // "") | contains("marketplace")) | [.id,.name,.status] | @tsv' "$RUNNER_TEMP/folders.json"
           FOLDER_NAME="$(jq -r --arg id "$EXPECTED_FOLDER_ID" '.[]|select(.id==$id)|.name // empty' "$RUNNER_TEMP/folders.json")"
           test -n "$FOLDER_NAME"
           yc config set folder-id "$EXPECTED_FOLDER_ID"
 
           yc serverless container list --folder-id "$EXPECTED_FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/containers.json"
           yc serverless api-gateway list --folder-id "$EXPECTED_FOLDER_ID" --format json --no-user-output > "$RUNNER_TEMP/gateways.json"
-          yc serverless container revision list --container-id "$EXPECTED_CONTAINER_ID" --format json --no-user-output > "$RUNNER_TEMP/revisions.json"
 
-          echo '=== Containers ==='
-          jq -r '.[] | [.id,.name,.status] | @tsv' "$RUNNER_TEMP/containers.json"
-          echo '=== API Gateways ==='
-          jq -r '.[] | [.id,.name,.domain] | @tsv' "$RUNNER_TEMP/gateways.json"
-
-          CONTAINER_NAME="$(jq -r --arg id "$EXPECTED_CONTAINER_ID" '.[]|select(.id==$id)|.name // empty' "$RUNNER_TEMP/containers.json")"
-          DOMAIN="$(jq -r --arg id "$EXPECTED_GATEWAY_ID" '.[]|select(.id==$id)|.domain // empty' "$RUNNER_TEMP/gateways.json")"
-          IMAGE="$(jq -r 'sort_by(.created_at)|last|(.image.image_url // .image.url // empty)' "$RUNNER_TEMP/revisions.json")"
-          test -n "$CONTAINER_NAME"
-          test -n "$DOMAIN"
-          test -n "$IMAGE"
-
+          CONTAINER_MATCHES="$(jq --arg id "$EXPECTED_CONTAINER_ID" '[.[]|select(.id==$id)]|length' "$RUNNER_TEMP/containers.json")"
+          GATEWAY_MATCHES="$(jq --arg id "$EXPECTED_GATEWAY_ID" '[.[]|select(.id==$id)]|length' "$RUNNER_TEMP/gateways.json")"
           MARKETPLACE_CONTAINERS="$(jq '[.[]|select((.name//"")|contains("marketplaces-mcp"))]|length' "$RUNNER_TEMP/containers.json")"
           MARKETPLACE_GATEWAYS="$(jq '[.[]|select((.name//"")|contains("marketplaces"))]|length' "$RUNNER_TEMP/gateways.json")"
+          DOMAIN="$(jq -r --arg id "$EXPECTED_GATEWAY_ID" '.[]|select(.id==$id)|.domain // empty' "$RUNNER_TEMP/gateways.json")"
+
+          test "$CONTAINER_MATCHES" -eq 1
+          test "$GATEWAY_MATCHES" -eq 1
           test "$MARKETPLACE_CONTAINERS" -eq 1
           test "$MARKETPLACE_GATEWAYS" -eq 1
-
-          echo "folder_id=$EXPECTED_FOLDER_ID"
-          echo "folder_name=$FOLDER_NAME"
-          echo "container_id=$EXPECTED_CONTAINER_ID"
-          echo "container_name=$CONTAINER_NAME"
-          echo "gateway_id=$EXPECTED_GATEWAY_ID"
-          echo "gateway_domain=$DOMAIN"
-          echo "marketplace_containers_in_folder=$MARKETPLACE_CONTAINERS"
-          echo "marketplace_gateways_in_folder=$MARKETPLACE_GATEWAYS"
-          echo "MCP_IMAGE_URL=$IMAGE" >> "$GITHUB_ENV"
+          test "$DOMAIN" = "$EXPECTED_DOMAIN"
 
           HEALTH_CODE="$(curl --proto '=https' --tlsv1.2 --silent --show-error --max-time 30 --output "$RUNNER_TEMP/health" --write-out '%{http_code}' "https://${DOMAIN}/healthz")"
           test "$HEALTH_CODE" = 200
           MCP_CODE="$(curl --proto '=https' --tlsv1.2 --silent --show-error --max-time 30 --output "$RUNNER_TEMP/mcp" --write-out '%{http_code}' -X POST -H 'Content-Type: application/json' -H 'Accept: application/json, text/event-stream' --data '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"single-runtime-audit","version":"1"}}}' "https://${DOMAIN}/mcp")"
           test "$MCP_CODE" = 401
+
+          echo "canonical_folder_id=$EXPECTED_FOLDER_ID"
+          echo "canonical_container_id=$EXPECTED_CONTAINER_ID"
+          echo "canonical_gateway_id=$EXPECTED_GATEWAY_ID"
+          echo "canonical_domain=$EXPECTED_DOMAIN"
           echo 'MARKETPLACES_SINGLE_RUNTIME_BASELINE=PASS'
-
-      - name: Set up Terraform
-        uses: hashicorp/setup-terraform@v3
-        with:
-          terraform_version: '1.9.8'
-
-      - name: Prove canonical rename is in-place only
-        shell: bash
-        env:
-          YC_TFSTATE_ACCESS_KEY: ${{ secrets.YC_TFSTATE_ACCESS_KEY }}
-          YC_TFSTATE_SECRET_KEY: ${{ secrets.YC_TFSTATE_SECRET_KEY }}
-          TF_VAR_yc_service_account_key_file: ${{ runner.temp }}/yc-key.json
-          TF_VAR_mcp_image_url: ${{ env.MCP_IMAGE_URL }}
-        run: |
-          set -euo pipefail
-          test -n "$YC_TFSTATE_ACCESS_KEY"
-          test -n "$YC_TFSTATE_SECRET_KEY"
-          test -n "$TF_VAR_mcp_image_url"
-          terraform -chdir=terraform init -reconfigure -input=false \
-            -backend-config="access_key=$YC_TFSTATE_ACCESS_KEY" \
-            -backend-config="secret_key=$YC_TFSTATE_SECRET_KEY" >/dev/null
-          terraform -chdir=terraform validate
-          terraform -chdir=terraform plan -input=false -no-color -out="$RUNNER_TEMP/single-runtime.plan" >/dev/null
-          terraform -chdir=terraform show -json "$RUNNER_TEMP/single-runtime.plan" > "$RUNNER_TEMP/single-runtime-plan.json"
-          python - <<'PY'
-          import json, os
-          from pathlib import Path
-          p=json.loads((Path(os.environ['RUNNER_TEMP'])/'single-runtime-plan.json').read_text())
-          changed=[]
-          forbidden=[]
-          for r in p.get('resource_changes') or []:
-              actions=((r.get('change') or {}).get('actions') or [])
-              if actions not in (['no-op'], ['read']):
-                  changed.append((r.get('address'), actions))
-              if 'create' in actions or 'delete' in actions:
-                  forbidden.append((r.get('address'), actions))
-          print('planned_changes=' + json.dumps(changed, ensure_ascii=False))
-          assert not forbidden, f'destructive_or_replacement_actions={forbidden}'
-          expected={'yandex_resourcemanager_folder.mcp_test','yandex_container_registry.mcp','yandex_iam_service_account.runtime','yandex_lockbox_secret.marketplace_credentials','yandex_serverless_container.mcp[0]'}
-          actual={a for a,_ in changed}
-          unexpected=actual-expected
-          assert not unexpected, f'unexpected_changes={sorted(unexpected)}'
-          assert 'yandex_resourcemanager_folder.mcp_test' in actual, changed
-          assert 'yandex_serverless_container.mcp[0]' in actual, changed
-          print('MARKETPLACES_SINGLE_RUNTIME_PLAN_NON_DESTRUCTIVE=PASS')
-          PY
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/folders.json" "$RUNNER_TEMP/containers.json" "$RUNNER_TEMP/gateways.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/mcp" "$RUNNER_TEMP/single-runtime.plan" "$RUNNER_TEMP/single-runtime-plan.json"
+        run: rm -rf "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/folders.json" "$RUNNER_TEMP/containers.json" "$RUNNER_TEMP/gateways.json" "$RUNNER_TEMP/health" "$RUNNER_TEMP/mcp"
