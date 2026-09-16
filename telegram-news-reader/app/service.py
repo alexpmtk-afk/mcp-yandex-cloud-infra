@@ -22,6 +22,7 @@ from app.whitelist import AllowedChat
 
 service_settings = load_service_settings()
 manage_token_sha256 = os.getenv("MANAGE_TOKEN_SHA256", "").strip().lower()
+collector_enabled = os.getenv("COLLECTOR_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
 settings, whitelist, reader, storage = build_runtime()
 collector = Collector(reader, storage)
 object_storage = ObjectStorage()
@@ -48,9 +49,7 @@ async def _connect_reader_once() -> bool:
         if reader.is_connected():
             return True
         try:
-            await asyncio.wait_for(
-                reader.connect(interactive_login=False), timeout=CONNECT_TIMEOUT_SECONDS
-            )
+            await asyncio.wait_for(reader.connect(interactive_login=False), timeout=CONNECT_TIMEOUT_SECONDS)
             print("telegram_connect=ok")
             return True
         except AuthorizationRequired:
@@ -93,7 +92,7 @@ async def _telegram_runtime_loop() -> None:
         while True:
             if not reader.is_connected():
                 connected = await _connect_reader_once()
-                if connected and collector_task is None:
+                if connected and collector_enabled and collector_task is None:
                     collector_task = asyncio.create_task(_collector_loop())
             await asyncio.sleep(RECONNECT_DELAY_SECONDS)
     finally:
@@ -110,7 +109,6 @@ async def _list_dialogs_resilient():
         connected = await _connect_reader_once()
         if not connected:
             raise HTTPException(503, "TELEGRAM_UNAVAILABLE")
-
     try:
         return await asyncio.wait_for(reader.list_dialogs(), timeout=DIALOGS_TIMEOUT_SECONDS)
     except asyncio.TimeoutError:
@@ -123,11 +121,8 @@ async def _list_dialogs_resilient():
             await asyncio.wait_for(reader.disconnect(), timeout=5)
         except Exception:
             pass
-
         try:
-            await asyncio.wait_for(
-                reader.connect(interactive_login=False), timeout=CONNECT_TIMEOUT_SECONDS
-            )
+            await asyncio.wait_for(reader.connect(interactive_login=False), timeout=CONNECT_TIMEOUT_SECONDS)
         except AuthorizationRequired:
             raise HTTPException(503, "TELEGRAM_AUTHORIZATION_REQUIRED")
         except asyncio.TimeoutError:
@@ -178,9 +173,6 @@ def _admin_token_ok(request: Request) -> bool:
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    # /internal/* is intentionally protected by the private Yandex Serverless
-    # invocation boundary rather than READER_API_TOKEN.  Smoke tests verify
-    # that unauthenticated platform invocation is denied before cutover.
     if request.url.path in {"/health", "/media/object"} or request.url.path.startswith("/internal/"):
         return await call_next(request)
     if request.url.path == "/manage" or request.url.path.startswith("/api/admin/"):
@@ -211,12 +203,7 @@ async def admin_dialogs():
     dialogs = await _list_dialogs_resilient()
     return {
         "dialogs": [
-            {
-                "chat_id": d.chat_id,
-                "title": d.title,
-                "type": d.type,
-                "username": d.username,
-            }
+            {"chat_id": d.chat_id, "title": d.title, "type": d.type, "username": d.username}
             for d in dialogs
         ],
         "selected": list(selected),
@@ -297,6 +284,7 @@ async def health():
         "telegram_authorized": authorized,
         "allowed_chats": len(whitelist.list_allowed()),
         "messages": storage.count_messages(),
+        "collector_enabled": collector_enabled,
         "collector_last_result": {str(k): v for k, v in collector.last_result.items()},
         "collector_last_errors": {str(k): v for k, v in collector.last_errors.items()},
         "media_storage": "enabled" if object_storage.enabled else "disabled",
@@ -305,27 +293,32 @@ async def health():
 
 @app.get("/internal/chats")
 async def internal_chats():
+    return {
+        "chat_count": len(whitelist.list_allowed()),
+        "chats": [{"chat_id": item.chat_id, "name": item.name} for item in whitelist.list_allowed()],
+    }
+
+
+@app.get("/internal/chats/{chat_id}/probe")
+async def internal_chat_probe(chat_id: int):
+    whitelist.assert_allowed(chat_id)
     await _ensure_reader_ready()
-    result = []
-    for item in whitelist.list_allowed():
-        try:
-            entity = await reader._allowed_entity(item.chat_id)
-            title = (
-                getattr(entity, "title", None)
-                or " ".join(
-                    part
-                    for part in [
-                        getattr(entity, "first_name", None),
-                        getattr(entity, "last_name", None),
-                    ]
-                    if part
-                )
-                or item.name
-            )
-            result.append({"chat_id": item.chat_id, "name": str(title)})
-        except Exception as exc:
-            raise HTTPException(502, f"TELEGRAM_CHAT_RESOLUTION_FAILED:{type(exc).__name__}")
-    return {"chat_count": len(result), "chats": result}
+    try:
+        entity = await asyncio.wait_for(reader._allowed_entity(chat_id), timeout=30)
+    except asyncio.TimeoutError:
+        raise HTTPException(504, "TELEGRAM_CHAT_RESOLUTION_TIMEOUT")
+    except Exception as exc:
+        raise HTTPException(502, f"TELEGRAM_CHAT_RESOLUTION_FAILED:{type(exc).__name__}")
+    title = (
+        getattr(entity, "title", None)
+        or " ".join(
+            part
+            for part in [getattr(entity, "first_name", None), getattr(entity, "last_name", None)]
+            if part
+        )
+        or str(chat_id)
+    )
+    return {"chat_id": chat_id, "name": str(title), "resolved": True}
 
 
 @app.get("/internal/chats/{chat_id}/messages")
@@ -334,16 +327,19 @@ async def internal_messages(
     date_from: datetime,
     date_to: datetime | None = None,
     limit: int = 2000,
+    before_id: int | None = None,
 ):
     whitelist.assert_allowed(chat_id)
     await _ensure_reader_ready()
     high = date_to or datetime.now(timezone.utc)
+    page_limit = min(max(limit, 1), 2000)
     try:
         records = await reader.get_messages_between(
             chat_id,
             date_from,
             high,
-            limit=min(max(limit, 1), 2000),
+            limit=page_limit,
+            before_id=before_id,
         )
     except Exception as exc:
         raise HTTPException(502, f"TELEGRAM_DIRECT_READ_FAILED:{type(exc).__name__}")
@@ -352,11 +348,14 @@ async def internal_messages(
         row = record.to_dict()
         row["media_asset"] = None
         messages.append(row)
+    next_before_id = min((int(row["message_id"]) for row in messages), default=None)
     return {
         "chat_id": chat_id,
         "date_from": date_from.isoformat(),
         "date_to": high.isoformat(),
         "message_count": len(messages),
+        "page_full": len(messages) >= page_limit,
+        "next_before_id": next_before_id,
         "messages": messages,
     }
 
