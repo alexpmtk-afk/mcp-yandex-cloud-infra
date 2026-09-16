@@ -1,1 +1,1 @@
-2026-09-16 read-only Laser post-large-read-fix deploy check 8
+2026-09-16 read-only Laser during post-fix normal drain check 9
