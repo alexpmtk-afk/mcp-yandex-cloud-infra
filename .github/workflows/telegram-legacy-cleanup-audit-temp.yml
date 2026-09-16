@@ -44,12 +44,15 @@ jobs:
         run: |
           set -euo pipefail
           folder=b1gk4p83brasi8g811jv
+          builder_boot=fhmrot9tje8e7pg7teqb
+          prod_boot=fhm3d8hhmujlu7akkstn
+          state_disk=fhm6hcjd5blbrbg8oine
 
           echo '=== INSTANCES ==='
-          yc compute instance list --folder-id "$folder" --format json | jq -c '[.[] | select(.name|startswith("telegram")) | {id,name,status,boot_disk:(.boot_disk.disk_id // null),secondary_disks:[.secondary_disks[]?.disk_id],network_interfaces:[.network_interfaces[]? | {subnet_id,primary_v4_address:(.primary_v4_address.address // null),one_to_one_nat_address:(.primary_v4_address.one_to_one_nat.address // null)}]}]'
+          yc compute instance list --folder-id "$folder" --format json | jq -c '[.[] | select((.name // "")|startswith("telegram")) | {id,name,status,boot_disk:(.boot_disk.disk_id // null),secondary_disks:[.secondary_disks[]?.disk_id],network_interfaces:[.network_interfaces[]? | {subnet_id,primary_v4_address:(.primary_v4_address.address // null),one_to_one_nat_address:(.primary_v4_address.one_to_one_nat.address // null)}]}]'
 
-          echo '=== DISKS ==='
-          yc compute disk list --folder-id "$folder" --format json | jq -c '[.[] | select(.name|startswith("telegram")) | {id,name,status,size,type_id,instance_ids:(.instance_ids // [])}]'
+          echo '=== TELEGRAM DISKS BY ATTACHED IDS ==='
+          yc compute disk list --folder-id "$folder" --format json | jq -c --arg a "$builder_boot" --arg b "$prod_boot" --arg c "$state_disk" '[.[] | select(.id==$a or .id==$b or .id==$c) | {id,name,status,size,type_id,instance_ids:(.instance_ids // [])}]'
 
           echo '=== ADDRESSES ==='
           yc vpc address list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,reserved,used,external_ipv4_address:(.external_ipv4_address.address // null),zone_id:(.external_ipv4_address.zone_id // null)}]'
@@ -64,7 +67,7 @@ jobs:
           yc vpc subnet list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,network_id,route_table_id,v4_cidr_blocks}]'
 
           echo '=== SERVERLESS CONTAINERS ==='
-          yc serverless container list --folder-id "$folder" --format json | jq -c '[.[] | select(.name|startswith("telegram")) | {id,name,url,created_at}]'
+          yc serverless container list --folder-id "$folder" --format json | jq -c '[.[] | select((.name // "")|startswith("telegram")) | {id,name,url,created_at}]'
 
           echo '=== SECURITY GROUP TELEGRAM RULES ==='
           yc vpc security-group list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,rules:[.rules[]? | select((.description // "")|contains("telegram")) | {id,description,direction,ports,protocol_name,v4_cidr_blocks}]} | select((.rules|length)>0)]'
