@@ -1,4 +1,4 @@
-name: M26.7b Worker Sequential Drain
+name: M26.8 Worker Sequential Drain
 
 on:
   push:
@@ -11,7 +11,7 @@ permissions:
   id-token: write
 
 concurrency:
-  group: birzha-m26-7b-worker-sequential-drain
+  group: birzha-m26-8-worker-sequential-drain
   cancel-in-progress: false
 
 env:
@@ -21,7 +21,7 @@ env:
   EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
   WORKER_ID: bbamdg0po6fkukhod2e9
   TIMER_ID: a1s4ho32v7dha59aeu60
-  EXPECTED_WORKER_SHA: 24a2c04d0ff5433609d080ab6d24913bc441bad7
+  EXPECTED_WORKER_SHA: fc4d205adc806446a98ebda5d3b210771f84d489
   MAX_TICKS: "120"
 
 jobs:
@@ -186,12 +186,11 @@ jobs:
           [ "$complete" = "1" ] || { echo "D1_DRAIN_MAX_TICKS_REACHED=${MAX_TICKS}"; exit 2; }
           echo 'D1_ARCHIVE_WORKFLOW_COMPLETE=PASS'
 
-      - name: Resume automatic timer
-        if: always()
+      - name: Resume automatic timer only after complete PASS
+        if: success()
         shell: bash
         run: |
           set -euo pipefail
-          [ -s "$RUNNER_TEMP/deployer-iam-token" ] && [ -x "$RUNNER_TEMP/yc/yc" ] || { echo 'D1_DRAIN_TIMER_RESUME=SKIPPED_NO_AUTH'; exit 1; }
           YC="$RUNNER_TEMP/yc/yc"; export YC_IAM_TOKEN="$(cat "$RUNNER_TEMP/deployer-iam-token")"
           "$YC" serverless trigger get "$TIMER_ID" --format=json > "$RUNNER_TEMP/timer-current.json"
           status="$(python -c 'import json,os; from pathlib import Path; print(json.loads((Path(os.environ["RUNNER_TEMP"])/"timer-current.json").read_text()).get("status",""))')"
@@ -206,7 +205,23 @@ jobs:
           print('D1_DRAIN_TIMER_RESUMED_ACTIVE=PASS')
           PY
 
+      - name: Prove fail-closed timer remains paused on failure
+        if: failure()
+        shell: bash
+        run: |
+          set -euo pipefail
+          [ -s "$RUNNER_TEMP/deployer-iam-token" ] && [ -x "$RUNNER_TEMP/yc/yc" ] || exit 0
+          YC="$RUNNER_TEMP/yc/yc"; export YC_IAM_TOKEN="$(cat "$RUNNER_TEMP/deployer-iam-token")"
+          "$YC" serverless trigger get "$TIMER_ID" --format=json > "$RUNNER_TEMP/timer-failure.json"
+          python - <<'PY'
+          import json,os
+          from pathlib import Path
+          d=json.loads((Path(os.environ['RUNNER_TEMP'])/'timer-failure.json').read_text())
+          assert d.get('id')==os.environ['TIMER_ID'] and d.get('status')=='PAUSED', d.get('status')
+          print('D1_DRAIN_FAILURE_TIMER_PAUSED=PASS')
+          PY
+
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/deployer-iam-token" "$RUNNER_TEMP/timer-iam-token" "$RUNNER_TEMP/timer-sa-id" "$RUNNER_TEMP/worker-url" "$RUNNER_TEMP/worker.json" "$RUNNER_TEMP/timer-before.json" "$RUNNER_TEMP/timer-paused.json" "$RUNNER_TEMP/timer-current.json" "$RUNNER_TEMP/timer-after.json" "$RUNNER_TEMP/health.json" "$RUNNER_TEMP/tick.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz"
+        run: rm -rf "$RUNNER_TEMP/deployer-iam-token" "$RUNNER_TEMP/timer-iam-token" "$RUNNER_TEMP/timer-sa-id" "$RUNNER_TEMP/worker-url" "$RUNNER_TEMP/worker.json" "$RUNNER_TEMP/timer-before.json" "$RUNNER_TEMP/timer-paused.json" "$RUNNER_TEMP/timer-current.json" "$RUNNER_TEMP/timer-after.json" "$RUNNER_TEMP/timer-failure.json" "$RUNNER_TEMP/health.json" "$RUNNER_TEMP/tick.json" "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tar.gz"
