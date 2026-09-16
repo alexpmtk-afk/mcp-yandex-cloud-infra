@@ -8,17 +8,75 @@ on:
 
 permissions:
   actions: write
-  contents: read
+  contents: write
 
 jobs:
-  dispatch:
+  acceptance:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 20
     steps:
-      - name: Dispatch production rolling workflow
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Dispatch and verify production rolling workflow
         env:
           GH_TOKEN: ${{ github.token }}
+        shell: bash
         run: |
           set -euo pipefail
-          gh workflow run telegram-news-bridge.yml --ref main
+          workflow=telegram-news-bridge.yml
+          before="$(gh run list --workflow "$workflow" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+          gh workflow run "$workflow" --ref main
           echo TELEGRAM_PRODUCTION_ROLLING_DISPATCH_PASS
+
+          run_id=''
+          for attempt in $(seq 1 60); do
+            latest="$(gh run list --workflow "$workflow" --event workflow_dispatch --limit 1 --json databaseId --jq '.[0].databaseId // 0')"
+            if [ "$latest" != 0 ] && [ "$latest" != "$before" ]; then
+              run_id="$latest"
+              break
+            fi
+            sleep 2
+          done
+          test -n "$run_id"
+          echo "PRODUCTION_RUN_ID=$run_id"
+
+          gh run watch "$run_id" --exit-status
+          gh run view "$run_id" --log > "$RUNNER_TEMP/telegram-production.log"
+
+          for marker in \
+            PRODUCTION_READER_HEALTH_PASS \
+            PRODUCTION_ROLLING_READ_PASS \
+            PRODUCTION_MEDIA_REUSE_PASS \
+            PRODUCTION_MEDIA_CAPTURE_PASS \
+            SERVERLESS_PRODUCTION_ROLLING_PASS \
+            SERVERLESS_CANONICAL_SNAPSHOT_PUBLISH_PASS
+          do
+            grep -Fq "$marker" "$RUNNER_TEMP/telegram-production.log"
+            echo "MARKER_PASS=$marker"
+          done
+
+          mkdir -p telegram-news-reader/export
+          cat > telegram-news-reader/export/POST_REGISTRY_ACCEPTANCE.txt <<EOF
+          TELEGRAM_POST_REGISTRY_ACCEPTANCE_PASS
+          production_run_id=$run_id
+          checked_at=$(date -u '+%Y-%m-%dT%H:%M:%SZ')
+          markers=PRODUCTION_READER_HEALTH_PASS,PRODUCTION_ROLLING_READ_PASS,PRODUCTION_MEDIA_REUSE_PASS,PRODUCTION_MEDIA_CAPTURE_PASS,SERVERLESS_PRODUCTION_ROLLING_PASS,SERVERLESS_CANONICAL_SNAPSHOT_PUBLISH_PASS
+          EOF
+
+          git config user.name telegram-reader-acceptance
+          git config user.email telegram-reader-acceptance@users.noreply.github.com
+          git add telegram-news-reader/export/POST_REGISTRY_ACCEPTANCE.txt
+          git commit -m "telegram-reader: post-registry production rolling PASS"
+          for attempt in 1 2 3 4 5; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo TELEGRAM_POST_REGISTRY_ACCEPTANCE_PUBLISH_PASS
+              exit 0
+            fi
+            git rebase --abort >/dev/null 2>&1 || true
+            sleep 2
+          done
+          exit 1
