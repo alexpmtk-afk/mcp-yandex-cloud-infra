@@ -1,0 +1,88 @@
+name: Yandex cost audit temp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/yandex-cost-audit-temp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install YC CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          yc config profile create cost-audit-temp || true
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc config set cloud-id b1gi4pr9msenirafh2c7
+      - name: Cost-relevant live inventory
+        shell: bash
+        run: |
+          set +e
+          C=b1gi4pr9msenirafh2c7
+          FOLDERS="$(yc resource-manager folder list --cloud-id "$C" --format json --no-user-output)"
+          echo '=== FOLDERS ==='
+          echo "$FOLDERS" | jq '[.[]|{id,name,status,created_at}]'
+          echo "$FOLDERS" | jq -r '.[].id' | while read -r F; do
+            N="$(echo "$FOLDERS" | jq -r --arg f "$F" '.[]|select(.id==$f)|.name')"
+            echo "=== FOLDER $N $F ==="
+            echo '-- INSTANCES --'
+            yc compute instance list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,resources,boot_disk:(.boot_disk.disk_id//null),secondary_disks:[.secondary_disks[]?.disk_id],public_ips:[.network_interfaces[]?.primary_v4_address.one_to_one_nat.address//empty]}]' || true
+            echo '-- DISKS --'
+            yc compute disk list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,type_id,size,instance_ids}]' || true
+            echo '-- SNAPSHOTS --'
+            yc compute snapshot list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,disk_size,storage_size}]' || true
+            echo '-- ADDRESSES --'
+            yc vpc address list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,reserved,used,external_ipv4_address:(.external_ipv4_address.address//null)}]' || true
+            echo '-- NAT_GATEWAYS --'
+            yc vpc gateway list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name}]' || true
+            echo '-- SERVERLESS_CONTAINERS --'
+            CS="$(yc serverless container list --folder-id "$F" --format json --no-user-output 2>/dev/null)"
+            echo "$CS" | jq '[.[]|{id,name,status,created_at}]' 2>/dev/null || true
+            echo "$CS" | jq -r '.[].id' 2>/dev/null | while read -r CID; do
+              echo "container=$CID"
+              yc serverless container revision list --container-id "$CID" --format json --no-user-output 2>/dev/null | jq 'sort_by(.created_at)|last|{id,created_at,status,resources,execution_timeout,concurrency,provision_policy}' || true
+            done
+            echo '-- API_GATEWAYS --'
+            yc serverless api-gateway list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,created_at,domain}]' || true
+            echo '-- YDB --'
+            DBS="$(yc ydb database list --folder-id "$F" --format json --no-user-output 2>/dev/null)"
+            echo "$DBS" | jq '[.[]|{id,name,status,type,created_at}]' 2>/dev/null || true
+            echo "$DBS" | jq -r '.[].id' 2>/dev/null | while read -r DID; do
+              yc ydb database get "$DID" --format json --no-user-output 2>/dev/null | jq '{id,name,status,type,serverless_database,dedicated_database,location_id}' || true
+            done
+            echo '-- BUCKETS --'
+            yc storage bucket list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{name,created_at,max_size,default_storage_class,versioning}]' || true
+            echo '-- REGISTRIES --'
+            RS="$(yc container registry list --folder-id "$F" --format json --no-user-output 2>/dev/null)"
+            echo "$RS" | jq '[.[]|{id,name,status,created_at}]' 2>/dev/null || true
+            echo "$RS" | jq -r '.[].id' 2>/dev/null | while read -r RID; do
+              yc container image list --registry-id "$RID" --format json --no-user-output 2>/dev/null | jq --arg rid "$RID" '{registry_id:$rid,image_count:length,compressed_sum_bytes:(map((.compressed_size//"0")|tonumber)|add//0)}' || true
+            done
+            echo '-- LOG_GROUPS --'
+            yc logging group list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,retention_period}]' || true
+            echo '-- LOCKBOX_COUNT --'
+            yc lockbox secret list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '{count:length}' || true
+          done
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json"
