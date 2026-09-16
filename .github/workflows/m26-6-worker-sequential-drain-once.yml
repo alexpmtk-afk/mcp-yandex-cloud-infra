@@ -22,7 +22,7 @@ env:
   WORKER_ID: bbamdg0po6fkukhod2e9
   TIMER_ID: a1s4ho32v7dha59aeu60
   EXPECTED_WORKER_SHA: 7e96bbf51a8d76b7952ab76730fd8467aaca2677
-  MAX_TICKS: "80"
+  MAX_TICKS: "120"
 
 jobs:
   drain:
@@ -107,11 +107,6 @@ jobs:
           assert t.get('id')==os.environ['TIMER_ID'] and t.get('status') in {'ACTIVE','PAUSED'}
           assert os.environ['WORKER_ID'] in json.dumps(t)
           print('D1_DRAIN_TARGETS_PROTECTED=PASS')
-          PY
-          python - <<'PY'
-          import json,os
-          from pathlib import Path
-          w=json.loads((Path(os.environ['RUNNER_TEMP'])/'worker.json').read_text())
           Path(os.environ['RUNNER_TEMP']+'/worker-url').write_text(w['url'].rstrip('/'))
           PY
           TIMER_SA="$(cat "$RUNNER_TEMP/timer-sa-id")"
@@ -158,12 +153,28 @@ jobs:
           TOKEN="$(cat "$RUNNER_TEMP/timer-iam-token")"
           complete=0
           for i in $(seq 1 "$MAX_TICKS"); do
+            rm -f "$RUNNER_TEMP/tick.json"
+            set +e
             code="$(curl --proto '=https' --tlsv1.2 --silent --show-error --max-time 370 \
               -o "$RUNNER_TEMP/tick.json" -w '%{http_code}' -X POST \
               -H "Authorization: Bearer ${TOKEN}" -H 'Content-Type: application/json' \
               --data '{}' "$URL/tick")"
-            test "$code" = "200" || { echo "D1_DRAIN_HTTP_${i}=$code"; exit 1; }
+            curl_rc=$?
+            set -e
+
+            if [ "$curl_rc" -ne 0 ] || [ "$code" = "000" ] || [ "$code" = "502" ] || [ "$code" = "503" ] || [ "$code" = "504" ]; then
+              echo "D1_DRAIN_TRANSIENT_TRANSPORT_WAIT=tick:${i},curl_rc:${curl_rc},http:${code}"
+              sleep 10
+              continue
+            fi
+            if [ "$code" != "200" ]; then
+              echo "D1_DRAIN_UNEXPECTED_HTTP=tick:${i},http:${code}"
+              if [ -s "$RUNNER_TEMP/tick.json" ]; then head -c 1000 "$RUNNER_TEMP/tick.json" || true; fi
+              exit 1
+            fi
+
             export TICK_NO="$i"
+            set +e
             result="$(python - <<'PY'
           import json,os
           from pathlib import Path
@@ -189,15 +200,18 @@ jobs:
             raise SystemExit(20)
           if status=='PASS':
             raise SystemExit(10)
+          if ws in {'BUSY_OR_IDLE'}:
+            raise SystemExit(30)
           PY
-            )" || rc=$?
-            rc="${rc:-0}"
+            )"
+            rc=$?
+            set -e
             echo "D1_DRAIN_TICK=$result"
             if [ "$rc" = "10" ]; then complete=1; break; fi
             if [ "$rc" = "20" ]; then echo 'D1_DRAIN_ACTION_FAILURE=YES'; exit 1; fi
+            if [ "$rc" = "30" ]; then sleep 10; continue; fi
             test "$rc" = "0" || exit "$rc"
-            unset rc
-            sleep 1
+            sleep 2
           done
           if [ "$complete" != "1" ]; then
             echo "D1_DRAIN_MAX_TICKS_REACHED=${MAX_TICKS}"
