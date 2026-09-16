@@ -5,7 +5,7 @@ variable "yc_cloud_id" {
 }
 
 variable "yc_folder_id" {
-  description = "Optional provider folder ID. TEST resources create their own folder."
+  description = "Optional provider folder ID. The canonical Marketplace runtime creates and owns its folder."
   type        = string
   default     = null
   nullable    = true
@@ -26,31 +26,31 @@ variable "yc_zone" {
 }
 
 variable "environment" {
-  description = "Deployment environment name."
+  description = "Deployment environment name for the single canonical Marketplace runtime."
   type        = string
-  default     = "test"
+  default     = "production"
 
   validation {
-    condition     = var.environment == "test"
-    error_message = "This configuration is TEST-only."
+    condition     = var.environment == "production"
+    error_message = "Marketplaces uses one canonical production runtime."
   }
 }
 
-variable "test_folder_name" {
-  description = "Dedicated Yandex Cloud TEST folder name."
+variable "marketplaces_folder_name" {
+  description = "Canonical Yandex Cloud folder name for Marketplace MCP."
   type        = string
-  default     = "marketplaces-mcp-test"
+  default     = "marketplaces-mcp"
 }
 
 variable "mcp_image_url" {
-  description = "Immutable container image URL. Omit to apply only the TEST foundation."
+  description = "Immutable container image URL. Omit to apply only the Marketplace foundation."
   type        = string
   default     = null
   nullable    = true
 }
 
 variable "mcp_api_gateway_id" {
-  description = "Existing TEST API Gateway ID; read-only because the provider cannot import it."
+  description = "Existing canonical Marketplace API Gateway ID; read-only because the provider cannot import it."
   type        = string
   default     = "d5deoa6cl4irtmkp5ad6"
 }
