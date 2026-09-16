@@ -1,0 +1,52 @@
+name: Telegram Resource Audit Fast
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-resource-audit-fast.yml]
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 5
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          yc config profile create tg-fast || true
+          yc config profile activate tg-fast
+          yc config set service-account-key "$RUNNER_TEMP/yc-key.json"
+      - name: Inventory
+        shell: bash
+        run: |
+          set +e
+          f=b1gk4p83brasi8g811jv
+          for spec in \
+            'INSTANCE|yc compute instance list --folder-id '$f' --format json' \
+            'DISK|yc compute disk list --folder-id '$f' --format json' \
+            'SNAPSHOT|yc compute snapshot list --folder-id '$f' --format json' \
+            'ADDRESS|yc vpc address list --folder-id '$f' --format json' \
+            'GATEWAY|yc vpc gateway list --folder-id '$f' --format json' \
+            'CONTAINER|yc serverless container list --folder-id '$f' --format json' \
+            'FUNCTION|yc serverless function list --folder-id '$f' --format json' \
+            'TRIGGER|yc serverless trigger list --folder-id '$f' --format json' \
+            'REGISTRY|yc container registry list --folder-id '$f' --format json' \
+            'LOGGROUP|yc logging group list --folder-id '$f' --format json' \
+            'BUCKET|yc storage bucket list --folder-id '$f' --format json'; do
+            name=${spec%%|*}; cmd=${spec#*|}; echo "=== $name ==="; timeout 20s bash -lc "$cmd" || echo "$name FAILED_OR_TIMEOUT";
+          done
