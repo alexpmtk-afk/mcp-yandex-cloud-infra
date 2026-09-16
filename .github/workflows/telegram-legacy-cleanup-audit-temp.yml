@@ -58,7 +58,7 @@ jobs:
           yc vpc address list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,reserved,used,external_ipv4_address:(.external_ipv4_address.address // null),zone_id:(.external_ipv4_address.zone_id // null)}]'
 
           echo '=== NAT GATEWAYS ==='
-          yc vpc nat-gateway list --folder-id "$folder" --format json | jq -c '[.[] | {id,name}]'
+          yc vpc gateway list --folder-id "$folder" --format json | jq -c '[.[] | {id,name}]'
 
           echo '=== ROUTE TABLES ==='
           yc vpc route-table list --folder-id "$folder" --format json | jq -c '[.[] | {id,name,network_id,static_routes}]'
