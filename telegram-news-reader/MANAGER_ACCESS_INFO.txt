@@ -1,0 +1,4 @@
+MANAGER_URL=https://d5dm5tuhajuseiogoj3u.nnekmrav.apigw.yandexcloud.net/manage
+LOCKBOX_SECRET_ID=e6qnt0bt655jltrr5sid
+LOCKBOX_SECRET_NAME=telegram-reader-serverless-runtime
+BROWSER_KEY_ENTRY=MANAGE_BROWSER_KEY
