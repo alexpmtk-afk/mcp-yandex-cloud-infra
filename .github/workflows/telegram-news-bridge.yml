@@ -63,7 +63,7 @@ jobs:
           healthy=0
           for attempt in $(seq 1 12); do
             body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
-            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats>=1 and .media_storage=="enabled"' >/dev/null 2>&1; then
               healthy=1
               echo "PRODUCTION_READER_HEALTH_ATTEMPT=$attempt"
               break
@@ -76,7 +76,7 @@ jobs:
           echo "READER_URL=$url" >> "$GITHUB_ENV"
           echo PRODUCTION_READER_HEALTH_PASS
 
-      - name: Read all 9 chats for the rolling 192-hour window
+      - name: Read all managed chats for the rolling 192-hour window
         shell: bash
         run: |
           set -euo pipefail
@@ -88,7 +88,9 @@ jobs:
           : > "$work/messages.ndjson"
 
           chats="$(curl -fsS --retry 2 --retry-delay 2 --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/internal/chats")"
-          echo "$chats" | jq -e '.chat_count==9 and (.chats|length)==9' >/dev/null
+          echo "$chats" | jq -e '.chat_count>=1 and (.chats|length)==.chat_count' >/dev/null
+          allowed_chats="$(echo "$chats" | jq -r '.chat_count')"
+          echo "ALLOWED_CHATS=$allowed_chats" >> "$GITHUB_ENV"
 
           while read -r cid; do
             before=''
@@ -236,7 +238,7 @@ jobs:
             --arg schema TELEGRAM_NEWS_READER_V1 \
             --arg generated_at "$GENERATED_AT" \
             --argjson window_hours 192 \
-            --argjson allowed_chats 9 \
+            --argjson allowed_chats "$ALLOWED_CHATS" \
             --argjson media "$media" \
             --argjson previews "$previews" \
             --slurpfile messages "$WORK/enriched.json" \
@@ -246,7 +248,7 @@ jobs:
           jq -e '
             .schema=="TELEGRAM_NEWS_READER_V1" and
             .window_hours==192 and
-            .allowed_chats==9 and
+            .allowed_chats>=1 and
             .message_count==(.messages|length) and
             .message_count>0 and
             .media_message_count==([.messages[]|select(.media_asset!=null)]|length) and
