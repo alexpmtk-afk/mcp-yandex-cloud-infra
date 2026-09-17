@@ -1,0 +1,320 @@
+name: Telegram Manager Serverless Cutover Once
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-manager-serverless-cutover-once.yml]
+
+permissions:
+  contents: read
+
+jobs:
+  cutover:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 35
+    env:
+      FOLDER_ID: b1gk4p83brasi8g811jv
+      READER_NAME: telegram-reader-serverless
+      READER_ID: bbah0r3tpgdirfnpogv7
+      RUNTIME_SA: ajeaad0m00gncv22tagf
+      SECRET_ID: e6qnt0bt655jltrr5sid
+      REGISTRY_ID: crphagvid8e8g5pp4fpe
+      GATEWAY_NAME: telegram-reader-manager
+      GATEWAY_SA_NAME: telegram-reader-manager-gateway
+      TEMP_MANAGER_KEY: temporary-manager-acceptance-20260917
+      TEMP_MANAGER_HASH: 29dbb5122d6ba698e9e8b3911caf8d43f96aebcea428182ec9284844d5c82cf8
+      FINAL_MANAGER_HASH: f3072f6fa0109e9dd4c2e13dc1c8e43c5aee0d6a9e2e65192c5ae2462f21c08e
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: telegram-manager-serverless-20260917
+          fetch-depth: 0
+
+      - name: Validate manager code
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -m py_compile \
+            telegram-news-reader/app/lockbox_runtime.py \
+            telegram-news-reader/app/manager_extension.py \
+            telegram-news-reader/app/serverless_bootstrap.py \
+            telegram-news-reader/app/service.py \
+            telegram-news-reader/app/telegram_client.py
+          grep -q 'app.manager_extension:app' telegram-news-reader/app/serverless_bootstrap.py
+          echo MANAGER_CODE_VALIDATE_PASS
+
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-manager-cutover || true
+          yc config profile activate telegram-manager-cutover
+          yc config set service-account-key "$key"
+          yc config set folder-id "$FOLDER_ID"
+
+      - name: Grant Reader permission to persist its managed allow-list
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc lockbox secret add-access-binding \
+            --id "$SECRET_ID" \
+            --service-account-id "$RUNTIME_SA" \
+            --role lockbox.editor >/dev/null || true
+          bindings="$(yc lockbox secret list-access-bindings --id "$SECRET_ID" --format json)"
+          echo "$bindings" | jq -e --arg sa "$RUNTIME_SA" '
+            any(.[]?; .role_id=="lockbox.editor" and .subject.id==$sa and .subject.type=="serviceAccount")
+          ' >/dev/null
+          echo READER_LOCKBOX_EDITOR_PASS
+
+      - name: Install temporary acceptance manager key hash
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc lockbox secret add-version \
+            --id "$SECRET_ID" \
+            --description 'Temporary Telegram manager acceptance key' \
+            --payload "[{\"key\":\"MANAGE_TOKEN_SHA256\",\"text_value\":\"$TEMP_MANAGER_HASH\"}]" >/dev/null
+          token="$(yc iam create-token)"
+          curl -fsS -H "Authorization: Bearer $token" \
+            "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$SECRET_ID/payload" \
+            -o "$RUNNER_TEMP/runtime-payload.json"
+          jq -e --arg h "$TEMP_MANAGER_HASH" 'any(.entries[]?; .key=="MANAGE_TOKEN_SHA256" and .textValue==$h)' "$RUNNER_TEMP/runtime-payload.json" >/dev/null
+          echo TEMP_MANAGER_HASH_LOCKBOX_PASS
+
+      - name: Build and push updated Reader image
+        shell: bash
+        run: |
+          set -euo pipefail
+          source_sha="$(git rev-parse --short=12 HEAD)"
+          image="cr.yandex/$REGISTRY_ID/telegram-news-reader:manager-$source_sha"
+          yc iam create-token | docker login --username iam --password-stdin cr.yandex >/dev/null
+          docker build -t "$image" telegram-news-reader
+          docker push "$image" >/dev/null
+          echo "IMAGE=$image" >> "$GITHUB_ENV"
+          echo MANAGER_READER_IMAGE_PUSH_PASS
+
+      - name: Deploy updated private production Reader
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --folder-id "$FOLDER_ID" \
+            --container-name "$READER_NAME" \
+            --runtime http \
+            --image "$IMAGE" \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id "$RUNTIME_SA" \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment TELEGRAM_MEDIA_PATH=/tmp/media \
+            --environment COLLECTOR_ENABLED=false \
+            --environment LOCKBOX_RUNTIME_SECRET_ID="$SECRET_ID" >/dev/null
+          reader_url="$(yc serverless container get "$READER_NAME" --folder-id "$FOLDER_ID" --format json | jq -r '.url')"
+          reader_url="${reader_url%/}"
+          echo "READER_URL=$reader_url" >> "$GITHUB_ENV"
+          echo MANAGER_READER_DEPLOY_PASS
+
+      - name: Verify private Reader after manager deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+          token="$(yc iam create-token)"
+          ok=0
+          for attempt in $(seq 1 24); do
+            if curl -fsS --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/health" -o "$RUNNER_TEMP/health.json" 2>/dev/null; then
+              if jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' "$RUNNER_TEMP/health.json" >/dev/null; then
+                ok=1
+                break
+              fi
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+          public_code="$(curl -sS -o /dev/null -w '%{http_code}' "$READER_URL/internal/chats")"
+          test "$public_code" = 401 -o "$public_code" = 403
+          echo MANAGER_READER_PRIVATE_HEALTH_PASS
+
+      - name: Create or reuse dedicated manager gateway service account
+        shell: bash
+        run: |
+          set -euo pipefail
+          gateway_sa="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$GATEWAY_SA_NAME" '.[]|select(.name==$n)|.id' | head -1)"
+          if [ -z "$gateway_sa" ]; then
+            yc iam service-account create --folder-id "$FOLDER_ID" --name "$GATEWAY_SA_NAME" >/dev/null
+            gateway_sa="$(yc iam service-account list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$GATEWAY_SA_NAME" '.[]|select(.name==$n)|.id' | head -1)"
+          fi
+          test -n "$gateway_sa"
+          yc serverless container add-access-binding \
+            --id "$READER_ID" \
+            --service-account-id "$gateway_sa" \
+            --role serverless-containers.containerInvoker >/dev/null || true
+          bindings="$(yc serverless container list-access-bindings --id "$READER_ID" --format json)"
+          echo "$bindings" | jq -e --arg sa "$gateway_sa" '
+            any(.[]?; .role_id=="serverless-containers.containerInvoker" and .subject.id==$sa and .subject.type=="serviceAccount")
+          ' >/dev/null
+          echo "GATEWAY_SA=$gateway_sa" >> "$GITHUB_ENV"
+          echo MANAGER_GATEWAY_SA_PASS
+
+      - name: Create or update public manager-only API Gateway
+        shell: bash
+        run: |
+          set -euo pipefail
+          spec="$RUNNER_TEMP/manager-gateway.yaml"
+          cat > "$spec" <<EOF
+          openapi: 3.0.0
+          info:
+            title: Telegram Reader Manager
+            version: 1.0.0
+          paths:
+            /manage:
+              get:
+                responses:
+                  '200':
+                    description: Manager page
+                x-yc-apigateway-integration:
+                  type: serverless_containers
+                  container_id: $READER_ID
+                  service_account_id: $GATEWAY_SA
+            /api/admin/dialogs:
+              get:
+                responses:
+                  '200':
+                    description: Dialog list
+                x-yc-apigateway-integration:
+                  type: serverless_containers
+                  container_id: $READER_ID
+                  service_account_id: $GATEWAY_SA
+            /api/admin/whitelist:
+              post:
+                responses:
+                  '200':
+                    description: Save allow-list
+                x-yc-apigateway-integration:
+                  type: serverless_containers
+                  container_id: $READER_ID
+                  service_account_id: $GATEWAY_SA
+          EOF
+          gateway_id="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r --arg n "$GATEWAY_NAME" '.[]|select(.name==$n)|.id' | head -1)"
+          if [ -z "$gateway_id" ]; then
+            yc serverless api-gateway create --folder-id "$FOLDER_ID" --name "$GATEWAY_NAME" --spec "$spec" --no-logging >/dev/null
+          else
+            yc serverless api-gateway update --id "$gateway_id" --spec "$spec" --no-logging >/dev/null
+          fi
+          gateway_json="$(yc serverless api-gateway get --name "$GATEWAY_NAME" --folder-id "$FOLDER_ID" --format json)"
+          gateway_id="$(echo "$gateway_json" | jq -r '.id')"
+          domain="$(echo "$gateway_json" | jq -r '.domain')"
+          test -n "$gateway_id" && test "$gateway_id" != null
+          test -n "$domain" && test "$domain" != null
+          echo "GATEWAY_ID=$gateway_id" >> "$GITHUB_ENV"
+          echo "GATEWAY_URL=https://$domain" >> "$GITHUB_ENV"
+          echo "MANAGER_URL=https://$domain/manage"
+          echo MANAGER_GATEWAY_CREATE_PASS
+
+      - name: Acceptance test manager page and persistent no-op save
+        shell: bash
+        run: |
+          set -euo pipefail
+          ok=0
+          for attempt in $(seq 1 18); do
+            code="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/manage.html" -w '%{http_code}' "$GATEWAY_URL/manage" || true)"
+            if [ "$code" = 200 ] && grep -q 'Telegram Reader — управление чатами' "$RUNNER_TEMP/manage.html"; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+          no_key_code="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$GATEWAY_URL/api/admin/dialogs")"
+          test "$no_key_code" = 401
+          internal_code="$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$GATEWAY_URL/internal/chats")"
+          test "$internal_code" = 404
+
+          curl -fsS --max-time 90 -H "x-admin-token: $TEMP_MANAGER_KEY" \
+            "$GATEWAY_URL/api/admin/dialogs" -o "$RUNNER_TEMP/dialogs.json"
+          jq -e '.dialogs|type=="array"' "$RUNNER_TEMP/dialogs.json" >/dev/null
+          jq -e '.selected|type=="array" and length==9' "$RUNNER_TEMP/dialogs.json" >/dev/null
+          jq -c '{chat_ids:.selected}' "$RUNNER_TEMP/dialogs.json" > "$RUNNER_TEMP/save.json"
+          curl -fsS --max-time 110 \
+            -H "x-admin-token: $TEMP_MANAGER_KEY" \
+            -H 'Content-Type: application/json' \
+            --data-binary @"$RUNNER_TEMP/save.json" \
+            "$GATEWAY_URL/api/admin/whitelist" -o "$RUNNER_TEMP/saved.json"
+          jq -e '.status=="saved" and .allowed_chats==9' "$RUNNER_TEMP/saved.json" >/dev/null
+
+          token="$(yc iam create-token)"
+          curl -fsS --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/health" -o "$RUNNER_TEMP/health-after-save.json"
+          jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9' "$RUNNER_TEMP/health-after-save.json" >/dev/null
+          echo MANAGER_PERSISTENCE_ACCEPTANCE_PASS
+
+      - name: Install final manager hash and restart Reader on final credentials
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc lockbox secret add-version \
+            --id "$SECRET_ID" \
+            --description 'Telegram Reader browser manager key' \
+            --payload "[{\"key\":\"MANAGE_TOKEN_SHA256\",\"text_value\":\"$FINAL_MANAGER_HASH\"}]" >/dev/null
+
+          yc serverless container revision deploy \
+            --folder-id "$FOLDER_ID" \
+            --container-name "$READER_NAME" \
+            --runtime http \
+            --image "$IMAGE" \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id "$RUNTIME_SA" \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment TELEGRAM_MEDIA_PATH=/tmp/media \
+            --environment COLLECTOR_ENABLED=false \
+            --environment LOCKBOX_RUNTIME_SECRET_ID="$SECRET_ID" >/dev/null
+
+          token="$(yc iam create-token)"
+          ok=0
+          for attempt in $(seq 1 24); do
+            if curl -fsS --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/health" -o "$RUNNER_TEMP/final-health.json" 2>/dev/null; then
+              if jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' "$RUNNER_TEMP/final-health.json" >/dev/null; then
+                ok=1
+                break
+              fi
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+
+          old_key_code="$(curl -sS --max-time 40 -o /dev/null -w '%{http_code}' -H "x-admin-token: $TEMP_MANAGER_KEY" "$GATEWAY_URL/api/admin/dialogs")"
+          test "$old_key_code" = 401
+          page_code="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/final-manage.html" -w '%{http_code}' "$GATEWAY_URL/manage")"
+          test "$page_code" = 200
+          grep -q 'Telegram Reader — управление чатами' "$RUNNER_TEMP/final-manage.html"
+          echo "FINAL_MANAGER_URL=$GATEWAY_URL/manage"
+          echo TELEGRAM_MANAGER_SERVERLESS_CUTOVER_PASS
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: |
+          rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/runtime-payload.json" "$RUNNER_TEMP/health.json" \
+            "$RUNNER_TEMP/manage.html" "$RUNNER_TEMP/dialogs.json" "$RUNNER_TEMP/save.json" "$RUNNER_TEMP/saved.json" \
+            "$RUNNER_TEMP/health-after-save.json" "$RUNNER_TEMP/final-health.json" "$RUNNER_TEMP/final-manage.html" \
+            "$RUNNER_TEMP/manager-gateway.yaml"
