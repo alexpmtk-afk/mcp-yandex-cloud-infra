@@ -1,0 +1,36 @@
+name: Telegram packaging validate
+
+on:
+  push:
+    paths:
+      - "telegram-news-reader/pyproject.toml"
+  workflow_dispatch:
+
+jobs:
+  validate:
+    runs-on: windows-latest
+    defaults:
+      run:
+        working-directory: telegram-news-reader
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: telegram-news-reader/pyproject.toml
+
+      - name: Upgrade packaging tools
+        run: python -m pip install --upgrade pip setuptools wheel
+
+      - name: Editable install
+        run: pip install -e .
+
+      - name: Dependency check
+        run: pip check
+
+      - name: Import check
+        run: python -c "import app.mcp_server"
