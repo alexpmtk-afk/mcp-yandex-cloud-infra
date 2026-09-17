@@ -1,0 +1,320 @@
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timezone
+from pathlib import Path
+
+from telethon import TelegramClient, connection
+from telethon.sessions import StringSession
+from telethon.tl.types import InputPeerChannel, InputPeerChat, InputPeerUser
+
+from app.config import Settings
+from app.errors import AuthorizationRequired
+from app.formatting import dialog_type, media_type, public_message_url
+from app.models import DialogRecord, MessageRecord
+from app.whitelist import Whitelist
+from app.ws_relay import WebSocketRelayAdapter
+
+
+class EntityResolutionError(RuntimeError):
+    pass
+
+
+class DialogTraversalError(EntityResolutionError):
+    pass
+
+
+class EntityNotInDialogsError(EntityResolutionError):
+    pass
+
+
+class PeerMapConfigError(EntityResolutionError):
+    pass
+
+
+class MessageFetchError(RuntimeError):
+    pass
+
+
+class MessageDecodeError(RuntimeError):
+    pass
+
+
+class TelegramReader:
+    """Read-only wrapper around Telethon; no write Telegram operations are exposed."""
+
+    def __init__(self, settings: Settings, whitelist: Whitelist | None = None):
+        self.settings = settings
+        self.whitelist = whitelist or Whitelist(settings.whitelist_path)
+        if not settings.session_string:
+            Path(settings.session_path).parent.mkdir(parents=True, exist_ok=True)
+        self.relay = (
+            WebSocketRelayAdapter(
+                settings.ws_relay_url,
+                settings.ws_relay_token or "",
+                settings.ws_relay_port,
+            )
+            if settings.ws_relay_url
+            else None
+        )
+        kwargs: dict[str, object] = {}
+        if self.relay is not None:
+            kwargs["connection"] = connection.ConnectionTcpMTProxyAbridged
+            kwargs["proxy"] = self.relay.mtproxy_tuple()
+        else:
+            kwargs["proxy"] = settings.telethon_proxy()
+        session = StringSession(settings.session_string) if settings.session_string else str(settings.session_path)
+        self.client = TelegramClient(session, settings.api_id, settings.api_hash, **kwargs)
+        self._runtime_entities: dict[int, object] = {}
+
+    async def connect(self, *, interactive_login: bool = False) -> None:
+        if self.relay is not None:
+            await self.relay.start()
+        try:
+            await self.client.connect()
+        except Exception:
+            if self.relay is not None:
+                await self.relay.stop()
+            raise
+        if await self.client.is_user_authorized():
+            return
+        if not interactive_login:
+            await self.disconnect()
+            raise AuthorizationRequired("Telegram session is not authorized. Run one-time setup.")
+        await self.client.start(phone=self.settings.phone)
+
+    async def disconnect(self) -> None:
+        await self.client.disconnect()
+        if self.relay is not None:
+            await self.relay.stop()
+
+    def is_connected(self) -> bool:
+        return bool(self.client.is_connected())
+
+    async def is_authorized(self) -> bool:
+        was_connected = self.client.is_connected()
+        if not was_connected:
+            if self.relay is not None:
+                await self.relay.start()
+            await self.client.connect()
+        try:
+            return bool(await self.client.is_user_authorized())
+        finally:
+            if not was_connected:
+                await self.disconnect()
+
+    async def list_dialogs(self) -> list[DialogRecord]:
+        result: list[DialogRecord] = []
+        async for dialog in self.client.iter_dialogs():
+            entity = dialog.entity
+            result.append(
+                DialogRecord(
+                    chat_id=int(dialog.id),
+                    title=str(dialog.name or ""),
+                    username=getattr(entity, "username", None),
+                    type=dialog_type(entity),
+                    unread_count=int(getattr(dialog, "unread_count", 0) or 0),
+                )
+            )
+        return result
+
+    async def get_recent_messages(self, chat_id: int, limit: int = 20) -> list[MessageRecord]:
+        entity = await self._allowed_entity(chat_id)
+        records: list[MessageRecord] = []
+        try:
+            async for message in self.client.iter_messages(entity, limit=max(1, limit)):
+                try:
+                    records.append(self._message_record(chat_id, entity, message))
+                except Exception as exc:
+                    raise MessageDecodeError() from exc
+        except MessageDecodeError:
+            raise
+        except Exception as exc:
+            raise MessageFetchError() from exc
+        return records
+
+    async def get_messages_since(
+        self,
+        chat_id: int,
+        datetime_from: datetime,
+        *,
+        limit: int = 1000,
+    ) -> list[MessageRecord]:
+        return await self.get_messages_between(
+            chat_id,
+            datetime_from,
+            datetime.now(timezone.utc),
+            limit=limit,
+        )
+
+    async def get_messages_between(
+        self,
+        chat_id: int,
+        datetime_from: datetime,
+        datetime_to: datetime,
+        *,
+        limit: int = 1000,
+        before_id: int | None = None,
+    ) -> list[MessageRecord]:
+        """Return one newest-first page in a closed time window.
+
+        before_id is an exclusive upper message-id cursor, which makes paging
+        lossless even when several Telegram messages share the same timestamp.
+        """
+        entity = await self._allowed_entity(chat_id)
+        low = _as_utc(datetime_from)
+        high = _as_utc(datetime_to)
+        if low > high:
+            low, high = high, low
+        result: list[MessageRecord] = []
+        kwargs: dict[str, object] = {
+            "offset_date": high,
+            "limit": max(1, limit),
+        }
+        if before_id is not None:
+            kwargs["max_id"] = int(before_id)
+        try:
+            async for message in self.client.iter_messages(entity, **kwargs):
+                if not message.date:
+                    continue
+                moment = _as_utc(message.date)
+                if moment > high:
+                    continue
+                if moment < low:
+                    break
+                try:
+                    result.append(self._message_record(chat_id, entity, message))
+                except Exception as exc:
+                    raise MessageDecodeError() from exc
+        except MessageDecodeError:
+            raise
+        except Exception as exc:
+            raise MessageFetchError() from exc
+        return result
+
+    async def get_messages_after_id(self, chat_id: int, last_message_id: int) -> list[MessageRecord]:
+        entity = await self._allowed_entity(chat_id)
+        result: list[MessageRecord] = []
+        async for message in self.client.iter_messages(entity, min_id=int(last_message_id), reverse=True):
+            result.append(self._message_record(chat_id, entity, message))
+        return result
+
+    async def search_messages(
+        self,
+        chat_id: int,
+        query: str,
+        *,
+        date_from: datetime | None = None,
+        date_to: datetime | None = None,
+        limit: int = 100,
+        scan_limit: int = 2000,
+    ) -> list[MessageRecord]:
+        entity = await self._allowed_entity(chat_id)
+        result: list[MessageRecord] = []
+        low = _as_utc(date_from) if date_from else None
+        high = _as_utc(date_to) if date_to else None
+        async for message in self.client.iter_messages(entity, search=query, limit=max(limit, scan_limit)):
+            if not message.date:
+                continue
+            moment = _as_utc(message.date)
+            if high and moment > high:
+                continue
+            if low and moment < low:
+                break
+            result.append(self._message_record(chat_id, entity, message))
+            if len(result) >= limit:
+                break
+        return result
+
+    async def get_message(self, chat_id: int, message_id: int) -> MessageRecord | None:
+        entity = await self._allowed_entity(chat_id)
+        message = await self.client.get_messages(entity, ids=int(message_id))
+        if not message:
+            return None
+        return self._message_record(chat_id, entity, message)
+
+    def _runtime_peer(self, chat_id: int):
+        raw = os.getenv("TELEGRAM_PEER_MAP_JSON", "").strip()
+        if not raw:
+            return None
+        try:
+            payload = json.loads(raw)
+            item = payload.get(str(int(chat_id))) if isinstance(payload, dict) else None
+            if item is None:
+                return None
+            if not isinstance(item, dict):
+                raise ValueError("peer entry must be an object")
+            kind = str(item.get("kind") or "").strip().lower()
+            peer_id = int(item["peer_id"])
+            if kind == "channel":
+                return InputPeerChannel(peer_id, int(item["access_hash"]))
+            if kind == "user":
+                return InputPeerUser(peer_id, int(item["access_hash"]))
+            if kind == "chat":
+                return InputPeerChat(peer_id)
+            raise ValueError("unsupported peer kind")
+        except Exception as exc:
+            raise PeerMapConfigError() from exc
+
+    async def _allowed_entity(self, chat_id: int):
+        self.whitelist.assert_allowed(chat_id)
+        cached = self._runtime_entities.get(int(chat_id))
+        if cached is not None:
+            return cached
+        runtime_peer = self._runtime_peer(chat_id)
+        if runtime_peer is not None:
+            try:
+                entity = await self.client.get_entity(runtime_peer)
+            except Exception as exc:
+                raise EntityResolutionError() from exc
+            self._runtime_entities[int(chat_id)] = entity
+            return entity
+        try:
+            entity = await self.client.get_input_entity(int(chat_id))
+            self._runtime_entities[int(chat_id)] = entity
+            return entity
+        except ValueError:
+            pass
+        try:
+            async for dialog in self.client.iter_dialogs(limit=None):
+                if int(dialog.id) == int(chat_id):
+                    self._runtime_entities[int(chat_id)] = dialog.entity
+                    return dialog.entity
+        except Exception as exc:
+            raise DialogTraversalError() from exc
+        raise EntityNotInDialogsError()
+
+    def _message_record(self, chat_id: int, entity, message) -> MessageRecord:
+        allowed = self.whitelist.assert_allowed(chat_id)
+        username = getattr(entity, "username", None)
+        title = (
+            getattr(entity, "title", None)
+            or " ".join(
+                part
+                for part in [getattr(entity, "first_name", None), getattr(entity, "last_name", None)]
+                if part
+            )
+            or allowed.name
+            or str(chat_id)
+        )
+        reply_to = getattr(message, "reply_to_msg_id", None)
+        return MessageRecord(
+            message_id=int(message.id),
+            chat_id=int(chat_id),
+            chat_title=str(title),
+            datetime=_as_utc(message.date),
+            text=str(getattr(message, "message", None) or ""),
+            sender_id=getattr(message, "sender_id", None),
+            views=getattr(message, "views", None),
+            forwards=getattr(message, "forwards", None),
+            reply_to_message_id=int(reply_to) if reply_to else None,
+            media_type=media_type(message),
+            url=public_message_url(username, int(message.id)),
+        )
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)

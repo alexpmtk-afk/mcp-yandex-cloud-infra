@@ -1,0 +1,27 @@
+# Telegram credentials / sessions
+.env
+*.session
+*.session-journal
+*.session-shm
+*.session-wal
+secrets/
+
+# Local message data
+data/*
+!data/.gitkeep
+*.db
+*.sqlite
+*.sqlite3
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+
+# Logs / editor / OS
+*.log
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
