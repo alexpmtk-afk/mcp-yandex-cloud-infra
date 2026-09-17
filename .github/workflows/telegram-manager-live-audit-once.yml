@@ -1,0 +1,83 @@
+name: Telegram Manager Live Audit Once
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-manager-live-audit-once.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-manager-audit || true
+          yc config profile activate telegram-manager-audit
+          yc config set service-account-key "$key"
+          yc config set folder-id b1gk4p83brasi8g811jv
+
+      - name: Audit live Reader manager surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          folder=b1gk4p83brasi8g811jv
+          url="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json | jq -r '.url')"
+          url="${url%/}"
+          test -n "$url" && test "$url" != null
+          token="$(yc iam create-token)"
+          health_code="$(curl -sS -o "$RUNNER_TEMP/health.json" -w '%{http_code}' -H "Authorization: Bearer $token" "$url/health")"
+          manage_code="$(curl -sS -o "$RUNNER_TEMP/manage.html" -w '%{http_code}' -H "Authorization: Bearer $token" "$url/manage")"
+          public_manage_code="$(curl -sS -o /dev/null -w '%{http_code}' "$url/manage")"
+          title_ok=0
+          if grep -q 'Telegram Reader — управление чатами' "$RUNNER_TEMP/manage.html"; then title_ok=1; fi
+          allowed="$(jq -r '.allowed_chats // -1' "$RUNNER_TEMP/health.json")"
+          secret_id="$(yc lockbox secret list --folder-id "$folder" --format json | jq -r '.[]|select(.name=="telegram-reader-serverless-runtime")|.id' | head -1)"
+          test -n "$secret_id"
+          cloud_token="$(yc iam create-token)"
+          curl -fsS -H "Authorization: Bearer $cloud_token" "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$secret_id/payload" -o "$RUNNER_TEMP/payload.json"
+          has_manage="$(jq -r '[.entries[]?.key]|index("MANAGE_TOKEN_SHA256") != null' "$RUNNER_TEMP/payload.json")"
+          has_peer_map="$(jq -r '[.entries[]?.key]|index("TELEGRAM_PEER_MAP_JSON") != null' "$RUNNER_TEMP/payload.json")"
+          peer_count="$(jq -r '.entries[]?|select(.key=="TELEGRAM_PEER_MAP_JSON")|.textValue' "$RUNNER_TEMP/payload.json" | jq 'keys|length')"
+          echo "LIVE_READER_URL=$url"
+          echo "HEALTH_HTTP=$health_code"
+          echo "MANAGE_WITH_IAM_HTTP=$manage_code"
+          echo "MANAGE_TITLE_OK=$title_ok"
+          echo "MANAGE_PUBLIC_HTTP=$public_manage_code"
+          echo "ALLOWED_CHATS=$allowed"
+          echo "HAS_MANAGE_TOKEN_SHA256=$has_manage"
+          echo "HAS_PEER_MAP=$has_peer_map"
+          echo "PEER_MAP_COUNT=$peer_count"
+          test "$health_code" = 200
+          test "$manage_code" = 200
+          test "$title_ok" = 1
+          test "$allowed" = 9
+          test "$has_peer_map" = true
+          test "$peer_count" = 9
+          echo TELEGRAM_MANAGER_LIVE_AUDIT_PASS
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/health.json" "$RUNNER_TEMP/manage.html"
