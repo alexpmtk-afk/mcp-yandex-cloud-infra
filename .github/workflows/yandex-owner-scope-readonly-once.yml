@@ -1,39 +1,86 @@
 name: Yandex owner-scope readonly once
+
 on:
   push:
     branches: [main]
-    paths: ['.github/workflows/yandex-owner-scope-readonly-once.yml']
+    paths:
+      - '.github/workflows/yandex-owner-scope-readonly-once.yml'
+
 permissions:
   contents: read
   id-token: write
+
 jobs:
   audit:
     runs-on: ubuntu-latest
     environment: test
+    timeout-minutes: 20
     env:
       SA_ID: ajecdjjrkdo1t3itpl9k
       AUD: https://github.com/alexpmtk-afk
-      SUB: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
     steps:
-      - name: Mint OIDC IAM token and inspect
+      - name: Mint OIDC token and inspect all migration folders
         shell: bash
         run: |
           set -euo pipefail
           A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["AUD"], safe=""))')"
-          S='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && S='&'
-          R="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${S}audience=${A}")"
-          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"; echo "::add-mask::$J"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          R="$(curl -fsS -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
           X="$(curl -fsS -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${SA_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
-          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"; echo "::add-mask::$T"; echo "T=$T" >> "$GITHUB_ENV"
-          mkdir -p "$RUNNER_TEMP/yc"; curl -fsSLo "$RUNNER_TEMP/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz; tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
-          echo '=== BILLING ACCOUNTS OIDC ==='
-          curl -sS -H "Authorization: Bearer $T" 'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts?pageSize=100' | jq -c '{billingAccounts:[.billingAccounts[]? | {id,name,currency,active,balance}]}'
-          echo '=== CARD MONITOR COMPUTE ==='
-          YC_IAM_TOKEN="$T" "$RUNNER_TEMP/yc/yc" compute instance list --folder-id b1g0224nfivl9224dm96 --format json | jq -c '[.[]|{id,name,status,created_at,zone_id,resources,network_interfaces}]'
-          echo '=== CARD MONITOR DISKS ==='
-          YC_IAM_TOKEN="$T" "$RUNNER_TEMP/yc/yc" compute disk list --folder-id b1g0224nfivl9224dm96 --format json | jq -c '[.[]|{id,name,status,created_at,type_id,size,instance_ids}]'
-          echo '=== M24 START METRIC STATUS ==='
-          Q='serverless.containers.started_per_second{service="serverless-containers",container="bbamdg0po6fkukhod2e9"}'
-          B="$(jq -nc --arg q "$Q" '{query:$q,fromTime:"2026-09-15T00:00:00Z",toTime:"2026-09-16T05:35:00Z",downsampling:{maxPoints:"2000",gridAggregation:"AVG",gapFilling:"NONE"}}')"
-          curl -sS -o "$RUNNER_TEMP/metric.json" -w 'HTTP=%{http_code}\n' -X POST 'https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=b1g00gqb66tbnfoumnkv' -H "Authorization: Bearer $T" -H 'Content-Type: application/json' --data "$B"
-          jq -c '.' "$RUNNER_TEMP/metric.json"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          echo "::add-mask::$T"
+          export YC_IAM_TOKEN="$T"
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          YC="$RUNNER_TEMP/yc/yc"
+
+          python - <<'PY'
+          import json, os, subprocess
+          yc=os.environ['RUNNER_TEMP']+'/yc/yc'
+          folders=[
+            ('marketplaces-mcp-test','b1gnd0dqoq3ljod88i8t'),
+            ('birzha-mcp-forecast-test','b1g00gqb66tbnfoumnkv'),
+            ('telegram-news-reader','b1gk4p83brasi8g811jv'),
+            ('marketplace-card-monitor','b1g0224nfivl9224dm96'),
+          ]
+          cmds={
+            'compute_instances':['compute','instance','list'],
+            'compute_disks':['compute','disk','list'],
+            'ydb':['ydb','database','list'],
+            'lockbox':['lockbox','secret','list'],
+            'containers':['serverless','container','list'],
+            'functions':['serverless','function','list'],
+            'gateways':['serverless','api-gateway','list'],
+            'buckets':['storage','bucket','list'],
+            'registries':['container','registry','list'],
+          }
+          for name,fid in folders:
+            print(f'FOLDER_AUDIT_BEGIN name={name} id={fid}')
+            for kind,args in cmds.items():
+              p=subprocess.run([yc,*args,'--folder-id',fid,'--format','json'],text=True,capture_output=True,timeout=90)
+              if p.returncode:
+                print(f'RESOURCE folder={name} type={kind} status=DENIED_OR_UNSUPPORTED detail={p.stderr.strip()[:180]!r}')
+                continue
+              try: data=json.loads(p.stdout or '[]')
+              except Exception:
+                print(f'RESOURCE folder={name} type={kind} status=BAD_JSON')
+                continue
+              items=data if isinstance(data,list) else ([data] if data else [])
+              print(f'RESOURCE folder={name} type={kind} count={len(items)}')
+              for x in items:
+                if not isinstance(x,dict): continue
+                out={'id':x.get('id',''),'name':x.get('name',''),'status':x.get('status','')}
+                if kind=='compute_disks': out.update(size=x.get('size',''),type_id=x.get('type_id',''),instance_ids=x.get('instance_ids',[]))
+                if kind=='compute_instances': out.update(zone_id=x.get('zone_id',''),resources=x.get('resources',{}),boot_disk=x.get('boot_disk',{}))
+                if kind=='buckets': out.update(max_size=x.get('max_size',''),versioning=x.get('versioning',''))
+                print('ITEM folder=%s type=%s data=%s' % (name,kind,json.dumps(out,ensure_ascii=False,separators=(',',':'))))
+            print(f'FOLDER_AUDIT_END name={name}')
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz"
