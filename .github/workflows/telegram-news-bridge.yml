@@ -6,7 +6,9 @@ on:
     paths: [.github/workflows/telegram-news-bridge.yml]
   workflow_dispatch:
   schedule:
-    - cron: '7,37 * * * *'
+    # Candidate UTC hours for 02:00, 08:00, 14:00 and 20:00 Europe/Helsinki.
+    # The gate below handles EET/EEST automatically, so local times do not drift at DST changes.
+    - cron: '0 0,5,6,11,12,17,18,23 * * *'
 
 permissions:
   contents: write
@@ -15,10 +17,38 @@ concurrency:
   group: telegram-news-reader-serverless-rolling
   cancel-in-progress: false
 
-# Canonical rolling 192-hour snapshot, now produced directly from the private
-# Serverless Reader. The legacy VM/static IP is intentionally not used here.
+# Canonical rolling 192-hour snapshot, produced directly from the private
+# Serverless Reader. Scheduled production refreshes run every six hours at
+# 02:00, 08:00, 14:00 and 20:00 Europe/Helsinki. Manual and push runs remain allowed.
 jobs:
+  schedule_gate:
+    runs-on: ubuntu-latest
+    outputs:
+      run_export: ${{ steps.gate.outputs.run_export }}
+      helsinki_time: ${{ steps.gate.outputs.helsinki_time }}
+    steps:
+      - id: gate
+        name: Resolve Europe/Helsinki schedule
+        shell: bash
+        run: |
+          set -euo pipefail
+          local_time="$(TZ=Europe/Helsinki date '+%Y-%m-%d %H:%M:%S %Z')"
+          local_hour="$(TZ=Europe/Helsinki date '+%H')"
+          run_export=true
+          if [ "${{ github.event_name }}" = "schedule" ]; then
+            case "$local_hour" in
+              02|08|14|20) run_export=true ;;
+              *) run_export=false ;;
+            esac
+          fi
+          echo "run_export=$run_export" >> "$GITHUB_OUTPUT"
+          echo "helsinki_time=$local_time" >> "$GITHUB_OUTPUT"
+          echo "HELSINKI_TIME=$local_time"
+          echo "RUN_EXPORT=$run_export"
+
   export:
+    needs: schedule_gate
+    if: needs.schedule_gate.outputs.run_export == 'true'
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 15
@@ -154,8 +184,6 @@ jobs:
               return base + '/media/object?' + urllib.parse.urlencode({'key': key, 'expires': expires, 'sig': sig})
 
           pmap = {}
-          # Migration seed first; canonical is loaded last so normal steady-state
-          # always prefers the most recent canonical asset metadata.
           for path in (os.environ['VERIFIED'], os.environ['CANONICAL']):
               if not os.path.isfile(path) or not os.path.getsize(path):
                   continue
