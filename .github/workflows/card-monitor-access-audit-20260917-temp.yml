@@ -20,7 +20,7 @@ jobs:
       AUD: https://github.com/alexpmtk-afk
       FOLDER_ID: b1g0224nfivl9224dm96
     steps:
-      - name: Inspect folder access bindings and service accounts
+      - name: Inspect card-monitor access via REST
         shell: bash
         run: |
           set -euo pipefail
@@ -32,19 +32,20 @@ jobs:
           X="$(curl -fsS -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded' --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' --data-urlencode "audience=${SA_ID}" --data-urlencode "subject_token=${J}" --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
           T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
           echo "::add-mask::$T"
-          export YC_IAM_TOKEN="$T"
-          mkdir -p "$RUNNER_TEMP/yc"
-          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
-          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
-          YC="$RUNNER_TEMP/yc/yc"
+          echo 'CALLER_SERVICE_ACCOUNT_BEGIN'
+          curl -fsS -H "Authorization: Bearer $T" "https://iam.api.cloud.yandex.net/iam/v1/serviceAccounts/${SA_ID}" || true
+          echo
+          echo 'CALLER_SERVICE_ACCOUNT_END'
           echo 'ACCESS_BINDINGS_BEGIN'
-          "$YC" resource-manager folder list-access-bindings --id "$FOLDER_ID" --format json || true
+          curl -fsS -H "Authorization: Bearer $T" "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders/${FOLDER_ID}:listAccessBindings?pageSize=1000" || true
+          echo
           echo 'ACCESS_BINDINGS_END'
-          echo 'SERVICE_ACCOUNTS_BEGIN'
-          "$YC" iam service-account list --folder-id "$FOLDER_ID" --format json || true
-          echo 'SERVICE_ACCOUNTS_END'
+          echo 'FOLDER_METADATA_BEGIN'
+          curl -fsS -H "Authorization: Bearer $T" "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/folders/${FOLDER_ID}" || true
+          echo
+          echo 'FOLDER_METADATA_END'
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -rf "$RUNNER_TEMP/yc" "$RUNNER_TEMP/yc.tgz"
+        run: true
