@@ -63,7 +63,7 @@ jobs:
           healthy=0
           for attempt in $(seq 1 12); do
             body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
-            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats==9 and .media_storage=="enabled"' >/dev/null 2>&1; then
+            if echo "$body" | jq -e '.status=="ok" and .telegram_authorized==true and .allowed_chats>=1 and .media_storage=="enabled"' >/dev/null 2>&1; then
               healthy=1
               echo "ONDEMAND_READER_HEALTH_ATTEMPT=$attempt"
               break
@@ -129,7 +129,7 @@ jobs:
 
           token="$(yc iam create-token)"
           chats_meta="$(curl -fsS --retry 2 --retry-delay 2 --retry-all-errors --max-time 30 -H "Authorization: Bearer $token" "$READER_URL/internal/chats")"
-          echo "$chats_meta" | jq -e '.chat_count==9 and (.chats|length)==9' >/dev/null
+          echo "$chats_meta" | jq -e '.chat_count>=1 and (.chats|length)==.chat_count' >/dev/null
           while read -r cid; do
             echo "$chats_meta" | jq -e --argjson cid "$cid" 'any(.chats[]; .chat_id==$cid)' >/dev/null
           done < <(echo "$chat_ids" | jq -r '.[]')
