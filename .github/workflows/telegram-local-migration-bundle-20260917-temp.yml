@@ -104,7 +104,6 @@ jobs:
               'registries': yc_json('container','registry','list'),
           }
 
-          # Add safe bucket stats, including exact used size.
           bucket_stats=[]
           if isinstance(inventory['buckets'], list):
               for b in inventory['buckets']:
@@ -164,3 +163,5 @@ jobs:
         if: always()
         shell: bash
         run: rm -f "$RUNNER_TEMP/key.json"
+
+# trigger: 2026-09-17T11:59Z
