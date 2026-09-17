@@ -1,0 +1,180 @@
+name: Yandex cost audit 2026-09-17 temp
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/yandex-cost-audit-20260917-temp.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Install YC CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          echo "$RUNNER_TEMP/yc/bin" >> "$GITHUB_PATH"
+
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          yc config profile create cost-audit-20260917 || true
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc config set cloud-id b1gi4pr9msenirafh2c7
+
+      - name: Inventory and usage since previous audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          START='2026-09-16T12:18:03Z'
+          MONTH='2026-09-01T00:00:00Z'
+          END="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          TOKEN="$(yc iam create-token)"
+          echo "AUDIT_START=$START"
+          echo "AUDIT_END=$END"
+
+          echo '=== BILLING_ACCOUNT_VISIBILITY ==='
+          curl -fsS -H "Authorization: Bearer $TOKEN" 'https://billing.api.cloud.yandex.net/billing/v1/billingAccounts' | jq '{count:(.billingAccounts//[]|length),accounts:[(.billingAccounts//[])[]|{id,name,active,payment_type,currency}]}' || true
+
+          monitor_read() {
+            local folder="$1" query="$2" from="$3" grid="$4" agg="$5" out="$6"
+            jq -n --arg q "$query" --arg f "$from" --arg t "$END" --argjson g "$grid" --arg a "$agg" '{query:$q,fromTime:$f,toTime:$t,downsampling:{gridAggregation:$a,gapFilling:"NONE",gridInterval:$g}}' > "$RUNNER_TEMP/mon-body.json"
+            curl -fsS -X POST -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @"$RUNNER_TEMP/mon-body.json" "https://monitoring.api.cloud.yandex.net/monitoring/v2/data/read?folderId=$folder" > "$out" || echo '{"metrics":[]}' > "$out"
+          }
+
+          for ITEM in \
+            'birzha-mcp-forecast-test:b1g00gqb66tbnfoumnkv' \
+            'default:b1g0r8h0no6tomn7f5rs' \
+            'marketplace-card-monitor:b1g5t7v7u1mnsjd2ai7u' \
+            'marketplaces-mcp-test:b1gnd0dqoq3ljod88i8t' \
+            'telegram-news-reader:b1gk4p83brasi8g811jv'; do
+            N="${ITEM%%:*}"; F="${ITEM##*:}"
+            echo "=== FOLDER $N ==="
+
+            echo '-- COMPUTE --'
+            yc compute instance list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,resources}]' || true
+            yc compute disk list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '{disk_count:length,total_gib:(map((.size|tonumber)/1073741824)|add//0),items:[.[]|{id,name,status,type_id,size_gib:((.size|tonumber)/1073741824)}]}' || true
+            yc vpc address list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,reserved,used,external_ipv4_address:(.external_ipv4_address.address//null)}]' || true
+
+            echo '-- SERVERLESS_CONTAINERS --'
+            CJSON="$(yc serverless container list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
+            echo "$CJSON" | jq '[.[]|{id,name,status,created_at}]'
+            echo "$CJSON" | jq -r '.[].id' | while read -r CID; do
+              [ -n "$CID" ] || continue
+              REVFILE="$RUNNER_TEMP/rev-$CID.json"
+              yc serverless container revision list --container-id "$CID" --format json --no-user-output > "$REVFILE" 2>/dev/null || echo '[]' > "$REVFILE"
+              echo "CONTAINER=$CID"
+              jq 'sort_by(.created_at)|map({id,created_at,status,resources,execution_timeout,concurrency,provision_policy})' "$REVFILE"
+              QCOUNT='"serverless.containers.execution_time_milliseconds_count"{service="serverless-containers",container="'"$CID"'"}'
+              QSUM='"serverless.containers.execution_time_milliseconds_sum"{service="serverless-containers",container="'"$CID"'"}'
+              monitor_read "$F" "$QCOUNT" "$START" 3600000 LAST "$RUNNER_TEMP/count-int-$CID.json"
+              monitor_read "$F" "$QSUM" "$START" 3600000 LAST "$RUNNER_TEMP/sum-int-$CID.json"
+              monitor_read "$F" "$QCOUNT" "$MONTH" 3600000 LAST "$RUNNER_TEMP/count-month-$CID.json"
+              monitor_read "$F" "$QSUM" "$MONTH" 3600000 LAST "$RUNNER_TEMP/sum-month-$CID.json"
+              python3 - "$CID" "$START" "$REVFILE" "$RUNNER_TEMP/count-int-$CID.json" "$RUNNER_TEMP/sum-int-$CID.json" "$RUNNER_TEMP/count-month-$CID.json" "$RUNNER_TEMP/sum-month-$CID.json" <<'PY'
+import json,sys,datetime
+cid,start,revf,cif,sif,cmf,smf=sys.argv[1:]
+startdt=datetime.datetime.fromisoformat(start.replace('Z','+00:00'))
+revs={r.get('id'):r for r in json.load(open(revf))}
+def valarr(m):
+    ts=m.get('timeseries',{})
+    vals=ts.get('doubleValues') or ts.get('int64Values') or []
+    return [float(x) for x in vals if x is not None]
+def delta(path,month=False):
+    d=json.load(open(path)); total=0.0; details=[]
+    for m in d.get('metrics',[]):
+        vals=valarr(m)
+        if not vals: continue
+        rid=(m.get('labels') or {}).get('revision')
+        first,last=vals[0],vals[-1]
+        if month:
+            x=max(0.0,last-first)
+        else:
+            created=(revs.get(rid) or {}).get('created_at')
+            if created:
+                try:
+                    cdt=datetime.datetime.fromisoformat(created.replace('Z','+00:00'))
+                    x=max(0.0,last if cdt>=startdt else last-first)
+                except Exception:
+                    x=max(0.0,last-first)
+            else:
+                x=max(0.0,last-first)
+        total+=x; details.append((rid,x,first,last))
+    return total,details
+ci,cidetail=delta(cif); si,sidetail=delta(sif); cm,_=delta(cmf,True); sm,_=delta(smf,True)
+print(json.dumps({'container':cid,'interval_invocations_approx':round(ci,3),'interval_execution_ms_approx':round(si,3),'interval_execution_hours_approx':round(si/3600000,6),'month_invocations_delta_approx':round(cm,3),'month_execution_hours_delta_approx':round(sm/3600000,6),'interval_count_by_revision':cidetail,'interval_ms_by_revision':sidetail},ensure_ascii=False))
+PY
+            done
+
+            echo '-- TRIGGERS --'
+            yc serverless trigger list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,created_at,rule}]' || true
+            echo '-- API_GATEWAYS --'
+            yc serverless api-gateway list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,created_at}]' || true
+
+            echo '-- YDB --'
+            DBJSON="$(yc ydb database list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
+            echo "$DBJSON" | jq '[.[]|{id,name,status,type,created_at}]'
+            echo "$DBJSON" | jq -r '.[].id' | while read -r DID; do
+              [ -n "$DID" ] || continue
+              yc ydb database get "$DID" --format json --no-user-output 2>/dev/null | jq '{id,name,status,type,serverless_database,location_id}' || true
+            done
+            QYDB='{service="ydb",name="api.units.consumed_per_second"}'
+            monitor_read "$F" "$QYDB" "$START" 300000 AVG "$RUNNER_TEMP/ydb-int-$F.json"
+            monitor_read "$F" "$QYDB" "$MONTH" 300000 AVG "$RUNNER_TEMP/ydb-month-$F.json"
+            python3 - "$RUNNER_TEMP/ydb-int-$F.json" "$RUNNER_TEMP/ydb-month-$F.json" <<'PY'
+import json,sys
+def calc(path):
+    d=json.load(open(path)); total=0.0; series=0
+    for m in d.get('metrics',[]):
+        ts=m.get('timeseries',{}); vals=ts.get('doubleValues') or ts.get('int64Values') or []
+        xs=[float(x) for x in vals if x is not None]
+        if xs:
+            total += sum(xs)*300.0
+            series += 1
+    return total,series
+print(json.dumps({'ydb_interval_ru_approx':round(calc(sys.argv[1])[0],2),'ydb_month_ru_approx':round(calc(sys.argv[2])[0],2),'series':calc(sys.argv[1])[1]}))
+PY
+
+            echo '-- LOCKBOX --'
+            SJSON="$(yc lockbox secret list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
+            echo "$SJSON" | jq '[.[]|{id,name,status}]'
+            echo "$SJSON" | jq -r '.[].id' | while read -r SID; do
+              [ -n "$SID" ] || continue
+              yc lockbox secret list-versions "$SID" --format json --no-user-output 2>/dev/null | jq --arg sid "$SID" '{secret_id:$sid,total_versions:length,versions:[.[]|{id,status,created_at,destroy_at}]}' || true
+            done
+
+            echo '-- OBJECT_STORAGE --'
+            yc storage bucket list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq -r '.[].name' | while read -r B; do
+              [ -n "$B" ] || continue
+              yc storage bucket stats "$B" --format json --no-user-output 2>/dev/null | jq '{name,used_size,default_storage_class,storage_class_used_sizes,storage_class_counters}' || true
+            done
+
+            echo '-- REGISTRY --'
+            RJSON="$(yc container registry list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
+            echo "$RJSON" | jq '[.[]|{id,name,status,created_at}]'
+            echo "$RJSON" | jq -r '.[].id' | while read -r RID; do
+              [ -n "$RID" ] || continue
+              yc container image list --registry-id "$RID" --format json --no-user-output 2>/dev/null | jq --arg rid "$RID" '{registry_id:$rid,image_count:length,compressed_sum_gib_upper_bound:((map((.compressed_size//"0")|tonumber)|add//0)/1073741824)}' || true
+            done
+
+            echo '-- LOGGING --'
+            yc logging group list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,retention_period,created_at}]' || true
+          done
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP"/*.json
