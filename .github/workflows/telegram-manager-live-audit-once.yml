@@ -38,14 +38,34 @@ jobs:
           yc config set service-account-key "$key"
           yc config set folder-id b1gk4p83brasi8g811jv
 
-      - name: Audit live Reader manager surface
+      - name: Audit live Reader manager surface and revision baseline
         shell: bash
         run: |
           set -euo pipefail
           folder=b1gk4p83brasi8g811jv
-          url="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json | jq -r '.url')"
+          container_json="$RUNNER_TEMP/container.json"
+          yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json > "$container_json"
+          cid="$(jq -r '.id' "$container_json")"
+          url="$(jq -r '.url' "$container_json")"
           url="${url%/}"
+          test -n "$cid" && test "$cid" != null
           test -n "$url" && test "$url" != null
+
+          yc serverless container revision list --container-id "$cid" --format json > "$RUNNER_TEMP/revisions.json"
+          jq 'sort_by(.created_at)|last|{
+            id,status,created_at,
+            resources,
+            execution_timeout,
+            concurrency,
+            image,
+            service_account_id,
+            environment_keys: ((.environment // {})|keys),
+            connectivity,
+            secrets_count: ((.secrets // [])|length)
+          }' "$RUNNER_TEMP/revisions.json" > "$RUNNER_TEMP/revision-safe.json"
+          echo 'READER_REVISION_SAFE_JSON='
+          cat "$RUNNER_TEMP/revision-safe.json"
+
           token="$(yc iam create-token)"
           health_code="$(curl -sS -o "$RUNNER_TEMP/health.json" -w '%{http_code}' -H "Authorization: Bearer $token" "$url/health")"
           manage_code="$(curl -sS -o "$RUNNER_TEMP/manage.html" -w '%{http_code}' -H "Authorization: Bearer $token" "$url/manage")"
@@ -61,6 +81,8 @@ jobs:
           has_peer_map="$(jq -r '[.entries[]?.key]|index("TELEGRAM_PEER_MAP_JSON") != null' "$RUNNER_TEMP/payload.json")"
           peer_count="$(jq -r '.entries[]?|select(.key=="TELEGRAM_PEER_MAP_JSON")|.textValue' "$RUNNER_TEMP/payload.json" | jq 'keys|length')"
           echo "LIVE_READER_URL=$url"
+          echo "READER_CONTAINER_ID=$cid"
+          echo "RUNTIME_SECRET_ID=$secret_id"
           echo "HEALTH_HTTP=$health_code"
           echo "MANAGE_WITH_IAM_HTTP=$manage_code"
           echo "MANAGE_TITLE_OK=$title_ok"
@@ -75,9 +97,9 @@ jobs:
           test "$allowed" = 9
           test "$has_peer_map" = true
           test "$peer_count" = 9
-          echo TELEGRAM_MANAGER_LIVE_AUDIT_PASS
+          echo TELEGRAM_MANAGER_BASELINE_PASS
 
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/health.json" "$RUNNER_TEMP/manage.html"
+        run: rm -f "$RUNNER_TEMP/key.json" "$RUNNER_TEMP/payload.json" "$RUNNER_TEMP/health.json" "$RUNNER_TEMP/manage.html" "$RUNNER_TEMP/container.json" "$RUNNER_TEMP/revisions.json" "$RUNNER_TEMP/revision-safe.json"
