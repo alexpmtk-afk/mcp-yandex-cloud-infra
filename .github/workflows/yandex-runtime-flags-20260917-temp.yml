@@ -1,0 +1,46 @@
+name: Yandex runtime flags 2026-09-17 temp
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/yandex-runtime-flags-20260917-temp.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 3
+    steps:
+      - name: Check runtime flags
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
+          export PATH="$RUNNER_TEMP/yc/bin:$PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          yc config profile create runtime-flags || true
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc config set cloud-id b1gi4pr9msenirafh2c7
+          TOKEN="$(yc iam create-token)"
+          echo BILLING
+          curl -fsS -H "Authorization: Bearer $TOKEN" https://billing.api.cloud.yandex.net/billing/v1/billingAccounts | jq '{count:(.billingAccounts//[]|length),ids:[(.billingAccounts//[])[].id]}' || true
+          for ITEM in \
+            'birzha:b1g00gqb66tbnfoumnkv' \
+            'marketplaces:b1gnd0dqoq3ljod88i8t' \
+            'telegram:b1gk4p83brasi8g811jv'; do
+            N="${ITEM%%:*}"; F="${ITEM##*:}"
+            echo "=== $N ==="
+            timeout 20s yc serverless container list --folder-id "$F" --format json --no-user-output | jq -r '.[]|[.id,.name]|@tsv' | while IFS=$'\t' read -r ID NAME; do
+              echo "CONTAINER $NAME $ID"
+              timeout 20s yc serverless container revision list --container-id "$ID" --format json --no-user-output | jq 'sort_by(.created_at)|last|{id,created_at,resources,execution_timeout,concurrency,provision_policy}'
+            done
+            echo TRIGGERS
+            timeout 20s yc serverless trigger list --folder-id "$F" --format json --no-user-output | jq '[.[]|{id,name,status,rule}]' || true
+          done
+      - name: Cleanup
+        if: always()
+        run: rm -f "$RUNNER_TEMP/key.json"
