@@ -1,0 +1,74 @@
+name: Local migration inventory 2026-09-17
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/local-migration-inventory-20260917-temp.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  inventory:
+    runs-on: [self-hosted, Windows, X64, codex-bridge-service]
+    timeout-minutes: 15
+    steps:
+      - name: Build local Yandex state inventory
+        shell: powershell
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $root = 'C:\MCP\migration\yandex-inventory'
+          New-Item -ItemType Directory -Force -Path $root | Out-Null
+
+          $cloudId = (& yc config get cloud-id).Trim()
+          if ([string]::IsNullOrWhiteSpace($cloudId)) { throw 'YC cloud-id is not configured' }
+
+          $foldersJson = & yc resource-manager folder list --cloud-id $cloudId --format json
+          if ($LASTEXITCODE -ne 0) { throw 'folder inventory failed' }
+          $foldersJson | Set-Content -Encoding UTF8 (Join-Path $root 'folders.json')
+          $folders = $foldersJson | ConvertFrom-Json
+
+          $summary = @()
+          foreach ($f in $folders) {
+            $fid = $f.id
+            $safe = ($f.name -replace '[^A-Za-z0-9._-]', '_')
+            $dir = Join-Path $root ("{0}_{1}" -f $safe,$fid)
+            New-Item -ItemType Directory -Force -Path $dir | Out-Null
+
+            $services = @(
+              @{Name='ydb'; Args=@('ydb','database','list','--folder-id',$fid,'--format','json')},
+              @{Name='lockbox'; Args=@('lockbox','secret','list','--folder-id',$fid,'--format','json')},
+              @{Name='serverless_containers'; Args=@('serverless','container','list','--folder-id',$fid,'--format','json')},
+              @{Name='functions'; Args=@('serverless','function','list','--folder-id',$fid,'--format','json')},
+              @{Name='api_gateways'; Args=@('serverless','api-gateway','list','--folder-id',$fid,'--format','json')},
+              @{Name='storage_buckets'; Args=@('storage','bucket','list','--folder-id',$fid,'--format','json')},
+              @{Name='redis'; Args=@('managed-redis','cluster','list','--folder-id',$fid,'--format','json')}
+            )
+
+            $counts = [ordered]@{ folder_id=$fid; folder_name=$f.name }
+            foreach ($svc in $services) {
+              try {
+                $out = & yc @($svc.Args) 2>$null
+                if ($LASTEXITCODE -eq 0) {
+                  $out | Set-Content -Encoding UTF8 (Join-Path $dir ($svc.Name + '.json'))
+                  try {
+                    $obj = $out | ConvertFrom-Json
+                    if ($null -eq $obj) { $n = 0 } elseif ($obj -is [System.Array]) { $n = $obj.Count } else { $n = 1 }
+                    $counts[$svc.Name] = $n
+                  } catch { $counts[$svc.Name] = 'parse_error' }
+                } else {
+                  $counts[$svc.Name] = 'unsupported_or_denied'
+                }
+              } catch {
+                $counts[$svc.Name] = 'unsupported_or_denied'
+              }
+            }
+            $summary += [pscustomobject]$counts
+          }
+
+          $summary | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $root 'summary.json')
+          Write-Host ('LOCAL_YANDEX_INVENTORY=PASS folders=' + $folders.Count)
+          foreach ($s in $summary) {
+            Write-Host ("FOLDER_SUMMARY name={0} ydb={1} lockbox={2} containers={3} functions={4} gateways={5} buckets={6} redis={7}" -f $s.folder_name,$s.ydb,$s.lockbox,$s.serverless_containers,$s.functions,$s.api_gateways,$s.storage_buckets,$s.redis)
+          }
