@@ -1,0 +1,80 @@
+name: Telegram Manager Contract Update Once
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-manager-contract-update-once.yml]
+
+permissions:
+  contents: write
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Make production workflows use the managed chat count
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+
+          bridge = Path('.github/workflows/telegram-news-bridge.yml')
+          text = bridge.read_text(encoding='utf-8')
+          replacements = {
+              '.allowed_chats==9 and .media_storage=="enabled"': '.allowed_chats>=1 and .media_storage=="enabled"',
+              '- name: Read all 9 chats for the rolling 192-hour window': '- name: Read all managed chats for the rolling 192-hour window',
+              'echo "$chats" | jq -e \'.chat_count==9 and (.chats|length)==9\' >/dev/null': 'echo "$chats" | jq -e \'.chat_count>=1 and (.chats|length)==.chat_count\' >/dev/null\n          allowed_chats="$(echo "$chats" | jq -r \'.chat_count\')"\n          echo "ALLOWED_CHATS=$allowed_chats" >> "$GITHUB_ENV"',
+              '--argjson allowed_chats 9 \\': '--argjson allowed_chats "$ALLOWED_CHATS" \\',
+              '.allowed_chats==9 and': '.allowed_chats>=1 and',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'bridge expected text missing: {old}')
+              text = text.replace(old, new, 1)
+          bridge.write_text(text, encoding='utf-8')
+
+          ondemand = Path('.github/workflows/telegram-news-ondemand.yml')
+          text = ondemand.read_text(encoding='utf-8')
+          replacements = {
+              '.allowed_chats==9 and .media_storage=="enabled"': '.allowed_chats>=1 and .media_storage=="enabled"',
+              'echo "$chats_meta" | jq -e \'.chat_count==9 and (.chats|length)==9\' >/dev/null': 'echo "$chats_meta" | jq -e \'.chat_count>=1 and (.chats|length)==.chat_count\' >/dev/null',
+          }
+          for old, new in replacements.items():
+              if old not in text:
+                  raise SystemExit(f'ondemand expected text missing: {old}')
+              text = text.replace(old, new, 1)
+          ondemand.write_text(text, encoding='utf-8')
+          PY
+
+          grep -q 'ALLOWED_CHATS=' .github/workflows/telegram-news-bridge.yml
+          if grep -q 'allowed_chats==9' .github/workflows/telegram-news-bridge.yml; then exit 1; fi
+          if grep -q 'chat_count==9' .github/workflows/telegram-news-bridge.yml; then exit 1; fi
+          if grep -q 'allowed_chats==9' .github/workflows/telegram-news-ondemand.yml; then exit 1; fi
+          if grep -q 'chat_count==9' .github/workflows/telegram-news-ondemand.yml; then exit 1; fi
+          echo MANAGED_CHAT_COUNT_CONTRACT_PATCH_PASS
+
+      - name: Commit production contract update
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name telegram-manager-maintenance
+          git config user.email telegram-manager-maintenance@users.noreply.github.com
+          git add .github/workflows/telegram-news-bridge.yml .github/workflows/telegram-news-ondemand.yml
+          git commit -m 'telegram-reader: use dynamic managed chat count'
+          for attempt in 1 2 3; do
+            git fetch origin main
+            if git rebase origin/main && git push origin HEAD:main; then
+              echo MANAGED_CHAT_COUNT_CONTRACT_PUBLISH_PASS
+              exit 0
+            fi
+            git rebase --abort >/dev/null 2>&1 || true
+            sleep 2
+          done
+          exit 1
