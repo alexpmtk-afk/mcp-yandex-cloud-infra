@@ -1,0 +1,80 @@
+name: Yandex billing usage audit 2026-09-17 temp
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/yandex-billing-usage-audit-20260917-temp.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: birzha
+            folder_id: b1g00gqb66tbnfoumnkv
+          - label: default
+            folder_id: b1g0r8h0no6tomn7f5rs
+          - label: card-monitor
+            folder_id: b1g5t7v7u1mnsjd2ai7u
+          - label: marketplaces
+            folder_id: b1gnd0dqoq3ljod88i8t
+          - label: telegram
+            folder_id: b1gk4p83brasi8g811jv
+    steps:
+      - name: Install and authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSLo "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          echo "SA_ID=$(jq -r '.service_account_id // .serviceAccountId' "$RUNNER_TEMP/key.json")" >> "$GITHUB_ENV"
+      - name: Grant temporary usage-reader role
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc config profile create billing-usage-${{ matrix.label }} || true
+          yc config profile activate billing-usage-${{ matrix.label }}
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc resource-manager folder add-access-binding "${{ matrix.folder_id }}" --role billing.usagerecords.admin --service-account-id "$SA_ID"
+          sleep 10
+      - name: Resource usage report
+        shell: bash
+        run: |
+          set +e
+          echo "=== RESOURCE_REPORT ${{ matrix.label }} ==="
+          yc billing consumption-core get-resource-usage-report d01fl7g1trd2i5d8l7r6 \
+            --start-date 2026-09-16T00:00:00Z \
+            --end-date 2026-09-17T23:59:59Z \
+            --folder-ids "${{ matrix.folder_id }}" \
+            --aggregation-period day --format json
+          echo "RESOURCE_EXIT=$?"
+      - name: Service usage report
+        shell: bash
+        run: |
+          set +e
+          sleep 65
+          echo "=== SERVICE_REPORT ${{ matrix.label }} ==="
+          yc billing consumption-core get-service-usage-report d01fl7g1trd2i5d8l7r6 \
+            --start-date 2026-09-16T00:00:00Z \
+            --end-date 2026-09-17T23:59:59Z \
+            --folder-ids "${{ matrix.folder_id }}" \
+            --aggregation-period day --format json
+          echo "SERVICE_EXIT=$?"
+      - name: Remove temporary usage-reader role
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          yc resource-manager folder remove-access-binding "${{ matrix.folder_id }}" --role billing.usagerecords.admin --service-account-id "$SA_ID"
+          rm -f "$RUNNER_TEMP/key.json"
