@@ -10,65 +10,153 @@ permissions:
   contents: read
 
 jobs:
-  inventory:
-    runs-on: [self-hosted, Windows, X64, gpt-powershell-work]
-    timeout-minutes: 15
+  cloud_inventory:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    env:
+      YC_CLOUD_ID: b1gi4pr9msenirafh2c7
+      YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
     steps:
-      - name: Build local Yandex state inventory
+      - name: Install and authenticate Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 3 https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-key.json"
+          chmod 600 "$RUNNER_TEMP/yc-key.json"
+          "$RUNNER_TEMP/yc/yc" config profile create migration-audit || true
+          "$RUNNER_TEMP/yc/yc" config set service-account-key "$RUNNER_TEMP/yc-key.json"
+          "$RUNNER_TEMP/yc/yc" config set cloud-id "$YC_CLOUD_ID"
+
+      - name: Inventory project folders and cloud resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc resource-manager folder list --cloud-id "$YC_CLOUD_ID" --format json > "$RUNNER_TEMP/folders.json"
+          python - <<'PY'
+          import json, os, subprocess
+          from pathlib import Path
+          folders=json.loads((Path(os.environ['RUNNER_TEMP'])/'folders.json').read_text())
+          wanted={'marketplaces-mcp-test','birzha-mcp-forecast-test','telegram-news-reader','marketplace-card-monitor'}
+          print('CLOUD_FOLDERS_BEGIN')
+          for f in folders:
+              if f.get('name') not in wanted: continue
+              fid=f['id']; name=f['name']
+              print(f'FOLDER name={name} id={fid}')
+              cmds={
+                'ydb':['yc','ydb','database','list','--folder-id',fid,'--format','json'],
+                'lockbox':['yc','lockbox','secret','list','--folder-id',fid,'--format','json'],
+                'containers':['yc','serverless','container','list','--folder-id',fid,'--format','json'],
+                'functions':['yc','serverless','function','list','--folder-id',fid,'--format','json'],
+                'gateways':['yc','serverless','api-gateway','list','--folder-id',fid,'--format','json'],
+                'instances':['yc','compute','instance','list','--folder-id',fid,'--format','json'],
+                'disks':['yc','compute','disk','list','--folder-id',fid,'--format','json'],
+                'buckets':['yc','storage','bucket','list','--folder-id',fid,'--format','json'],
+                'registries':['yc','container','registry','list','--folder-id',fid,'--format','json'],
+              }
+              for key,cmd in cmds.items():
+                  try:
+                      p=subprocess.run(cmd,text=True,capture_output=True,timeout=60)
+                      if p.returncode!=0:
+                          print(f'RESOURCE folder={name} type={key} status=DENIED_OR_UNSUPPORTED')
+                          continue
+                      obj=json.loads(p.stdout or '[]')
+                      if isinstance(obj,list): items=obj
+                      elif obj: items=[obj]
+                      else: items=[]
+                      print(f'RESOURCE folder={name} type={key} count={len(items)}')
+                      for x in items:
+                          ident=x.get('id',''); nm=x.get('name',''); status=x.get('status','')
+                          # metadata only, never payloads/secrets
+                          print(f'ITEM folder={name} type={key} id={ident} name={nm} status={status}')
+                  except Exception as e:
+                      print(f'RESOURCE folder={name} type={key} status=ERROR err={type(e).__name__}')
+          print('CLOUD_FOLDERS_END')
+          PY
+
+      - name: Count current and historical versions in Marketplaces buckets
+        shell: bash
+        run: |
+          set -euo pipefail
+          IAM_TOKEN="$(yc iam create-token)"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          export IAM_TOKEN
+          python - <<'PY'
+          import os, urllib.parse, urllib.request, xml.etree.ElementTree as ET
+          buckets=['marketplaces-mcp-archive-b1gnd0dqoq3ljod88i8t','marketplaces-mcp-tfstate-b1gnd0dqoq3ljod88i8t']
+          endpoint='https://storage.yandexcloud.net'
+          headers={'Authorization':'Bearer '+os.environ['IAM_TOKEN']}
+          def txt(node,name):
+              for c in node:
+                  if c.tag.rsplit('}',1)[-1]==name: return c.text or ''
+              return ''
+          for bucket in buckets:
+              km=vm=None
+              versions=[]; deletes=[]
+              while True:
+                  q={'versions':'','max-keys':'1000'}
+                  if km: q['key-marker']=km
+                  if vm: q['version-id-marker']=vm
+                  url=f"{endpoint}/{bucket}?{urllib.parse.urlencode(q)}"
+                  req=urllib.request.Request(url,headers=headers)
+                  with urllib.request.urlopen(req,timeout=90) as r: root=ET.fromstring(r.read())
+                  for n in root:
+                      kind=n.tag.rsplit('}',1)[-1]
+                      if kind=='Version':
+                          versions.append({'size':int(txt(n,'Size') or 0),'latest':txt(n,'IsLatest').lower()=='true'})
+                      elif kind=='DeleteMarker':
+                          deletes.append({'latest':txt(n,'IsLatest').lower()=='true'})
+                  trunc=next((n.text for n in root.iter() if n.tag.rsplit('}',1)[-1]=='IsTruncated'),'false')
+                  if str(trunc).lower()!='true': break
+                  km=next((n.text for n in root.iter() if n.tag.rsplit('}',1)[-1]=='NextKeyMarker'),None)
+                  vm=next((n.text for n in root.iter() if n.tag.rsplit('}',1)[-1]=='NextVersionIdMarker'),None)
+                  if not km: raise RuntimeError('truncated version listing without marker')
+              current=[v for v in versions if v['latest']]
+              historical=[v for v in versions if not v['latest']]
+              print('VERSION_SUMMARY bucket=%s current_versions=%d current_bytes=%d historical_versions=%d historical_bytes=%d delete_markers=%d total_versions=%d total_bytes=%d' % (
+                  bucket,len(current),sum(v['size'] for v in current),len(historical),sum(v['size'] for v in historical),len(deletes),len(versions),sum(v['size'] for v in versions)))
+          PY
+
+      - name: Cleanup cloud credentials
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/folders.json"
+
+  work_inventory:
+    runs-on: [self-hosted, Windows, X64, gpt-powershell-work]
+    timeout-minutes: 10
+    steps:
+      - name: Inventory WORK migration destinations
         shell: powershell
         run: |
-          $ErrorActionPreference = 'Stop'
-          $root = 'C:\MCP\migration\yandex-inventory'
-          New-Item -ItemType Directory -Force -Path $root | Out-Null
-
-          $cloudId = (& yc config get cloud-id).Trim()
-          if ([string]::IsNullOrWhiteSpace($cloudId)) { throw 'YC cloud-id is not configured' }
-
-          $foldersJson = & yc resource-manager folder list --cloud-id $cloudId --format json
-          if ($LASTEXITCODE -ne 0) { throw 'folder inventory failed' }
-          $foldersJson | Set-Content -Encoding UTF8 (Join-Path $root 'folders.json')
-          $folders = $foldersJson | ConvertFrom-Json
-
-          $summary = @()
-          foreach ($f in $folders) {
-            $fid = $f.id
-            $safe = ($f.name -replace '[^A-Za-z0-9._-]', '_')
-            $dir = Join-Path $root ("{0}_{1}" -f $safe,$fid)
-            New-Item -ItemType Directory -Force -Path $dir | Out-Null
-
-            $services = @(
-              @{Name='ydb'; Args=@('ydb','database','list','--folder-id',$fid,'--format','json')},
-              @{Name='lockbox'; Args=@('lockbox','secret','list','--folder-id',$fid,'--format','json')},
-              @{Name='serverless_containers'; Args=@('serverless','container','list','--folder-id',$fid,'--format','json')},
-              @{Name='functions'; Args=@('serverless','function','list','--folder-id',$fid,'--format','json')},
-              @{Name='api_gateways'; Args=@('serverless','api-gateway','list','--folder-id',$fid,'--format','json')},
-              @{Name='storage_buckets'; Args=@('storage','bucket','list','--folder-id',$fid,'--format','json')},
-              @{Name='redis'; Args=@('managed-redis','cluster','list','--folder-id',$fid,'--format','json')}
-            )
-
-            $counts = [ordered]@{ folder_id=$fid; folder_name=$f.name }
-            foreach ($svc in $services) {
-              try {
-                $out = & yc @($svc.Args) 2>$null
-                if ($LASTEXITCODE -eq 0) {
-                  $out | Set-Content -Encoding UTF8 (Join-Path $dir ($svc.Name + '.json'))
-                  try {
-                    $obj = $out | ConvertFrom-Json
-                    if ($null -eq $obj) { $n = 0 } elseif ($obj -is [System.Array]) { $n = $obj.Count } else { $n = 1 }
-                    $counts[$svc.Name] = $n
-                  } catch { $counts[$svc.Name] = 'parse_error' }
-                } else {
-                  $counts[$svc.Name] = 'unsupported_or_denied'
-                }
-              } catch {
-                $counts[$svc.Name] = 'unsupported_or_denied'
-              }
+          $ErrorActionPreference='Stop'
+          $targets = @(
+            @{Name='marketplaces_archive_current'; Path='C:\MCP\migration\yandex-manual\marketplaces\object-storage\archive'},
+            @{Name='marketplaces_tfstate_current'; Path='C:\MCP\migration\yandex-manual\marketplaces\object-storage\tfstate'},
+            @{Name='marketplaces_archive_versions'; Path='C:\MCP\migration\yandex-manual\marketplaces\object-storage\archive-versions'},
+            @{Name='marketplaces_tfstate_versions'; Path='C:\MCP\migration\yandex-manual\marketplaces\object-storage\tfstate-versions'},
+            @{Name='telegram_media'; Path='C:\MCP\migration\yandex-manual\telegram\media'},
+            @{Name='birzha_ydb_export'; Path='C:\MCP\migration\yandex-manual\birzha\ydb-export'},
+            @{Name='lockbox_telegram'; Path='C:\MCP\secrets\yandex-lockbox\telegram'},
+            @{Name='lockbox_marketplaces'; Path='C:\MCP\secrets\yandex-lockbox\marketplaces'},
+            @{Name='lockbox_birzha'; Path='C:\MCP\secrets\yandex-lockbox\birzha'}
+          )
+          foreach ($t in $targets) {
+            if (Test-Path -LiteralPath $t.Path) {
+              $files = @(Get-ChildItem -LiteralPath $t.Path -File -Recurse -Force -ErrorAction SilentlyContinue)
+              $bytes = ($files | Measure-Object -Property Length -Sum).Sum
+              if ($null -eq $bytes) { $bytes = 0 }
+              Write-Host ("WORK_SUMMARY name={0} exists=YES files={1} bytes={2}" -f $t.Name,$files.Count,[int64]$bytes)
+            } else {
+              Write-Host ("WORK_SUMMARY name={0} exists=NO files=0 bytes=0" -f $t.Name)
             }
-            $summary += [pscustomobject]$counts
           }
-
-          $summary | ConvertTo-Json -Depth 5 | Set-Content -Encoding UTF8 (Join-Path $root 'summary.json')
-          Write-Host ('LOCAL_YANDEX_INVENTORY=PASS folders=' + $folders.Count)
-          foreach ($s in $summary) {
-            Write-Host ("FOLDER_SUMMARY name={0} ydb={1} lockbox={2} containers={3} functions={4} gateways={5} buckets={6} redis={7}" -f $s.folder_name,$s.ydb,$s.lockbox,$s.serverless_containers,$s.functions,$s.api_gateways,$s.storage_buckets,$s.redis)
+          foreach ($repo in @('C:\MCP\projects\marketplaces-mcp-ru','C:\MCP\projects\birzha-mcp-forecast','C:\MCP\projects\telegram-news-reader','C:\MCP\projects\mcp-yandex-cloud-infra')) {
+            Write-Host ("WORK_REPO path={0} exists={1}" -f $repo,($(if(Test-Path -LiteralPath $repo){'YES'}else{'NO'})))
           }
