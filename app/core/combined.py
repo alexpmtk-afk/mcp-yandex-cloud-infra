@@ -14,6 +14,7 @@ from .business_registry import resolve_business_cabinet
 from .semantic_business_router import register_business_query_tool
 from .card_monitor import register_tools as register_card_monitor_tools
 from .data_catalog import register_data_catalog_tools
+from .semantic_core import register_semantic_core_tool
 from .system_map import SYSTEM_INSTRUCTIONS, register_system_map_tool
 from .tools import resolve_named_cabinet
 from .wb_advertising import register_wb_advertising_tools
@@ -39,11 +40,7 @@ def _rate_status_tool(client: Any):
                 "active_queues": [],
                 "error": state.get("message", "Rate-limit status is unavailable."),
             }, ensure_ascii=False)
-
-        queues = [{
-            "queue": item.get("queue", "other"),
-            "wait_seconds": item.get("wait_seconds", 0.0),
-        } for item in state.get("active_queues", [])]
+        queues = [{"queue": item.get("queue", "other"), "wait_seconds": item.get("wait_seconds", 0.0)} for item in state.get("active_queues", [])]
         return json.dumps({
             "ok": True,
             "backend": backend,
@@ -62,12 +59,7 @@ def _resolve_wb_finance_creds(wb: Any, seller: str) -> tuple[dict[str, str] | No
     credential_name = business_cabinet.cabinet if business_cabinet else seller
     creds, error = resolve_named_cabinet(wb.client, credential_name)
     if error and business_cabinet:
-        error = {
-            **error,
-            "seller": seller,
-            "business_entity": business_cabinet.business_entity,
-            "cabinet": business_cabinet.cabinet,
-        }
+        error = {**error, "seller": seller, "business_entity": business_cabinet.business_entity, "cabinet": business_cabinet.cabinet}
     return creds, error
 
 
@@ -76,26 +68,8 @@ def _register_finance_tools(combined: FastMCP, modules: dict[str, Any]) -> None:
     wb = modules["wb"]
     ozon = modules["ozon"]
 
-    @combined.tool(
-        name="wb_list_realization_reports",
-        annotations={"title": "WB realization reports list", "readOnlyHint": True,
-                     "openWorldHint": True},
-    )
-    async def wb_list_realization_reports(
-        seller: str,
-        date_from: str,
-        date_to: str,
-        period: str = "weekly",
-        limit: int = 1000,
-        offset: int = 0,
-    ) -> str:
-        """List current WB realization reports for one explicitly named cabinet.
-
-        Use this first for archive discovery. ``period`` is ``weekly`` or ``daily``.
-        The returned rows include ``reportId``; use that ID with
-        ``wb_get_realization_report_by_id``. The current WB method requires a
-        Personal or Service token with the Finance category.
-        """
+    @combined.tool(name="wb_list_realization_reports", annotations={"title": "WB realization reports list", "readOnlyHint": True, "openWorldHint": True})
+    async def wb_list_realization_reports(seller: str, date_from: str, date_to: str, period: str = "weekly", limit: int = 1000, offset: int = 0) -> str:
         start = date.fromisoformat(date_from[:10])
         end = date.fromisoformat(date_to[:10])
         if start > end:
@@ -111,38 +85,10 @@ def _register_finance_tools(combined: FastMCP, modules: dict[str, Any]) -> None:
         spec = wb.catalog.get("wb_finance_sales_reports_list")
         if spec is None:
             raise RuntimeError("wb_finance_sales_reports_list contract is missing")
-        return _j(await wb.client.call_spec(
-            spec,
-            json_body={
-                "dateFrom": start.isoformat(),
-                "dateTo": end.isoformat(),
-                "period": period,
-                "limit": limit,
-                "offset": offset,
-            },
-            creds_override=creds,
-        ))
+        return _j(await wb.client.call_spec(spec, json_body={"dateFrom": start.isoformat(), "dateTo": end.isoformat(), "period": period, "limit": limit, "offset": offset}, creds_override=creds))
 
-    @combined.tool(
-        name="wb_get_realization_report_by_id",
-        annotations={"title": "WB realization report details by ID", "readOnlyHint": True,
-                     "openWorldHint": True},
-    )
-    async def wb_get_realization_report_by_id(
-        seller: str,
-        report_id: int,
-        limit: int = 100000,
-        rrd_id: int = 0,
-    ) -> str:
-        """Get one page of full WB realization-report details by ``reportId``.
-
-        ``fields`` is deliberately omitted so WB returns every available column.
-        Start with ``rrd_id=0``. If rows are returned, the archive worker should
-        continue from the last row's ``rrdId`` until WB returns HTTP 204. The
-        provider limit is one request per minute per seller account; this tool
-        therefore remains fail-fast when the shared limiter says the next slot is
-        not yet available instead of sleeping inside an interactive MCP call.
-        """
+    @combined.tool(name="wb_get_realization_report_by_id", annotations={"title": "WB realization report details by ID", "readOnlyHint": True, "openWorldHint": True})
+    async def wb_get_realization_report_by_id(seller: str, report_id: int, limit: int = 100000, rrd_id: int = 0) -> str:
         report_id = int(report_id)
         if report_id <= 0:
             raise ValueError("report_id must be a positive integer")
@@ -154,47 +100,25 @@ def _register_finance_tools(combined: FastMCP, modules: dict[str, Any]) -> None:
         spec = wb.catalog.get("wb_finance_sales_reports_detailed_by_id")
         if spec is None:
             raise RuntimeError("wb_finance_sales_reports_detailed_by_id contract is missing")
-        return _j(await wb.client.call_spec(
-            spec,
-            path_values={"reportId": report_id},
-            json_body={"limit": limit, "rrdId": rrd_id},
-            creds_override=creds,
-        ))
+        return _j(await wb.client.call_spec(spec, path_values={"reportId": report_id}, json_body={"limit": limit, "rrdId": rrd_id}, creds_override=creds))
 
-    @combined.tool(
-        name="ozon_get_accrual_types",
-        annotations={"title": "Ozon finance accrual types", "readOnlyHint": True,
-                     "openWorldHint": True},
-    )
+    @combined.tool(name="ozon_get_accrual_types", annotations={"title": "Ozon finance accrual types", "readOnlyHint": True, "openWorldHint": True})
     async def ozon_get_accrual_types() -> str:
-        """List finance accrual types available to the current Ozon cabinet."""
         spec = ozon.catalog.get("ozon_finance_accrual_types")
         if spec is None:
             raise RuntimeError("ozon_finance_accrual_types contract is missing")
         return _j(await ozon.client.call_spec(spec, json_body={}))
 
-    @combined.tool(
-        name="ozon_get_accruals_by_day",
-        annotations={"title": "Ozon finance accruals by day", "readOnlyHint": True,
-                     "openWorldHint": True},
-    )
+    @combined.tool(name="ozon_get_accruals_by_day", annotations={"title": "Ozon finance accruals by day", "readOnlyHint": True, "openWorldHint": True})
     async def ozon_get_accruals_by_day(day: str, last_id: str = "") -> str:
-        """Get Ozon finance accruals for one day using the current cursor API."""
         value = date.fromisoformat(day[:10]).isoformat()
         spec = ozon.catalog.get("ozon_finance_accrual_by_day")
         if spec is None:
             raise RuntimeError("ozon_finance_accrual_by_day contract is missing")
-        return _j(await ozon.client.call_spec(spec, json_body={
-            "date": value, "last_id": last_id,
-        }))
+        return _j(await ozon.client.call_spec(spec, json_body={"date": value, "last_id": last_id}))
 
-    @combined.tool(
-        name="ozon_get_realization",
-        annotations={"title": "Ozon monthly realization", "readOnlyHint": True,
-                     "openWorldHint": True},
-    )
+    @combined.tool(name="ozon_get_realization", annotations={"title": "Ozon monthly realization", "readOnlyHint": True, "openWorldHint": True})
     async def ozon_get_realization(month: int, year: int) -> str:
-        """Get the Ozon monthly realization report for month/year."""
         month = int(month)
         year = int(year)
         if not 1 <= month <= 12:
@@ -204,13 +128,11 @@ def _register_finance_tools(combined: FastMCP, modules: dict[str, Any]) -> None:
         spec = ozon.catalog.get("ozon_finance_realization")
         if spec is None:
             raise RuntimeError("ozon_finance_realization contract is missing")
-        return _j(await ozon.client.call_spec(spec, json_body={
-            "month": month, "year": year,
-        }))
+        return _j(await ozon.client.call_spec(spec, json_body={"month": month, "year": year}))
 
 
 def build(**fastmcp_kwargs: Any) -> FastMCP:
-    """Return one FastMCP carrying seller API, advertising, archive, semantic and card-monitor tools."""
+    """Return one FastMCP carrying seller API, archive and canonical Semantic Core tools."""
     fastmcp_kwargs.setdefault("instructions", SYSTEM_INSTRUCTIONS)
     combined = FastMCP("marketplaces-mcp-ru", **fastmcp_kwargs)
     modules: dict[str, Any] = {}
@@ -219,17 +141,11 @@ def build(**fastmcp_kwargs: Any) -> FastMCP:
         combined._tool_manager._tools.update(mod.mcp._tool_manager._tools)
         svc = mod.client.config.name
         modules[svc] = mod
-        combined.tool(
-            name=f"{svc}_rate_limit_status",
-            annotations={
-                "title": f"{svc.upper()} shared rate-limit status",
-                "readOnlyHint": True,
-                "openWorldHint": False,
-            },
-        )(_rate_status_tool(mod.client))
+        combined.tool(name=f"{svc}_rate_limit_status", annotations={"title": f"{svc.upper()} shared rate-limit status", "readOnlyHint": True, "openWorldHint": False})(_rate_status_tool(mod.client))
     archive_store = build_hybrid_archive_store_from_env()
     modules["_archive_store"] = archive_store
     register_system_map_tool(combined)
+    register_semantic_core_tool(combined)
     register_data_catalog_tools(combined)
     _register_finance_tools(combined, modules)
     register_wb_advertising_tools(combined, modules)
