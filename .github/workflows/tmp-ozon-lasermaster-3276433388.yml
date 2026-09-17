@@ -1,0 +1,198 @@
+name: TMP Ozon LaserMaster 3276433388 probe
+
+on:
+  push:
+    branches:
+      - probe/ozon-lasermaster-3276433388-20260917
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 12
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          URL='https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz'
+          ARCHIVE="$RUNNER_TEMP/yc/yc.tgz"
+          wget -q --timeout=30 --tries=4 --output-document="$ARCHIVE" "$URL"
+          tar -xzf "$ARCHIVE" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Resolve TEST MCP
+        id: target
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          KEY_FILE="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
+          chmod 600 "$KEY_FILE"
+          yc config profile create tmp-ozon-probe || true
+          yc config set service-account-key "$KEY_FILE"
+          CLOUD_ID=b1gi4pr9msenirafh2c7
+          FOLDER_ID="$(yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
+          test -n "$FOLDER_ID"
+          yc config set folder-id "$FOLDER_ID"
+          DOMAIN="$(yc serverless api-gateway list --folder-id "$FOLDER_ID" --format json | jq -r '[.[]|select((.name//"")|contains("marketplaces"))][0].domain//.[0].domain//empty')"
+          SECRET_ID="$(yc lockbox secret list --folder-id "$FOLDER_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-api-credentials")|.id'|head -1)"
+          VERSION_ID="$(yc lockbox secret list-versions --id "$SECRET_ID" --format json --no-user-output | jq -r '[.[]|select(.status=="ACTIVE")|select((.payload_entry_keys // [])|index("mcp_bearer_token") != null)]|sort_by(.created_at)|last|.id // empty')"
+          test -n "$DOMAIN" && test -n "$SECRET_ID" && test -n "$VERSION_ID"
+          yc lockbox payload get --id "$SECRET_ID" --version-id "$VERSION_ID" --format json --no-user-output > "$RUNNER_TEMP/sec.json"
+          BEARER="$(jq -r '.entries[]|select(.key=="mcp_bearer_token")|.text_value' "$RUNNER_TEMP/sec.json")"
+          test -n "$BEARER"
+          echo "::add-mask::$BEARER"
+          printf '%s' "$BEARER" > "$RUNNER_TEMP/bearer"
+          printf '%s' "https://${DOMAIN}/mcp" > "$RUNNER_TEMP/mcp-url"
+
+      - name: Probe article through live MCP
+        shell: bash
+        timeout-minutes: 6
+        run: |
+          set -euo pipefail
+          python -m pip install --quiet 'httpx>=0.27,<1'
+          export MCP_URL="$(cat "$RUNNER_TEMP/mcp-url")"
+          export MCP_BEARER="$(cat "$RUNNER_TEMP/bearer")"
+          python -u - <<'PY'
+          import itertools, json, os, re
+          import httpx
+
+          ARTICLE = '3276433388'
+          CANDIDATE_CABINETS = {'lasermaster', 'ozonlasermaster'}
+
+          def unpack(r):
+              r.raise_for_status()
+              for line in r.text.splitlines():
+                  if line.startswith('data:'):
+                      return json.loads(line[5:].strip())
+              return r.json() if r.text.strip() else None
+
+          def norm(s):
+              return re.sub(r'[^a-z0-9]+', '', str(s).casefold())
+
+          def scalar_values(obj):
+              out=[]
+              if isinstance(obj, dict):
+                  for v in obj.values(): out.extend(scalar_values(v))
+              elif isinstance(obj, list):
+                  for v in obj: out.extend(scalar_values(v))
+              elif obj is not None:
+                  out.append(str(obj))
+              return out
+
+          def identifiers(obj):
+              out=set()
+              if isinstance(obj, dict):
+                  for k,v in obj.items():
+                      if k in {'sku','offer_id','product_id','id'} and not isinstance(v,(dict,list)) and v is not None:
+                          out.add(str(v))
+                      out |= identifiers(v)
+              elif isinstance(obj, list):
+                  for v in obj: out |= identifiers(v)
+              return out
+
+          def collect_item_lists(obj):
+              rows=[]
+              if isinstance(obj, dict):
+                  for k,v in obj.items():
+                      if k in {'items','products'} and isinstance(v,list):
+                          rows.extend(x for x in v if isinstance(x,dict))
+                      else:
+                          rows.extend(collect_item_lists(v))
+              elif isinstance(obj,list):
+                  for v in obj: rows.extend(collect_item_lists(v))
+              return rows
+
+          timeout=httpx.Timeout(connect=10,read=60,write=30,pool=10)
+          headers={'Authorization':'Bearer '+os.environ['MCP_BEARER'],'Accept':'application/json, text/event-stream','Content-Type':'application/json'}
+          ids=itertools.count(1)
+          with httpx.Client(timeout=timeout,follow_redirects=True) as c:
+              r=c.post(os.environ['MCP_URL'],headers=headers,json={'jsonrpc':'2.0','id':next(ids),'method':'initialize','params':{'protocolVersion':'2025-06-18','capabilities':{},'clientInfo':{'name':'tmp-ozon-article-probe','version':'1'}}})
+              init=unpack(r); assert init and 'result' in init, init
+              h=dict(headers); sid=r.headers.get('mcp-session-id')
+              if sid: h['Mcp-Session-Id']=sid
+              h['MCP-Protocol-Version']=init['result'].get('protocolVersion','2025-06-18')
+              n=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','method':'notifications/initialized'}); assert n.status_code in (200,202)
+
+              def rpc(method,params=None):
+                  rr=c.post(os.environ['MCP_URL'],headers=h,json={'jsonrpc':'2.0','id':next(ids),'method':method,'params':params or {}})
+                  d=unpack(rr); assert d and 'result' in d,(method,d); return d['result']
+
+              def call(name,args=None):
+                  result=rpc('tools/call',{'name':name,'arguments':args or {}})
+                  if result.get('isError'):
+                      raise RuntimeError(f'{name} MCP error: {result}')
+                  text=next((x.get('text') for x in result.get('content',[]) if x.get('type')=='text'),None)
+                  if text is None: raise RuntimeError(f'{name} returned no text')
+                  return json.loads(text)
+
+              names={x['name'] for x in rpc('tools/list')['tools']}
+              required={'ozon_list_cabinets','ozon_use_cabinet','ozon_get_products','ozon_get_prices','ozon_get_stocks'}
+              assert required <= names, sorted(required-names)
+
+              cabinets=call('ozon_list_cabinets')
+              available=cabinets.get('cabinets') or []
+              original=cabinets.get('active')
+              target=None
+              for name in available:
+                  if norm(name) in CANDIDATE_CABINETS:
+                      target=name; break
+              print('CABINETS_AVAILABLE='+json.dumps(available,ensure_ascii=False),flush=True)
+              print('CABINET_ORIGINAL='+str(original),flush=True)
+              assert target, f'LaserMaster cabinet not found: {available}'
+              print('CABINET_TARGET='+target,flush=True)
+
+              switched=False
+              try:
+                  if original != target:
+                      sw=call('ozon_use_cabinet',{'name':target})
+                      assert sw.get('ok') is True, sw
+                      switched=True
+
+                  products=call('ozon_get_products',{'visibility':'ALL','limit':1000,'last_id':''})
+                  stocks=call('ozon_get_stocks',{'visibility':'ALL','limit':1000,'last_id':''})
+                  product_rows=collect_item_lists(products)
+                  stock_rows=collect_item_lists(stocks)
+
+                  known={ARTICLE}
+                  product_matches=[row for row in product_rows if ARTICLE in scalar_values(row)]
+                  stock_matches=[row for row in stock_rows if ARTICLE in scalar_values(row)]
+                  for row in product_matches+stock_matches: known |= identifiers(row)
+
+                  prices=call('ozon_get_prices',{'visibility':'ALL','limit':1000,'cursor':''})
+                  price_rows=collect_item_lists(prices)
+                  price_matches=[row for row in price_rows if any(x in scalar_values(row) for x in known)]
+                  for row in price_matches: known |= identifiers(row)
+                  if not stock_matches and len(known)>1:
+                      stock_matches=[row for row in stock_rows if any(x in scalar_values(row) for x in known)]
+                  if not product_matches and len(known)>1:
+                      product_matches=[row for row in product_rows if any(x in scalar_values(row) for x in known)]
+
+                  print('ARTICLE='+ARTICLE,flush=True)
+                  print('KNOWN_IDENTIFIERS='+json.dumps(sorted(known),ensure_ascii=False),flush=True)
+                  print('PRODUCT_MATCHES='+json.dumps(product_matches,ensure_ascii=False,sort_keys=True),flush=True)
+                  print('STOCK_MATCHES='+json.dumps(stock_matches,ensure_ascii=False,sort_keys=True),flush=True)
+                  print('PRICE_MATCHES='+json.dumps(price_matches,ensure_ascii=False,sort_keys=True),flush=True)
+                  print('PRODUCT_PAGE_STATUS='+json.dumps({'ok':products.get('ok'),'status':products.get('status')},sort_keys=True),flush=True)
+                  print('STOCK_PAGE_STATUS='+json.dumps({'ok':stocks.get('ok'),'status':stocks.get('status')},sort_keys=True),flush=True)
+                  print('PRICE_PAGE_STATUS='+json.dumps({'ok':prices.get('ok'),'status':prices.get('status')},sort_keys=True),flush=True)
+                  assert product_matches or stock_matches or price_matches, 'Article not found on first 1000-item pages'
+                  print('OZON_LASERMASTER_ARTICLE_PROBE=PASS',flush=True)
+              finally:
+                  if switched and original:
+                      restored=call('ozon_use_cabinet',{'name':original})
+                      print('CABINET_RESTORE='+json.dumps(restored,ensure_ascii=False),flush=True)
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer" "$RUNNER_TEMP/mcp-url"
