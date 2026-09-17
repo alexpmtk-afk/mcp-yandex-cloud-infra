@@ -139,15 +139,35 @@ jobs:
           : > "$work/chats.ndjson"
 
           while read -r cid; do
-            page="$(curl -fsS --retry 2 --retry-delay 2 --retry-all-errors --max-time 110 \
-              -H "Authorization: Bearer $token" \
-              --get \
-              --data-urlencode "date_from=$date_from" \
-              --data-urlencode "date_to=$date_to" \
-              --data-urlencode "limit=$limit" \
-              "$READER_URL/internal/chats/$cid/messages")"
-            echo "$page" | jq -e --argjson cid "$cid" '.chat_id==$cid and (.messages|type)=="array" and (.messages|length)==.message_count' >/dev/null
-            echo "$page" | jq -c --argjson cid "$cid" '{chat_id:$cid,messages:.messages}' >> "$work/chats.ndjson"
+            messages="$work/messages-$cid.ndjson"
+            : > "$messages"
+            before=''
+            collected=0
+            pages=0
+            while [ "$collected" -lt "$limit" ]; do
+              pages=$((pages+1))
+              test "$pages" -le 20
+              remaining=$((limit-collected))
+              request_page="$remaining"
+              if [ "$request_page" -gt 250 ]; then request_page=250; fi
+              args=(--get --data-urlencode "date_from=$date_from" --data-urlencode "date_to=$date_to" --data-urlencode "limit=$request_page")
+              if [ -n "$before" ]; then args+=(--data-urlencode "before_id=$before"); fi
+              page="$(curl -fsS --retry 2 --retry-delay 2 --retry-all-errors --max-time 110 \
+                -H "Authorization: Bearer $token" \
+                "${args[@]}" \
+                "$READER_URL/internal/chats/$cid/messages")"
+              echo "$page" | jq -e --argjson cid "$cid" '.chat_id==$cid and (.messages|type)=="array" and (.messages|length)==.message_count' >/dev/null
+              echo "$page" | jq -c '.messages[]' >> "$messages"
+              got="$(echo "$page" | jq -r '.message_count')"
+              collected=$((collected+got))
+              full="$(echo "$page" | jq -r '.page_full')"
+              next="$(echo "$page" | jq -r '.next_before_id // empty')"
+              if [ "$got" -eq 0 ] || [ "$collected" -ge "$limit" ] || [ "$full" != true ]; then break; fi
+              test -n "$next"
+              if [ -n "$before" ]; then test "$next" -lt "$before"; fi
+              before="$next"
+            done
+            jq -s --argjson cid "$cid" '{chat_id:$cid,messages:.}' "$messages" >> "$work/chats.ndjson"
           done < <(echo "$chat_ids" | jq -r '.[]')
 
           jq -s \
