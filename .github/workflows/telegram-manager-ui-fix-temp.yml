@@ -1,0 +1,152 @@
+name: Telegram Manager UI Fix TEMP
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-manager-ui-fix-temp.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deploy-and-verify:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 45
+    env:
+      FOLDER_ID: b1gk4p83brasi8g811jv
+      SECRET_ID: e6qnt0bt655jltrr5sid
+      READER_NAME: telegram-reader-serverless
+      RUNTIME_SA: ajeaad0m00gncv22tagf
+      REGISTRY_REPO: cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader
+      GATEWAY_NAME: telegram-reader-manager
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 1
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-manager-ui-fix || true
+          yc config profile activate telegram-manager-ui-fix
+          yc config set service-account-key "$key"
+          yc config set folder-id "$FOLDER_ID"
+      - name: Build and push Reader image
+        id: image
+        shell: bash
+        run: |
+          set -euo pipefail
+          iam="$(yc iam create-token)"
+          echo "::add-mask::$iam"
+          printf '%s' "$iam" | docker login --username iam --password-stdin cr.yandex >/dev/null
+          tag="manager-ui-fix-${GITHUB_SHA::12}"
+          image="$REGISTRY_REPO:$tag"
+          docker build -t "$image" telegram-news-reader
+          docker push "$image" >/dev/null
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+      - name: Deploy Reader revision
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --folder-id "$FOLDER_ID" \
+            --container-name "$READER_NAME" \
+            --runtime http \
+            --image "${{ steps.image.outputs.image }}" \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id "$RUNTIME_SA" \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment TELEGRAM_MEDIA_PATH=/tmp/media \
+            --environment COLLECTOR_ENABLED=false \
+            --environment LOCKBOX_RUNTIME_SECRET_ID="$SECRET_ID" >/dev/null
+      - name: Verify manager page, current key, and persistence
+        shell: bash
+        run: |
+          set -euo pipefail
+          domain="$(yc serverless api-gateway get --name "$GATEWAY_NAME" --folder-id "$FOLDER_ID" --format json | jq -r '.domain')"
+          test -n "$domain" && test "$domain" != null
+          base="https://$domain"
+
+          ok=0
+          for attempt in $(seq 1 30); do
+            code="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/manage.html" -w '%{http_code}' "$base/manage" || true)"
+            if [ "$code" = 200 ] && grep -q 'старый ключ из прежней VM-версии' "$RUNNER_TEMP/manage.html" && grep -q 'Ключ управления не принят' "$RUNNER_TEMP/manage.html"; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+
+          bad="$(curl -sS --max-time 20 -o "$RUNNER_TEMP/bad.json" -w '%{http_code}' -H 'x-admin-token: definitely-wrong-manager-key' "$base/api/admin/dialogs" || true)"
+          test "$bad" = 401
+
+          iam="$(yc iam create-token)"
+          echo "::add-mask::$iam"
+          payload_url="https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$SECRET_ID/payload"
+          curl -fsS -H "Authorization: Bearer $iam" "$payload_url" > "$RUNNER_TEMP/before.json"
+          browser_key="$(jq -r '.entries[] | select(.key=="MANAGE_BROWSER_KEY") | .textValue' "$RUNNER_TEMP/before.json")"
+          test -n "$browser_key" && test "$browser_key" != null
+          echo "::add-mask::$browser_key"
+
+          auth=0
+          for attempt in $(seq 1 18); do
+            code="$(curl -sS --max-time 60 -o "$RUNNER_TEMP/dialogs.json" -w '%{http_code}' -H "x-admin-token: $browser_key" "$base/api/admin/dialogs" || true)"
+            if [ "$code" = 200 ] && jq -e '.dialogs|type=="array" and length>=1' "$RUNNER_TEMP/dialogs.json" >/dev/null; then
+              auth=1
+              break
+            fi
+            sleep 5
+          done
+          test "$auth" -eq 1
+          jq -e '.selected|type=="array" and length>=1' "$RUNNER_TEMP/dialogs.json" >/dev/null
+          jq '{chat_ids:.selected}' "$RUNNER_TEMP/dialogs.json" > "$RUNNER_TEMP/same-selection.json"
+          save_code="$(curl -sS --max-time 90 -o "$RUNNER_TEMP/save.json" -w '%{http_code}' -H "x-admin-token: $browser_key" -H 'content-type: application/json' --data-binary @"$RUNNER_TEMP/same-selection.json" "$base/api/admin/whitelist" || true)"
+          test "$save_code" = 200
+          jq -e '.status=="saved" and .allowed_chats>=1' "$RUNNER_TEMP/save.json" >/dev/null
+
+          iam2="$(yc iam create-token)"
+          echo "::add-mask::$iam2"
+          curl -fsS -H "Authorization: Bearer $iam2" "$payload_url" > "$RUNNER_TEMP/after.json"
+          python - <<'PY'
+          import json, os
+          root=os.environ['RUNNER_TEMP']
+          def values(name):
+              doc=json.load(open(os.path.join(root,name),encoding='utf-8'))
+              return {str(x.get('key')): str(x.get('textValue')) for x in doc.get('entries',[]) if x.get('key') and x.get('textValue') is not None}
+          before=values('before.json')
+          after=values('after.json')
+          assert before, 'before payload empty'
+          assert before == after, f'Lockbox payload changed unexpectedly: before_keys={sorted(before)} after_keys={sorted(after)}'
+          assert 'MANAGE_BROWSER_KEY' in after
+          assert 'MANAGE_TOKEN_SHA256' in after
+          assert 'TELEGRAM_PEER_MAP_JSON' in after
+          print('LOCKBOX_FULL_PAYLOAD_PRESERVED_PASS')
+          PY
+          echo TELEGRAM_MANAGER_VISIBLE_ERROR_PASS
+          echo TELEGRAM_MANAGER_CURRENT_KEY_PASS
+          echo TELEGRAM_MANAGER_SAVE_PASS
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP"/*.json "$RUNNER_TEMP"/*.html
