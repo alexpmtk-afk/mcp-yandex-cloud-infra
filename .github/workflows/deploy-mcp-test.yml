@@ -427,29 +427,33 @@ jobs:
               print('SYSTEM_MAP_SEMANTIC_ADVERTISING=PASS', flush=True)
 
               catalog = call('marketplace_data_catalog', {})
-              assert catalog.get('version') == '2026-09-15.v2', catalog
-              assert catalog['principles']['multi_dataset_archive'] is True, catalog
-              assert catalog['principles']['no_single_report_is_complete_database'] is True, catalog
-              finance = catalog['datasets']['wb_weekly_finance_main']
-              assert 'orders placed by customers' in finance['not_authoritative_for'], finance
-              ads_dataset = catalog['datasets']['wb_promotion']
-              assert ads_dataset['archive_implemented'] is True, ads_dataset
-              assert ads_dataset['status'] == 'ACTIVE_ARCHIVE_V1_WITH_LIMITATIONS', ads_dataset
-              assert 'dataset_coverage_registry.csv' in ads_dataset['coverage'], ads_dataset
-              print('DATA_CATALOG=PASS', flush=True)
+              assert catalog.get('version') == 'marketplace_data_catalog.semantic_core_view.v1', catalog
+              assert catalog.get('status') == 'SEMANTIC_CORE_VIEW', catalog
+              assert catalog.get('source_of_truth') == 'marketplace_semantic_core', catalog
+              assert catalog.get('semantic_core_version') == 'marketplace_semantic_core.v1', catalog
+              catalog_policy = catalog.get('policy') or {}
+              assert catalog_policy.get('independent_metric_routes_forbidden') is True, catalog
+              assert catalog_policy.get('route_through_semantic_core') is True, catalog
+              assert catalog_policy.get('silent_dataset_substitution_forbidden') is True, catalog
+              assert catalog_policy.get('coverage_gate_required') is True, catalog
+              assert 'wb_weekly_finance_main' in catalog.get('datasets', {}), catalog
+              assert 'advertising_performance' in catalog.get('capabilities', {}), catalog
+              assert catalog.get('known_gaps'), catalog
+              print('DATA_CATALOG_SEMANTIC_CORE_VIEW=PASS', flush=True)
 
-              orders_route = call('marketplace_metric_route', {'metric':'заказанные единицы','marketplace':'wb'})
-              assert orders_route.get('ok') is True, orders_route
-              assert orders_route.get('business_metric') == 'ordered_units', orders_route
-              assert orders_route['routes']['wb']['dataset'] == 'wb_orders_daily', orders_route
-              assert orders_route['routes']['wb']['archive_implemented'] is False, orders_route
-              ad_route = call('marketplace_metric_route', {'metric':'расходы на рекламу','marketplace':'wb'})
+              ad_route = call('marketplace_metric_route', {'metric':'рекламные расходы','marketplace':'wb'})
               assert ad_route.get('ok') is True, ad_route
-              assert ad_route['routes']['wb']['dataset'] == 'wb_promotion', ad_route
-              assert ad_route['routes']['wb']['archive_implemented'] is True, ad_route
-              sales_route = call('marketplace_metric_route', {'metric':'продажи за 2025 год','marketplace':'wb'})
-              assert sales_route.get('ok') is False, sales_route
-              assert sales_route.get('status') == 'AMBIGUOUS', sales_route
+              assert ad_route.get('source_of_truth') == 'marketplace_semantic_core', ad_route
+              ad_resolution = ad_route.get('semantic_resolution') or {}
+              assert ad_resolution.get('resolution_type') == 'CAPABILITY', ad_route
+              assert ad_resolution.get('capability_id') == 'advertising_performance', ad_route
+              assert ad_route['plans']['wb']['source_family'] == 'CANONICAL_ARCHIVE', ad_route
+              unknown_route = call('marketplace_metric_route', {
+                  'metric':'совершенно неизвестная бизнес-метрика',
+                  'marketplace':'wb'
+              })
+              assert unknown_route.get('ok') is False, unknown_route
+              assert unknown_route.get('source_of_truth') == 'marketplace_semantic_core', unknown_route
               print('BUSINESS_METRIC_ROUTING=PASS', flush=True)
 
               semantic_fail = call('marketplace_business_query', {
