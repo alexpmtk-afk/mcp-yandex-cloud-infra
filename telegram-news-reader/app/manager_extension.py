@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import time
+from datetime import datetime, timezone
 
 from fastapi import HTTPException
 from telethon.tl.types import Channel, Chat, User
@@ -20,6 +21,7 @@ from app.service import (
 from app.whitelist import AllowedChat
 
 _SYNC_INTERVAL_SECONDS = 15.0
+_SAFE_DIRECT_PAGE_SIZE = 250
 _sync_lock = asyncio.Lock()
 _last_sync_at = 0.0
 _last_peer_map_raw = os.getenv("TELEGRAM_PEER_MAP_JSON", "").strip()
@@ -140,6 +142,7 @@ def _remove_route(path: str, method: str) -> None:
 
 _remove_route("/api/admin/dialogs", "GET")
 _remove_route("/api/admin/whitelist", "POST")
+_remove_route("/internal/chats/{chat_id}/messages", "GET")
 
 
 @app.middleware("http")
@@ -191,6 +194,50 @@ async def durable_admin_whitelist(payload: ManageWhitelistPayload):
         raise HTTPException(503, "WHITELIST_PERSIST_FAILED") from exc
 
     return {"status": "saved", "allowed_chats": len(peers)}
+
+
+@app.get("/internal/chats/{chat_id}/messages")
+async def durable_internal_messages(
+    chat_id: int,
+    date_from: datetime,
+    date_to: datetime | None = None,
+    limit: int = 2000,
+    before_id: int | None = None,
+):
+    """Return a bounded page so long Telegram windows cannot exhaust one Serverless request."""
+    whitelist.assert_allowed(chat_id)
+    await _ensure_reader_ready()
+    high = date_to or datetime.now(timezone.utc)
+    requested_limit = min(max(int(limit), 1), 2000)
+    page_limit = min(requested_limit, _SAFE_DIRECT_PAGE_SIZE)
+    try:
+        records = await reader.get_messages_between(
+            chat_id,
+            date_from,
+            high,
+            limit=page_limit,
+            before_id=before_id,
+        )
+    except Exception as exc:
+        raise HTTPException(502, f"TELEGRAM_DIRECT_READ_FAILED:{type(exc).__name__}")
+
+    messages = []
+    for record in records:
+        row = record.to_dict()
+        row["media_asset"] = None
+        messages.append(row)
+    next_before_id = min((int(row["message_id"]) for row in messages), default=None)
+    return {
+        "chat_id": chat_id,
+        "date_from": date_from.isoformat(),
+        "date_to": high.isoformat(),
+        "requested_limit": requested_limit,
+        "effective_page_limit": page_limit,
+        "message_count": len(messages),
+        "page_full": len(messages) >= page_limit,
+        "next_before_id": next_before_id,
+        "messages": messages,
+    }
 
 
 __all__ = ["app"]
