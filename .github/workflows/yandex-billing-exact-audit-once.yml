@@ -32,22 +32,26 @@ jobs:
           yc config profile create billing-exact || true
           yc config profile activate billing-exact
           yc config set service-account-key "$K"
-      - name: Resource usage report Sep 15-16
+      - name: Resource usage report since Sep 16 checkpoint
         shell: bash
         run: |
           set -euo pipefail
-          yc billing consumption-core get-resource-usage-report d01fl7g1trd2i5d8l7r6 \
-            --start-date 2026-09-15T00:00:00Z \
-            --end-date 2026-09-16T23:59:59Z \
+          END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          echo "AUDIT_START=2026-09-16T12:18:00Z"
+          echo "AUDIT_END=$END"
+          yc billing consumption-core get-resource-usage-report dn2sf138oms4impipvf0 \
+            --start-date 2026-09-16T12:18:00Z \
+            --end-date "$END" \
             --aggregation-period day --format json | tee "$RUNNER_TEMP/resource.json"
-      - name: Service usage report Sep 15-16
+      - name: Service usage report since Sep 16 checkpoint
         shell: bash
         run: |
           set -euo pipefail
           sleep 65
-          yc billing consumption-core get-service-usage-report d01fl7g1trd2i5d8l7r6 \
-            --start-date 2026-09-15T00:00:00Z \
-            --end-date 2026-09-16T23:59:59Z \
+          END=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          yc billing consumption-core get-service-usage-report dn2sf138oms4impipvf0 \
+            --start-date 2026-09-16T12:18:00Z \
+            --end-date "$END" \
             --aggregation-period day --format json | tee "$RUNNER_TEMP/service.json"
       - name: Cleanup
         if: always()
