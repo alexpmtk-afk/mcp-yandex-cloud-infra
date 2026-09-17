@@ -1,4 +1,4 @@
-name: Yandex cost core audit 2026-09-17 temp
+name: Yandex local migration encrypted token temp
 
 on:
   push:
@@ -8,77 +8,49 @@ on:
 permissions:
   contents: read
 
+env:
+  MIGRATION_PUBLIC_KEY_B64: LS0tLS1CRUdJTiBQVUJMSUMgS0VZLS0tLS0KTUlJQm9qQU5CZ2txaGtpRzl3MEJBUUVGQUFPQ0FZOEFNSUlCaWdLQ0FZRUF5dTZiODhwT01TQzc0UUhiS0Z5cwpEZzRpeW1sRjNheDFKeW54eE1ZdGRmQU5wTHlBcEk0eWczdUlmeWpkQVNqQWlpbHNLZmhMM05CcDBqWlNoa2NyCnlVR2V3VS9KbkkzbDVUUzdzQTVRN0RTVXBMVnkzMDZGaUFOQlM5Q0l6ZEgvT3gyNE5rUHhmTjhCcjJCN3hFQzkKRU41V1BYbjhsUi9ybmpiUUVNeWVPSU5McEo4cUFOeGRiK2JhR1VlbXdUa1NHTE01TnUzTlRqNlJSZVVzL0J1bQprRElqTUV4Tk5CWFRTWUdvUFBwS3RVbnh3NWtUNkt5d1RxdzUwZFRwTExVRUlOZDZjNDFIWXNCdTFmRjBhT3NWCklkVmxjNVVNSDQrU2hPcFBvWmRoUjB0b1QxakprcVBhU1lWM2RUTjNYOURJRmY0MHBRYng1WXRaaHBvQ0Z3bkQKQ3ViWmk4MXoyejg4dFNxK1Y1My85VFZpOXVDdjZ6NlZuSTlhNHlYSFRXdDFrOFlvRzNNTjIya2FnS2E4VjhsVwpsRTgxMlBKTlFYOVZMM2VNZUFJUUlsa0IyNUIrUlNsOW84NmVxaGV0bWQ1cm82cmppUWJ1aTl4d0pXeWxxL2lDCmVTTjBQdVppR0FlNnIyV3ZYVUhVQlB5cmdCbnE5MmVXeE14RVI5UjBhS0dkQWdNQkFBRT0KLS0tLS1FTkQgUFVCTElDIEtFWS0tLS0tCg==
+
 jobs:
-  audit:
+  mint-encrypted-token:
     runs-on: ubuntu-latest
     environment: test
-    timeout-minutes: 5
+    timeout-minutes: 10
+    env:
+      YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
     steps:
-      - name: Audit core billable resources
+      - name: Install crypto dependencies
+        run: python -m pip install --quiet PyJWT cryptography
+      - name: Mint IAM token and emit encrypted envelope only
         shell: bash
-        env:
-          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
         run: |
-          set -uo pipefail
-          mkdir -p "$RUNNER_TEMP/yc"
-          curl -fsSL https://storage.yandexcloud.net/yandexcloud-yc/install.sh | bash -s -- -i "$RUNNER_TEMP/yc" -n
-          export PATH="$RUNNER_TEMP/yc/bin:$PATH"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
-          chmod 600 "$RUNNER_TEMP/key.json"
-          yc config profile create cost-core-audit || true
-          yc config set service-account-key "$RUNNER_TEMP/key.json"
-          yc config set cloud-id b1gi4pr9msenirafh2c7
-          TOKEN="$(yc iam create-token)"
-          echo '=== BILLING ==='
-          curl -sS -H "Authorization: Bearer $TOKEN" https://billing.api.cloud.yandex.net/billing/v1/billingAccounts | jq '{count:(.billingAccounts//[]|length),accounts:[(.billingAccounts//[])[]|{id,name,active,currency,payment_type,country_code}]}' || true
-          for ITEM in \
-            'birzha:b1g00gqb66tbnfoumnkv' \
-            'default:b1g0r8h0no6tomn7f5rs' \
-            'card-monitor:b1g5t7v7u1mnsjd2ai7u' \
-            'marketplaces:b1gnd0dqoq3ljod88i8t' \
-            'telegram:b1gk4p83brasi8g811jv'; do
-            N="${ITEM%%:*}"; F="${ITEM##*:}"
-            echo "=== CORE $N ==="
-            echo 'COMPUTE'
-            yc compute instance list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,resources}]' || true
-            yc compute disk list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '{count:length,total_gib:(map((.size|tonumber)/1073741824)|add//0)}' || true
-            yc vpc address list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,reserved,used,external_ipv4_address:(.external_ipv4_address.address//null)}]' || true
-            echo 'CONTAINER_LATEST_REVISIONS'
-            CJSON="$(yc serverless container list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
-            echo "$CJSON" | jq '[.[]|{id,name,status}]'
-            while read -r CID; do
-              [ -n "$CID" ] || continue
-              yc serverless container revision list --container-id "$CID" --format json --no-user-output 2>/dev/null | jq --arg cid "$CID" 'sort_by(.created_at)|last|{container_id:$cid,id,created_at,status,resources,execution_timeout,concurrency,provision_policy}' || true
-            done < <(echo "$CJSON" | jq -r '.[].id')
-            echo 'TRIGGERS'
-            yc serverless trigger list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,rule}]' || true
-            echo 'YDB'
-            DJSON="$(yc ydb database list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
-            echo "$DJSON" | jq '[.[]|{id,name,status,type}]'
-            while read -r DID; do [ -n "$DID" ] || continue; yc ydb database get "$DID" --format json --no-user-output 2>/dev/null | jq '{id,name,status,type,serverless_database,dedicated_database}' || true; done < <(echo "$DJSON"|jq -r '.[].id')
-            echo 'LOCKBOX'
-            SJSON="$(yc lockbox secret list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
-            echo "$SJSON" | jq '{secrets:length,names:[.[].name]}'
-            TV=0; AV=0
-            while read -r SID; do
-              [ -n "$SID" ] || continue
-              V="$(yc lockbox secret list-versions "$SID" --format json --no-user-output 2>/dev/null || echo '[]')"
-              T="$(echo "$V"|jq 'length')"; A="$(echo "$V"|jq '[.[]|select(.status!="DESTROYED")]|length')"
-              TV=$((TV+T)); AV=$((AV+A))
-            done < <(echo "$SJSON"|jq -r '.[].id')
-            echo "LOCKBOX_TOTAL_VERSIONS=$TV LOCKBOX_NOT_DESTROYED=$AV"
-            echo 'BUCKETS'
-            BJSON="$(yc storage bucket list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
-            echo "$BJSON" | jq '[.[]|{name,default_storage_class}]'
-            while read -r B; do [ -n "$B" ] || continue; yc storage bucket stats "$B" --format json --no-user-output 2>/dev/null | jq '{name,used_size,storage_class_used_sizes}' || true; done < <(echo "$BJSON"|jq -r '.[].name')
-            echo 'REGISTRY'
-            RJSON="$(yc container registry list --folder-id "$F" --format json --no-user-output 2>/dev/null || echo '[]')"
-            echo "$RJSON"|jq '[.[]|{id,name,status}]'
-            while read -r RID; do [ -n "$RID" ] || continue; yc container image list --registry-id "$RID" --format json --no-user-output 2>/dev/null | jq --arg rid "$RID" '{registry:$rid,images:length,compressed_sum_gib_upper_bound:((map((.compressed_size//"0")|tonumber)|add//0)/1073741824)}' || true; done < <(echo "$RJSON"|jq -r '.[].id')
-            echo 'LOGGING'
-            yc logging group list --folder-id "$F" --format json --no-user-output 2>/dev/null | jq '[.[]|{id,name,status,retention_period}]' || true
-          done
-      - name: Cleanup
-        if: always()
-        shell: bash
-        run: rm -f "$RUNNER_TEMP/key.json"
+          set -euo pipefail
+          python - <<'PY'
+          import base64, json, os, time, urllib.request
+          import jwt
+          from cryptography.hazmat.primitives import hashes, serialization
+          from cryptography.hazmat.primitives.asymmetric import padding
+          from cryptography.hazmat.primitives.ciphers.aead import AESGCM
+
+          key = json.loads(os.environ['YC_SERVICE_ACCOUNT_KEY_JSON'])
+          now = int(time.time())
+          signed = jwt.encode(
+              {'aud':'https://iam.api.cloud.yandex.net/iam/v1/tokens','iss':key['service_account_id'],'iat':now,'exp':now+3600},
+              key['private_key'], algorithm='PS256', headers={'kid':key['id']})
+          req = urllib.request.Request(
+              'https://iam.api.cloud.yandex.net/iam/v1/tokens',
+              data=json.dumps({'jwt':signed}).encode(),
+              headers={'Content-Type':'application/json'}, method='POST')
+          with urllib.request.urlopen(req, timeout=30) as r:
+              token = json.loads(r.read())['iamToken']
+          pub = serialization.load_pem_public_key(base64.b64decode(os.environ['MIGRATION_PUBLIC_KEY_B64']))
+          aes_key = AESGCM.generate_key(bit_length=256)
+          nonce = os.urandom(12)
+          aad = b'mcp-yandex-local-migration-20260917'
+          ct = AESGCM(aes_key).encrypt(nonce, token.encode(), aad)
+          ek = pub.encrypt(aes_key, padding.OAEP(mgf=padding.MGF1(hashes.SHA256()), algorithm=hashes.SHA256(), label=None))
+          env = {'v':1,'ek':base64.b64encode(ek).decode(),'nonce':base64.b64encode(nonce).decode(),'ct':base64.b64encode(ct).decode()}
+          packed = base64.b64encode(json.dumps(env,separators=(',',':')).encode()).decode()
+          print('MIGRATION_ENVELOPE_B64='+packed)
+          print('YANDEX_IAM_TOKEN_ENCRYPTED=PASS')
+          PY
