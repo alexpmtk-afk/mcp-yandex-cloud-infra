@@ -45,12 +45,7 @@ def load_runtime_secret() -> None:
 
 
 def materialize_whitelist_from_peer_map() -> None:
-    """Use the donor-derived peer map as the canonical serverless whitelist.
-
-    TELEGRAM_PEER_MAP_JSON was created strictly from the old production
-    whitelist, so its keys are exactly the allowed chat ids.  This avoids
-    keeping a second, drifting whitelist copy inside the immutable image.
-    """
+    """Materialize the canonical Serverless allow-list from Lockbox peer metadata."""
 
     raw = os.getenv("TELEGRAM_PEER_MAP_JSON", "").strip()
     if not raw:
@@ -81,4 +76,4 @@ def materialize_whitelist_from_peer_map() -> None:
 if __name__ == "__main__":
     load_runtime_secret()
     materialize_whitelist_from_peer_map()
-    uvicorn.run("app.service:app", host="0.0.0.0", port=8080, workers=1)
+    uvicorn.run("app.manager_extension:app", host="0.0.0.0", port=8080, workers=1)
