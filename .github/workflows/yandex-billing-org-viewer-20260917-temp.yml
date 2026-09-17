@@ -1,0 +1,83 @@
+name: Yandex exact billing via temporary org viewer 2026-09-17
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/yandex-billing-org-viewer-20260917-temp.yml']
+permissions:
+  contents: read
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 8
+    steps:
+      - name: Install and authenticate
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSLo "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/key.json"
+          chmod 600 "$RUNNER_TEMP/key.json"
+          echo "SA_ID=$(jq -r '.service_account_id // .serviceAccountId' "$RUNNER_TEMP/key.json")" >> "$GITHUB_ENV"
+      - name: Resolve organization
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc config profile create billing-org-audit || true
+          yc config profile activate billing-org-audit
+          yc config set service-account-key "$RUNNER_TEMP/key.json"
+          yc config set cloud-id b1gi4pr9msenirafh2c7
+          ORG_ID=$(yc resource-manager cloud get b1gi4pr9msenirafh2c7 --format json | jq -r '.organization_id // .organizationId // empty')
+          if [ -z "$ORG_ID" ]; then
+            ORG_ID=$(yc organization-manager organization list --format json | jq -r '.[0].id // empty')
+          fi
+          echo "ORG_ID=$ORG_ID" >> "$GITHUB_ENV"
+          echo "ORG_ID=$ORG_ID"
+          test -n "$ORG_ID"
+      - name: Grant temporary billing viewer on organization
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc organization-manager organization add-access-binding "$ORG_ID" --role billing.accounts.viewer --service-account-id "$SA_ID"
+          sleep 15
+      - name: Billing accounts visible
+        shell: bash
+        run: |
+          set +e
+          yc billing account list --format json | jq '[.[]|{id,name,active,currency}]'
+      - name: Exact service usage Sep 16-17
+        shell: bash
+        run: |
+          set +e
+          echo '=== SERVICE_REPORT ==='
+          yc billing consumption-core get-service-usage-report d01fl7g1trd2i5d8l7r6 \
+            --start-date 2026-09-16T00:00:00Z \
+            --end-date 2026-09-17T23:59:59Z \
+            --aggregation-period day --format json
+          echo "SERVICE_EXIT=$?"
+      - name: Exact folder usage Sep 16-17
+        shell: bash
+        run: |
+          set +e
+          sleep 65
+          echo '=== FOLDER_REPORT ==='
+          yc billing consumption-core get-folder-usage-report d01fl7g1trd2i5d8l7r6 \
+            --start-date 2026-09-16T00:00:00Z \
+            --end-date 2026-09-17T23:59:59Z \
+            --aggregation-period day --format json
+          echo "FOLDER_EXIT=$?"
+      - name: Remove temporary billing viewer
+        if: always()
+        shell: bash
+        run: |
+          set +e
+          if [ -n "${ORG_ID:-}" ]; then
+            yc organization-manager organization remove-access-binding "$ORG_ID" --role billing.accounts.viewer --service-account-id "$SA_ID"
+          fi
+          rm -f "$RUNNER_TEMP/key.json"
