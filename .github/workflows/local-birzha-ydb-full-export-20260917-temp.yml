@@ -42,7 +42,7 @@ jobs:
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/ydb-sa-key.json"
           chmod 600 "$RUNNER_TEMP/ydb-sa-key.json"
 
-      - name: Inspect and dump full Birzha YDB schema plus data
+      - name: Inspect and dump full Birzha YDB schema plus data read-only
         shell: bash
         run: |
           set -euo pipefail
@@ -50,14 +50,14 @@ jobs:
           OUT="$RUNNER_TEMP/ydb-export-parent/full-dump"
           "$YDB_BIN" -e "$YDB_ENDPOINT" -d "$YDB_DATABASE" --sa-key-file "$RUNNER_TEMP/ydb-sa-key.json" discovery whoami
           "$YDB_BIN" -e "$YDB_ENDPOINT" -d "$YDB_DATABASE" --sa-key-file "$RUNNER_TEMP/ydb-sa-key.json" scheme ls -lR > "$RUNNER_TEMP/ydb-export-parent/scheme-list.txt"
-          "$YDB_BIN" -e "$YDB_ENDPOINT" -d "$YDB_DATABASE" --sa-key-file "$RUNNER_TEMP/ydb-sa-key.json" tools dump -o "$OUT" --consistency-level database
+          "$YDB_BIN" -e "$YDB_ENDPOINT" -d "$YDB_DATABASE" --sa-key-file "$RUNNER_TEMP/ydb-sa-key.json" tools dump -o "$OUT" --avoid-copy --ordered
           FILES="$(find "$OUT" -type f | wc -l)"
           BYTES="$(du -sb "$OUT" | awk '{print $1}')"
-          echo "YDB_DUMP=PASS files=$FILES bytes=$BYTES"
+          echo "YDB_DUMP=PASS files=$FILES bytes=$BYTES mode=read-only-avoid-copy"
           tar -C "$RUNNER_TEMP/ydb-export-parent" -czf "$GITHUB_WORKSPACE/birzha-ydb-full-dump.tar.gz" full-dump scheme-list.txt
           ARCHIVE_BYTES="$(stat -c%s "$GITHUB_WORKSPACE/birzha-ydb-full-dump.tar.gz")"
           echo "YDB_ARCHIVE=PASS bytes=$ARCHIVE_BYTES"
-          printf '{"dump_files":%s,"dump_bytes":%s,"archive_bytes":%s}\n' "$FILES" "$BYTES" "$ARCHIVE_BYTES" > "$GITHUB_WORKSPACE/birzha-ydb-export-summary.json"
+          printf '{"dump_files":%s,"dump_bytes":%s,"archive_bytes":%s,"mode":"read-only-avoid-copy"}\n' "$FILES" "$BYTES" "$ARCHIVE_BYTES" > "$GITHUB_WORKSPACE/birzha-ydb-export-summary.json"
 
       - name: Upload full YDB dump artifact
         uses: actions/upload-artifact@v4
