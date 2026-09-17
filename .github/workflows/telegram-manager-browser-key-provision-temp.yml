@@ -1,0 +1,124 @@
+name: Telegram Manager Browser Key Provision TEMP
+
+on:
+  push:
+    branches: [main]
+    paths: [.github/workflows/telegram-manager-browser-key-provision-temp.yml]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  provision:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 20
+    env:
+      FOLDER_ID: b1gk4p83brasi8g811jv
+      SECRET_ID: e6qnt0bt655jltrr5sid
+      READER_NAME: telegram-reader-serverless
+      RUNTIME_SA: ajeaad0m00gncv22tagf
+      IMAGE: cr.yandex/crphagvid8e8g5pp4fpe/telegram-news-reader:manager-repair-ffedd89b0280
+      GATEWAY_NAME: telegram-reader-manager
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          wget -q -O "$RUNNER_TEMP/yc/yc.tgz" https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz
+          tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+      - name: Authenticate
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          yc config profile create telegram-manager-browser-key || true
+          yc config profile activate telegram-manager-browser-key
+          yc config set service-account-key "$key"
+          yc config set folder-id "$FOLDER_ID"
+      - name: Generate browser key and store only in Lockbox
+        id: provision
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_key="$(openssl rand -hex 24)"
+          echo "::add-mask::$browser_key"
+          browser_hash="$(printf '%s' "$browser_key" | sha256sum | awk '{print $1}')"
+          echo "::add-mask::$browser_hash"
+          yc lockbox secret add-version \
+            --id "$SECRET_ID" \
+            --description 'Telegram Reader browser manager key for user access 2026-09-17' \
+            --payload "[{\"key\":\"MANAGE_TOKEN_SHA256\",\"text_value\":\"$browser_hash\"},{\"key\":\"MANAGE_BROWSER_KEY\",\"text_value\":\"$browser_key\"}]" >/dev/null
+          secret_name="$(yc lockbox secret get --id "$SECRET_ID" --format json | jq -r '.name')"
+          test -n "$secret_name" && test "$secret_name" != null
+          domain="$(yc serverless api-gateway get --name "$GATEWAY_NAME" --folder-id "$FOLDER_ID" --format json | jq -r '.domain')"
+          test -n "$domain" && test "$domain" != null
+          printf 'MANAGER_URL=https://%s/manage\nLOCKBOX_SECRET_ID=%s\nLOCKBOX_SECRET_NAME=%s\nBROWSER_KEY_ENTRY=MANAGE_BROWSER_KEY\n' "$domain" "$SECRET_ID" "$secret_name" > "$RUNNER_TEMP/access-info.txt"
+          echo "secret_name=$secret_name" >> "$GITHUB_OUTPUT"
+          echo "gateway_domain=$domain" >> "$GITHUB_OUTPUT"
+          printf '%s' "$browser_key" > "$RUNNER_TEMP/browser-key.txt"
+      - name: Restart Reader with new browser key
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc serverless container revision deploy \
+            --folder-id "$FOLDER_ID" \
+            --container-name "$READER_NAME" \
+            --runtime http \
+            --image "$IMAGE" \
+            --cores 1 \
+            --memory 512MB \
+            --concurrency 1 \
+            --execution-timeout 120s \
+            --service-account-id "$RUNTIME_SA" \
+            --environment TELEGRAM_DATABASE_PATH=/tmp/telegram.db \
+            --environment TELEGRAM_SESSION_PATH=/tmp/telegram_news \
+            --environment TELEGRAM_MEDIA_PATH=/tmp/media \
+            --environment COLLECTOR_ENABLED=false \
+            --environment LOCKBOX_RUNTIME_SECRET_ID="$SECRET_ID" >/dev/null
+      - name: Verify page and new key without exposing it
+        shell: bash
+        run: |
+          set -euo pipefail
+          browser_key="$(cat "$RUNNER_TEMP/browser-key.txt")"
+          echo "::add-mask::$browser_key"
+          url="https://${{ steps.provision.outputs.gateway_domain }}"
+          ok=0
+          for attempt in $(seq 1 24); do
+            page_code="$(curl -sS --max-time 30 -o "$RUNNER_TEMP/manage.html" -w '%{http_code}' "$url/manage" || true)"
+            api_code="$(curl -sS --max-time 60 -o "$RUNNER_TEMP/dialogs.json" -w '%{http_code}' -H "x-admin-token: $browser_key" "$url/api/admin/dialogs" || true)"
+            if [ "$page_code" = 200 ] && [ "$api_code" = 200 ] && jq -e '.dialogs|type=="array" and length>=1' "$RUNNER_TEMP/dialogs.json" >/dev/null 2>&1; then
+              ok=1
+              break
+            fi
+            sleep 5
+          done
+          test "$ok" -eq 1
+          test "$(curl -sS --max-time 30 -o /dev/null -w '%{http_code}' "$url/api/admin/dialogs")" = 401
+          echo TELEGRAM_MANAGER_BROWSER_ACCESS_PASS
+      - name: Publish non-secret access instructions metadata
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp "$RUNNER_TEMP/access-info.txt" telegram-news-reader/MANAGER_ACCESS_INFO.txt
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add telegram-news-reader/MANAGER_ACCESS_INFO.txt
+          git commit -m 'docs(telegram): record manager access location' || true
+          git pull --rebase origin main
+          git push origin HEAD:main
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/browser-key.txt" "$RUNNER_TEMP"/*.json "$RUNNER_TEMP"/*.html "$RUNNER_TEMP"/*.txt
