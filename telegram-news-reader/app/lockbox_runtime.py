@@ -44,11 +44,26 @@ def get_runtime_payload() -> dict[str, str]:
 
 
 def persist_runtime_entry(key: str, value: str, *, description: str) -> None:
+    """Create a complete new Lockbox version while changing exactly one text entry.
+
+    Lockbox versions are treated as complete payload snapshots.  Always copy the
+    current payload first so a whitelist edit cannot drop Telegram session/API,
+    media, manager, or other runtime settings from the newest secret version.
+    """
+    current = get_runtime_payload()
+    if not current:
+        raise RuntimeError("Lockbox current payload is empty")
+    current[str(key)] = str(value)
+
     token = _iam_token()
+    payload_entries = [
+        {"key": entry_key, "textValue": entry_value}
+        for entry_key, entry_value in sorted(current.items())
+    ]
     body = json.dumps(
         {
             "description": description,
-            "payloadEntries": [{"key": key, "textValue": value}],
+            "payloadEntries": payload_entries,
         }
     ).encode("utf-8")
     req = urllib.request.Request(
