@@ -46,6 +46,14 @@ jobs:
           tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
+      - name: Configure ephemeral CLI profile from OIDC IAM token
+        shell: bash
+        run: |
+          set -euo pipefail
+          yc config profile create scoped-viewer-inventory >/dev/null || true
+          yc config set token "$YC_IAM_TOKEN" >/dev/null
+          echo "YC_PROFILE=READY"
+
       - name: Grant temporary read-only viewer roles on old folder
         shell: bash
         run: |
