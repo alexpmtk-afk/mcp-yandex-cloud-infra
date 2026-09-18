@@ -1,0 +1,14 @@
+RESOURCE type=compute_instances status=ERROR rc=1 detail=ERROR: rpc error: code = PermissionDenied desc = Permission denied   client-request-id: bf59c3ba-ae4e-4c72-b2cc-8c112226c811 client-trace-id: 7bcd8b99-7d9e-47a2-807f-432349df30c2  Use client-request-id, client-trace-id f
+RESOURCE type=compute_disks status=ERROR rc=1 detail=ERROR: rpc error: code = PermissionDenied desc = Permission denied   client-request-id: e21381e9-7834-4da9-a1ba-e31373dafd3a client-trace-id: a52af7ec-db51-4ddb-add5-2bb3ca20f2a0  Use client-request-id, client-trace-id f
+RESOURCE type=compute_snapshots status=ERROR rc=1 detail=ERROR: rpc error: code = PermissionDenied desc = Permission denied   client-request-id: 27a77c43-1408-4031-adf6-6055e06f761b client-trace-id: ab374d98-aac3-40e5-9995-bedaf2b0d368  Use client-request-id, client-trace-id f
+RESOURCE type=compute_images status=ERROR rc=1 detail=ERROR: rpc error: code = PermissionDenied desc = Permission denied   client-request-id: da430123-f8f4-4747-b217-d6884a29a8f3 client-trace-id: 065c148c-be6b-4286-b629-1da1cd930316  Use client-request-id, client-trace-id f
+RESOURCE type=ydb status=ERROR rc=1 detail=ERROR: execute command: run command: x-request-id = 755362db-2965-4b0c-8e99-a7b020753465 x-server-trace-id = e09f4987ca6a33b1:a572dd6e144b0302:fb445f212fc24218:1 x-client-trace-id = 43f492a0-f55d-4284-8fc7-cd08e01b04f1 r
+RESOURCE type=lockbox count=0
+RESOURCE type=containers count=0
+RESOURCE type=functions count=0
+RESOURCE type=gateways count=0
+RESOURCE type=buckets status=ERROR rc=1 detail=ERROR: rpc error: code = PermissionDenied desc = Access Denied   client-request-id: e0f9b41c-f645-471e-bd04-2531e039314b client-trace-id: 9dbbadfb-50fa-47ce-a9fa-3b72e317ecdb  Use client-request-id, client-trace-id for i
+RESOURCE type=registries count=0
+RESOURCE type=networks status=ERROR rc=1 detail=ERROR: execute command: run command: x-request-id = fc83c31e-fb73-4f28-832c-9daa84a749f4 x-server-trace-id = a71d9ad0e2af38d9:f3daab65a1d79b34:c1c15193d38eebd1:1 x-client-trace-id = a86fe638-d78b-4999-a08c-bf21874575e1 r
+RESOURCE type=subnets count=0
+INVENTORY_COMPLETE=PARTIAL_ERRORS
