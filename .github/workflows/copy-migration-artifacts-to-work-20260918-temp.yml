@@ -1,0 +1,78 @@
+name: Copy migration artifacts to WORK 2026-09-18
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/copy-migration-artifacts-to-work-20260918-temp.yml'
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  copy:
+    runs-on: [self-hosted, Windows, X64]
+    timeout-minutes: 45
+    env:
+      YDB_ARTIFACT_ID: '10509935111'
+      HIST_ARTIFACT_ID: '10511392664'
+      YDB_DEST: 'C:\MCP\migration\yandex-manual\birzha\ydb-export'
+      ARCH_DEST: 'C:\MCP\migration\yandex-manual\marketplaces\object-storage\archive-versions'
+      TF_DEST: 'C:\MCP\migration\yandex-manual\marketplaces\object-storage\tfstate-versions'
+    steps:
+      - name: Copy YDB and historical Object Storage artifacts to MANAGER-MP2
+        shell: cmd
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          @echo off
+          setlocal EnableExtensions
+          set "T=%RUNNER_TEMP%\mcp-migration-artifacts-20260918"
+          if exist "%T%" rmdir /s /q "%T%"
+          mkdir "%T%"
+          mkdir "%T%\ydbzip"
+          mkdir "%T%\histzip"
+          mkdir "%T%\hist"
+
+          echo Downloading YDB artifact...
+          curl.exe -fL -H "Authorization: Bearer %GH_TOKEN%" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/%GITHUB_REPOSITORY%/actions/artifacts/%YDB_ARTIFACT_ID%/zip" -o "%T%\ydb.zip"
+          if errorlevel 1 exit /b 10
+          tar.exe -xf "%T%\ydb.zip" -C "%T%\ydbzip"
+          if errorlevel 1 exit /b 11
+          if not exist "%T%\ydbzip\birzha-ydb-full-dump.tar.gz" exit /b 12
+
+          python -c "from pathlib import Path; p=Path(r'%YDB_DEST%'); n=sum(1 for x in p.rglob('*') if x.is_file()) if p.exists() else 0; print('YDB_DEST_PRE_FILES='+str(n)); raise SystemExit(0 if n==0 else 3)"
+          if errorlevel 1 exit /b 13
+          if not exist "%YDB_DEST%" mkdir "%YDB_DEST%"
+          tar.exe -xzf "%T%\ydbzip\birzha-ydb-full-dump.tar.gz" -C "%YDB_DEST%"
+          if errorlevel 1 exit /b 14
+          if exist "%T%\ydbzip\birzha-ydb-export-summary.json" copy /y "%T%\ydbzip\birzha-ydb-export-summary.json" "%YDB_DEST%\_export_summary.json" >nul
+          python -c "from pathlib import Path; p=Path(r'%YDB_DEST%\full-dump'); fs=[x for x in p.rglob('*') if x.is_file()]; b=sum(x.stat().st_size for x in fs); print(f'YDB_WORK=files={len(fs)} bytes={b}'); assert len(fs)==86 and b==110713110"
+          if errorlevel 1 exit /b 15
+
+          echo Downloading historical Object Storage artifact...
+          curl.exe -fL -H "Authorization: Bearer %GH_TOKEN%" -H "Accept: application/vnd.github+json" -H "X-GitHub-Api-Version: 2022-11-28" "https://api.github.com/repos/%GITHUB_REPOSITORY%/actions/artifacts/%HIST_ARTIFACT_ID%/zip" -o "%T%\hist.zip"
+          if errorlevel 1 exit /b 20
+          tar.exe -xf "%T%\hist.zip" -C "%T%\histzip"
+          if errorlevel 1 exit /b 21
+          if not exist "%T%\histzip\marketplaces-historical-versions.tar.gz" exit /b 22
+          tar.exe -xzf "%T%\histzip\marketplaces-historical-versions.tar.gz" -C "%T%\hist"
+          if errorlevel 1 exit /b 23
+
+          python -c "from pathlib import Path; ps=[Path(r'%ARCH_DEST%'),Path(r'%TF_DEST%')]; ns=[sum(1 for x in p.rglob('*') if x.is_file()) if p.exists() else 0 for p in ps]; print('HIST_DEST_PRE_FILES='+','.join(map(str,ns))); raise SystemExit(0 if ns==[0,0] else 4)"
+          if errorlevel 1 exit /b 24
+          if not exist "%ARCH_DEST%" mkdir "%ARCH_DEST%"
+          if not exist "%TF_DEST%" mkdir "%TF_DEST%"
+          xcopy /E /I /H /Y "%T%\hist\marketplaces-historical\archive-versions\*" "%ARCH_DEST%\" >nul
+          if errorlevel 1 exit /b 25
+          xcopy /E /I /H /Y "%T%\hist\marketplaces-historical\tfstate-versions\*" "%TF_DEST%\" >nul
+          if errorlevel 1 exit /b 26
+
+          python -c "import json; from pathlib import Path; p=Path(r'%ARCH_DEST%')/'_manifest.json'; d=json.loads(p.read_text(encoding='utf-8')); v=d['historical_versions']; n=len(v); b=sum(int(x['downloaded_size']) for x in v); dm=len(d.get('delete_markers',[])); print(f'ARCHIVE_HISTORY_WORK=versions={n} bytes={b} delete_markers={dm}'); assert n==968 and b==2298527130 and dm==0"
+          if errorlevel 1 exit /b 27
+          python -c "import json; from pathlib import Path; p=Path(r'%TF_DEST%')/'_manifest.json'; d=json.loads(p.read_text(encoding='utf-8')); v=d['historical_versions']; n=len(v); b=sum(int(x['downloaded_size']) for x in v); dm=len(d.get('delete_markers',[])); print(f'TFSTATE_HISTORY_WORK=versions={n} bytes={b} delete_markers={dm}'); assert n==71 and b==1886182 and dm==0"
+          if errorlevel 1 exit /b 28
+
+          echo WORK_MIGRATION_COPY=PASS
+          rmdir /s /q "%T%"
