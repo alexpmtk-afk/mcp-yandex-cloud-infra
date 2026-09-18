@@ -1,0 +1,49 @@
+name: Observable cloud access bindings
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - ".github/cloud-access-bindings-trigger.txt"
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    env:
+      SA_ID: ajecdjjrkdo1t3itpl9k
+      AUD: https://github.com/alexpmtk-afk
+      CLOUD_ID: b1gi4pr9msenirafh2c7
+
+    steps:
+      - name: Exchange OIDC and list cloud bindings
+        shell: bash
+        run: |
+          set -euo pipefail
+          A="$(python -c 'import urllib.parse,os; print(urllib.parse.quote(os.environ["AUD"], safe=""))')"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          R="$(curl -fsS --retry 5 -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${A}")"
+          J="$(python -c 'import json,sys; print(json.load(sys.stdin)["value"])' <<< "$R")"
+          echo "::add-mask::$J"
+          X="$(curl -fsS --retry 5 -X POST 'https://auth.yandex.cloud/oauth/token' -H 'Content-Type: application/x-www-form-urlencoded'             --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange'             --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token'             --data-urlencode "audience=${SA_ID}"             --data-urlencode "subject_token=${J}"             --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          T="$(python -c 'import json,sys; print(json.load(sys.stdin)["access_token"])' <<< "$X")"
+          echo "::add-mask::$T"
+          echo 'OIDC_AUTH=PASS'
+
+          BODY="$(curl -sS -H "Authorization: Bearer $T"             "https://resource-manager.api.cloud.yandex.net/resource-manager/v1/clouds/${CLOUD_ID}:listAccessBindings?pageSize=1000")"
+          python - "$BODY" <<'PY'
+          import json,sys
+          d=json.loads(sys.argv[1])
+          items=d.get("accessBindings") or []
+          print("CLOUD_BINDINGS_COUNT="+str(len(items)))
+          for b in items:
+              s=b.get("subject") or {}
+              print("CLOUD_BINDING role=%s subject_type=%s subject_id=%s" % (
+                  b.get("roleId",""), s.get("type",""), s.get("id","")
+              ))
+          PY
