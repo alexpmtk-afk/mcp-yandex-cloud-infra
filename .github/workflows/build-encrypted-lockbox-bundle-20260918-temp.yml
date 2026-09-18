@@ -81,32 +81,32 @@ jobs:
         run: |
           set -euo pipefail
           cat > "$RUNNER_TEMP/work-cert.pem" <<'CERT'
------BEGIN CERTIFICATE-----
-MIIEKTCCApGgAwIBAgIUAnp9rJwf48SBosV3RsAxaZtDQmQwDQYJKoZIhvcNAQEL
-BQAwJDEiMCAGA1UEAwwZTUNQLVlhbmRleC1NaWdyYXRpb24tVGVtcDAeFw0yNjA5
-MTgwNTA3NTVaFw0yNjA5MTkwNTA3NTVaMCQxIjAgBgNVBAMMGU1DUC1ZYW5kZXgt
-TWlncmF0aW9uLVRlbXAwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQC1
-HjyhBsTEymbBKtRCdqwmHqov3m43VdzAjJEhPq66ISTNxTPbAt0VcYvCrv0e28+j
-lx4OkpXorMd7ZEDdKXL/uNwDHsvFuMrNRuorIk3ScB8HrB4tHsGZ8J2gXF9ciL6D
-hXT+prD9pghGJv90sAtuKsQZMsA++axE+fsqRtiqdw7WnrC83XUBV065Z/8k2xC9
-XYKGoB3zgdLEt5lE7uS+sxUfT3ujG5WyDL0QVAJ6Arw1vbfRn/3JBZQOX0jAkbif
-5pnbHKVuQ7nIv9/1pcPta4InppKThd0kF/5nBgINYWrP2tlvQ+X9X5BZfCkjzxXI
-nj1hudfNRmN+lmhJ+w5hYpZYFDIB//m8Letfa++MxfGp0P0AAmCuzbgArZIq9oVu
-prEk76zOsgHlDIaDrID9T0rcIMu+HZMYDrJbpNWf34JGHvJWBqm6i29SrhAi7whc
-7UnLrV1nhMo+qsmkH7W1VBBw/2Vct5C2fAINPP7ATeXVHwHivq6bjeOgTATh81kC
-AwEAAaNTMFEwHQYDVR0OBBYEFPuaj0C0rjk1CwSLDS2z1T7ZXUH1MB8GA1UdIwQY
-MBaAFPuaj0C0rjk1CwSLDS2z1T7ZXUH1MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
-hvcNAQELBQADggGBAJIDIvkhTEmwa0EshYOSj80zVffWJ1/et2rNC8+di3a5td95
-HsjgGjS+m//I1yvy1kd0cO7apbMHDI8VF9v4lWSvkMXaaF5N2Qt160DDl9mqsZqy
-BOunhUeiMUQp7eWKbtHKXIlF+4/3IHMCcgHD+CkOC6mQvBbOYxt0CMIPTogqccnY
-KzO7xyw2TK6uKamXGk090yXlPa4a/kVxq4kTmrS+mTtpM6Q4zQv62X1kJnw3xx9U
-MHTYeJQy7nPVuzdTixkOynsl6VCa0G947KV++/2QTN3x62L0Rcma8ZEoUTeHcAVf
-f+jcVZ9cMPqwyZseXxI4NT0B9AWLVwTPNEbeTc5xNzF28bKUUeMpn6Mq84jnVJ/Z
-dxh/pV+LKIqNzVaNxTJiG0RhzV0sgXwqG+vLOV7exLG0Jz3uqfAzf1arstxBIu7o
-1nxT/BGeBIrQlMUjupInPQ8UQPX1Sy86l3REAtMQuB75IqsQrnIhWb5saonT5mUA
-liAmHXhAtzbAsgZ0hA==
------END CERTIFICATE-----
-CERT
+          -----BEGIN CERTIFICATE-----
+          MIIEKTCCApGgAwIBAgIUAnp9rJwf48SBosV3RsAxaZtDQmQwDQYJKoZIhvcNAQEL
+          BQAwJDEiMCAGA1UEAwwZTUNQLVlhbmRleC1NaWdyYXRpb24tVGVtcDAeFw0yNjA5
+          MTgwNTA3NTVaFw0yNjA5MTkwNTA3NTVaMCQxIjAgBgNVBAMMGU1DUC1ZYW5kZXgt
+          TWlncmF0aW9uLVRlbXAwggGiMA0GCSqGSIb3DQEBAQUAA4IBjwAwggGKAoIBgQC1
+          HjyhBsTEymbBKtRCdqwmHqov3m43VdzAjJEhPq66ISTNxTPbAt0VcYvCrv0e28+j
+          lx4OkpXorMd7ZEDdKXL/uNwDHsvFuMrNRuorIk3ScB8HrB4tHsGZ8J2gXF9ciL6D
+          hXT+prD9pghGJv90sAtuKsQZMsA++axE+fsqRtiqdw7WnrC83XUBV065Z/8k2xC9
+          XYKGoB3zgdLEt5lE7uS+sxUfT3ujG5WyDL0QVAJ6Arw1vbfRn/3JBZQOX0jAkbif
+          5pnbHKVuQ7nIv9/1pcPta4InppKThd0kF/5nBgINYWrP2tlvQ+X9X5BZfCkjzxXI
+          nj1hudfNRmN+lmhJ+w5hYpZYFDIB//m8Letfa++MxfGp0P0AAmCuzbgArZIq9oVu
+          prEk76zOsgHlDIaDrID9T0rcIMu+HZMYDrJbpNWf34JGHvJWBqm6i29SrhAi7whc
+          7UnLrV1nhMo+qsmkH7W1VBBw/2Vct5C2fAINPP7ATeXVHwHivq6bjeOgTATh81kC
+          AwEAAaNTMFEwHQYDVR0OBBYEFPuaj0C0rjk1CwSLDS2z1T7ZXUH1MB8GA1UdIwQY
+          MBaAFPuaj0C0rjk1CwSLDS2z1T7ZXUH1MA8GA1UdEwEB/wQFMAMBAf8wDQYJKoZI
+          hvcNAQELBQADggGBAJIDIvkhTEmwa0EshYOSj80zVffWJ1/et2rNC8+di3a5td95
+          HsjgGjS+m//I1yvy1kd0cO7apbMHDI8VF9v4lWSvkMXaaF5N2Qt160DDl9mqsZqy
+          BOunhUeiMUQp7eWKbtHKXIlF+4/3IHMCcgHD+CkOC6mQvBbOYxt0CMIPTogqccnY
+          KzO7xyw2TK6uKamXGk090yXlPa4a/kVxq4kTmrS+mTtpM6Q4zQv62X1kJnw3xx9U
+          MHTYeJQy7nPVuzdTixkOynsl6VCa0G947KV++/2QTN3x62L0Rcma8ZEoUTeHcAVf
+          f+jcVZ9cMPqwyZseXxI4NT0B9AWLVwTPNEbeTc5xNzF28bKUUeMpn6Mq84jnVJ/Z
+          dxh/pV+LKIqNzVaNxTJiG0RhzV0sgXwqG+vLOV7exLG0Jz3uqfAzf1arstxBIu7o
+          1nxT/BGeBIrQlMUjupInPQ8UQPX1Sy86l3REAtMQuB75IqsQrnIhWb5saonT5mUA
+          liAmHXhAtzbAsgZ0hA==
+          -----END CERTIFICATE-----
+          CERT
           tar -C "$RUNNER_TEMP" -czf "$RUNNER_TEMP/lockbox-plain.tar.gz" lockbox-plain
           openssl cms -encrypt -binary -aes256 -in "$RUNNER_TEMP/lockbox-plain.tar.gz" -out "$GITHUB_WORKSPACE/lockbox-for-work.cms" -outform DER "$RUNNER_TEMP/work-cert.pem"
           test -s "$GITHUB_WORKSPACE/lockbox-for-work.cms"
