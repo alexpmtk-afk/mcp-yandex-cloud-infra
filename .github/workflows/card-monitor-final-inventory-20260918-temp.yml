@@ -7,7 +7,7 @@ on:
       - '.github/workflows/card-monitor-final-inventory-20260918-temp.yml'
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   inventory:
@@ -18,7 +18,14 @@ jobs:
       FOLDER_ID: b1g0224nfivl9224dm96
       CLOUD_ID: b1gi4pr9msenirafh2c7
       YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+
     steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 1
+
       - name: Install Yandex Cloud CLI
         shell: bash
         run: |
@@ -35,23 +42,31 @@ jobs:
           test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
           printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$RUNNER_TEMP/yc-sa-key.json"
           chmod 600 "$RUNNER_TEMP/yc-sa-key.json"
-          yc config profile create migration-card-monitor-audit >/dev/null
+          yc config profile create migration-card-monitor-audit >/dev/null || true
           yc config set service-account-key "$RUNNER_TEMP/yc-sa-key.json" >/dev/null
           yc config set cloud-id "$CLOUD_ID" >/dev/null
           yc config set folder-id "$FOLDER_ID" >/dev/null
           echo "YC_PROFILE=READY"
 
-      - name: Enumerate all durable and runtime resource classes
+      - name: Enumerate and persist sanitized inventory
         shell: bash
         run: |
           set -euo pipefail
           python - <<'PY'
-          import json, os, subprocess
+          import json, os, pathlib, subprocess
 
           fid=os.environ["FOLDER_ID"]
+          report=[]
+
+          def emit(s):
+              print(s)
+              report.append(s)
+
           commands={
             "compute_instances":["yc","compute","instance","list","--folder-id",fid,"--format","json"],
             "compute_disks":["yc","compute","disk","list","--folder-id",fid,"--format","json"],
+            "compute_snapshots":["yc","compute","snapshot","list","--folder-id",fid,"--format","json"],
+            "compute_images":["yc","compute","image","list","--folder-id",fid,"--format","json"],
             "ydb":["yc","ydb","database","list","--folder-id",fid,"--format","json"],
             "lockbox":["yc","lockbox","secret","list","--folder-id",fid,"--format","json"],
             "containers":["yc","serverless","container","list","--folder-id",fid,"--format","json"],
@@ -59,25 +74,24 @@ jobs:
             "gateways":["yc","serverless","api-gateway","list","--folder-id",fid,"--format","json"],
             "buckets":["yc","storage","bucket","list","--folder-id",fid,"--format","json"],
             "registries":["yc","container","registry","list","--folder-id",fid,"--format","json"],
+            "networks":["yc","vpc","network","list","--folder-id",fid,"--format","json"],
+            "subnets":["yc","vpc","subnet","list","--folder-id",fid,"--format","json"],
           }
-          any_denied=False
+
+          any_error=False
           for kind,cmd in commands.items():
               p=subprocess.run(cmd,text=True,capture_output=True,timeout=120)
               if p.returncode:
-                  detail=(p.stderr or p.stdout or "").strip().replace("\n"," ")[:300]
-                  print(f"RESOURCE type={kind} status=ERROR rc={p.returncode} detail={detail}")
-                  any_denied=True
+                  detail=(p.stderr or p.stdout or "").strip().replace("\n"," ")[:220]
+                  emit(f"RESOURCE type={kind} status=ERROR rc={p.returncode} detail={detail}")
+                  any_error=True
                   continue
-              try:
-                  data=json.loads(p.stdout or "[]")
-              except Exception as exc:
-                  print(f"RESOURCE type={kind} status=BAD_JSON error={type(exc).__name__}")
-                  any_denied=True
-                  continue
+              data=json.loads(p.stdout or "[]")
               items=data if isinstance(data,list) else ([data] if data else [])
-              print(f"RESOURCE type={kind} count={len(items)}")
+              emit(f"RESOURCE type={kind} count={len(items)}")
               for x in items:
-                  if not isinstance(x,dict): continue
+                  if not isinstance(x,dict):
+                      continue
                   out={"id":x.get("id",""),"name":x.get("name",""),"status":x.get("status","")}
                   if kind=="compute_disks":
                       out.update(size=x.get("size",""),type_id=x.get("type_id",""),instance_ids=x.get("instance_ids",[]))
@@ -85,9 +99,24 @@ jobs:
                       out.update(zone_id=x.get("zone_id",""),resources=x.get("resources",{}),boot_disk=x.get("boot_disk",{}))
                   if kind=="buckets":
                       out.update(max_size=x.get("max_size",""),versioning=x.get("versioning",""))
-                  print("ITEM type=%s data=%s"%(kind,json.dumps(out,ensure_ascii=False,separators=(",",":"))))
-          print("INVENTORY_COMPLETE=" + ("PARTIAL_ERRORS" if any_denied else "YES"))
+                  emit("ITEM type=%s data=%s"%(kind,json.dumps(out,ensure_ascii=False,separators=(",",":"))))
+
+          emit("INVENTORY_COMPLETE=" + ("PARTIAL_ERRORS" if any_error else "YES"))
+          p=pathlib.Path("migration-status")
+          p.mkdir(exist_ok=True)
+          (p/"card-monitor-final-inventory-20260918.txt").write_text("\n".join(report)+"\n",encoding="utf-8")
           PY
+
+      - name: Commit sanitized inventory report
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "yandex-inventory-bot"
+          git config user.email "yandex-inventory-bot@users.noreply.github.com"
+          git add migration-status/card-monitor-final-inventory-20260918.txt
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(migration): record card-monitor final inventory result"
+          git push origin HEAD:main
 
       - name: Cleanup key
         if: always()
