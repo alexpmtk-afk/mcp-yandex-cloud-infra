@@ -51,12 +51,11 @@ jobs:
     needs: schedule_gate
     if: needs.schedule_gate.outputs.run_export == 'true'
     runs-on: ubuntu-latest
-    environment: test
     timeout-minutes: 15
     env:
       DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
       OIDC_AUDIENCE: https://github.com/alexpmtk-afk
-      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
     steps:
       - uses: actions/checkout@v4
         with:
@@ -93,7 +92,7 @@ jobs:
           claims=json.loads(base64.urlsafe_b64decode(payload))
           assert claims.get('sub') == os.environ['EXPECTED_OIDC_SUBJECT'], claims.get('sub')
           assert claims.get('aud') == os.environ['OIDC_AUDIENCE'], claims.get('aud')
-          assert claims.get('environment') == 'test', claims.get('environment')
+          assert claims.get('ref') == 'refs/heads/main', claims.get('ref')
           assert claims.get('repository') == 'alexpmtk-afk/mcp-yandex-cloud-infra', claims.get('repository')
           print('TELEGRAM_BRIDGE_OIDC_CLAIMS=PASS')
           PY
