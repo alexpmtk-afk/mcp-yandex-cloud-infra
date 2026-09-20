@@ -7,6 +7,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: birzha-ydb-self-heal
@@ -23,6 +24,8 @@ jobs:
       YDB_ID: etnes7omhgut11oulsd5
       RUNTIME_ID: ajegcsoflha6k57q640h
       EXPECTED_DEPLOYER_ID: ajecdjjrkdo1t3itpl9k
+      OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -36,25 +39,46 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate exact infra deployer
+      - name: Authenticate exact infra deployer through GitHub OIDC
         shell: bash
-        env:
-          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
         run: |
           set -euo pipefail
-          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          DEPLOYER_ID="$(jq -r '.service_account_id // .serviceAccountId // empty' "$KEY_FILE")"
-          test "$DEPLOYER_ID" = "$EXPECTED_DEPLOYER_ID"
-          yc config profile create birzha-ydb-self-heal || true
-          yc config set service-account-key "$KEY_FILE"
-          IAM_TOKEN="$(yc iam create-token)"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          ENCODED_AUDIENCE="$(python -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          OIDC_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${ENCODED_AUDIENCE}")"
+          OIDC_JWT="$(python -c 'import json,sys; print(json.load(sys.stdin).get("value",""))' <<< "$OIDC_RESPONSE")"
+          test -n "$OIDC_JWT"
+          echo "::add-mask::$OIDC_JWT"
+          python - "$OIDC_JWT" <<'PY'
+          import base64,json,os,sys
+          payload=sys.argv[1].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims=json.loads(base64.urlsafe_b64decode(payload))
+          assert claims.get('sub') == os.environ['EXPECTED_OIDC_SUBJECT'], claims.get('sub')
+          assert claims.get('aud') == os.environ['OIDC_AUDIENCE'], claims.get('aud')
+          assert claims.get('environment') == 'test', claims.get('environment')
+          assert claims.get('repository') == 'alexpmtk-afk/mcp-yandex-cloud-infra', claims.get('repository')
+          print('SELF_HEAL_OIDC_CLAIMS=PASS')
+          PY
+          TOKEN_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -X POST 'https://auth.yandex.cloud/oauth/token' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+            --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' \
+            --data-urlencode "audience=${EXPECTED_DEPLOYER_ID}" \
+            --data-urlencode "subject_token=${OIDC_JWT}" \
+            --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          IAM_TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))' <<< "$TOKEN_RESPONSE")"
           test -n "$IAM_TOKEN"
           echo "::add-mask::$IAM_TOKEN"
           printf '%s' "$IAM_TOKEN" > "$RUNNER_TEMP/iam-token"
           chmod 600 "$RUNNER_TEMP/iam-token"
-          echo 'SELF_HEAL_AUTH=PASS'
+          echo "YC_IAM_TOKEN=$IAM_TOKEN" >> "$GITHUB_ENV"
+          echo 'SELF_HEAL_AUTH=OIDC_PASS'
 
       - name: Verify immutable coordinates and runtime binding
         shell: bash
@@ -133,4 +157,4 @@ jobs:
       - name: Cleanup credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/ydb-access.json" "$RUNNER_TEMP/cloud-operations.json"
+        run: rm -f "$RUNNER_TEMP/iam-token" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/ydb-access.json" "$RUNNER_TEMP/cloud-operations.json"
