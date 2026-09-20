@@ -1,0 +1,74 @@
+name: Security OIDC binding audit temporary
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - ".github/workflows/security-oidc-binding-audit-temp.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  audit:
+    runs-on: ubuntu-latest
+    environment: test
+    timeout-minutes: 10
+    env:
+      DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+      EXPECTED_ENV_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
+      EXPECTED_REF_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
+    steps:
+      - name: Install Yandex Cloud CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/yc"
+          curl -fsSL --retry 5 --retry-delay 2 \
+            https://storage.yandexcloud.net/yandexcloud-yc/release/yc_linux_amd64.tar.gz \
+            -o "$RUNNER_TEMP/yc.tgz"
+          tar -xzf "$RUNNER_TEMP/yc.tgz" -C "$RUNNER_TEMP/yc"
+          chmod +x "$RUNNER_TEMP/yc/yc"
+          echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
+
+      - name: Audit federated credentials metadata only
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          test "$(jq -r '.service_account_id // .serviceAccountId // empty' "$key")" = "$DEPLOYER_SERVICE_ACCOUNT_ID"
+          yc config set service-account-key "$key"
+          yc iam workload-identity federated-credential list \
+            --service-account-id "$DEPLOYER_SERVICE_ACCOUNT_ID" \
+            --format json > "$RUNNER_TEMP/credentials.json"
+          python - <<'PY'
+          import json, os
+          from pathlib import Path
+          p=Path(os.environ['RUNNER_TEMP'])/'credentials.json'
+          rows=json.loads(p.read_text())
+          if isinstance(rows, dict):
+              rows=rows.get('federated_credentials') or rows.get('federatedCredentials') or rows.get('credentials') or []
+          print('FEDERATED_CREDENTIAL_COUNT='+str(len(rows)))
+          env=os.environ['EXPECTED_ENV_SUBJECT']
+          ref=os.environ['EXPECTED_REF_SUBJECT']
+          found_env=False
+          found_ref=False
+          for x in rows:
+              sid=x.get('external_subject_id') or x.get('externalSubjectId') or ''
+              fid=x.get('federation_id') or x.get('federationId') or ''
+              cid=x.get('id') or ''
+              print(f'CREDENTIAL id={cid} federation={fid} subject={sid}')
+              found_env |= sid == env
+              found_ref |= sid == ref
+          print('EXPECTED_ENV_CREDENTIAL=' + ('PRESENT' if found_env else 'MISSING'))
+          print('EXPECTED_REF_CREDENTIAL=' + ('PRESENT' if found_ref else 'MISSING'))
+          PY
+
+      - name: Cleanup
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/credentials.json" "$RUNNER_TEMP/yc.tgz"
