@@ -18,6 +18,7 @@ jobs:
       DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
       EXPECTED_ENV_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
       EXPECTED_REF_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:ref:refs/heads/main
+      FEDERATION_ID: aje6jisuccivlu89ddtg
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -68,7 +69,37 @@ jobs:
           print('EXPECTED_REF_CREDENTIAL=' + ('PRESENT' if found_ref else 'MISSING'))
           PY
 
+      - name: Create exact environment federated credential if missing
+        shell: bash
+        env:
+          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
+        run: |
+          set -euo pipefail
+          key="$RUNNER_TEMP/yc-key-create.json"
+          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
+          chmod 600 "$key"
+          test "$(jq -r '.service_account_id // .serviceAccountId // empty' "$key")" = "$DEPLOYER_SERVICE_ACCOUNT_ID"
+          yc config set service-account-key "$key"
+          existing="$(yc iam workload-identity federated-credential list --service-account-id "$DEPLOYER_SERVICE_ACCOUNT_ID" --format json)"
+          count="$(jq --arg s "$EXPECTED_ENV_SUBJECT" '[.[] | select((.external_subject_id // .externalSubjectId // "")==$s)] | length' <<< "$existing")"
+          if [ "$count" = "0" ]; then
+            yc iam workload-identity federated-credential create \
+              --service-account-id "$DEPLOYER_SERVICE_ACCOUNT_ID" \
+              --federation-id "$FEDERATION_ID" \
+              --external-subject-id "$EXPECTED_ENV_SUBJECT" \
+              --format json > "$RUNNER_TEMP/created-env-credential.json"
+            echo 'ENV_FEDERATED_CREDENTIAL_CREATE=PASS'
+          elif [ "$count" = "1" ]; then
+            echo 'ENV_FEDERATED_CREDENTIAL_CREATE=ALREADY_PRESENT'
+          else
+            echo "Unexpected duplicate environment credentials: $count" >&2
+            exit 1
+          fi
+          final="$(yc iam workload-identity federated-credential list --service-account-id "$DEPLOYER_SERVICE_ACCOUNT_ID" --format json)"
+          jq -e --arg s "$EXPECTED_ENV_SUBJECT" --arg f "$FEDERATION_ID"             '[.[] | select((.external_subject_id // .externalSubjectId // "")==$s and (.federation_id // .federationId // "")==$f)] | length == 1' <<< "$final" >/dev/null
+          echo 'ENV_FEDERATED_CREDENTIAL_VERIFY=PASS'
+
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/credentials.json" "$RUNNER_TEMP/yc.tgz"
+        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/yc-key-create.json" "$RUNNER_TEMP/credentials.json" "$RUNNER_TEMP/created-env-credential.json" "$RUNNER_TEMP/yc.tgz"
