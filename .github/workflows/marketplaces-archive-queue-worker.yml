@@ -14,6 +14,7 @@ on:
 
 permissions:
   contents: read
+  id-token: write
 
 concurrency:
   group: marketplaces-archive-queue-worker
@@ -24,6 +25,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 50
+    env:
+      DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+      OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
     steps:
       - name: Install Yandex Cloud CLI
         shell: bash
@@ -36,19 +41,46 @@ jobs:
           chmod +x "$RUNNER_TEMP/yc/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate and resolve live MCP
+      - name: Authenticate through GitHub OIDC and resolve live MCP
         id: live
         shell: bash
-        env:
-          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
         run: |
           set -euo pipefail
-          test -n "$YC_SERVICE_ACCOUNT_KEY_JSON"
-          KEY_FILE="$RUNNER_TEMP/yc-service-account-key.json"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$KEY_FILE"
-          chmod 600 "$KEY_FILE"
-          yc config profile create archive-queue-worker || true
-          yc config set service-account-key "$KEY_FILE"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          ENCODED_AUDIENCE="$(python -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          OIDC_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${ENCODED_AUDIENCE}")"
+          OIDC_JWT="$(python -c 'import json,sys; print(json.load(sys.stdin).get("value",""))' <<< "$OIDC_RESPONSE")"
+          test -n "$OIDC_JWT"
+          echo "::add-mask::$OIDC_JWT"
+          python - "$OIDC_JWT" <<'PY'
+          import base64,json,os,sys
+          payload=sys.argv[1].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims=json.loads(base64.urlsafe_b64decode(payload))
+          assert claims.get('sub') == os.environ['EXPECTED_OIDC_SUBJECT'], claims.get('sub')
+          assert claims.get('aud') == os.environ['OIDC_AUDIENCE'], claims.get('aud')
+          assert claims.get('environment') == 'test', claims.get('environment')
+          assert claims.get('repository') == 'alexpmtk-afk/mcp-yandex-cloud-infra', claims.get('repository')
+          print('ARCHIVE_WORKER_OIDC_CLAIMS=PASS')
+          PY
+          TOKEN_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -X POST 'https://auth.yandex.cloud/oauth/token' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+            --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' \
+            --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" \
+            --data-urlencode "subject_token=${OIDC_JWT}" \
+            --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          IAM_TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))' <<< "$TOKEN_RESPONSE")"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          echo "YC_IAM_TOKEN=$IAM_TOKEN" >> "$GITHUB_ENV"
+          export YC_IAM_TOKEN="$IAM_TOKEN"
+          echo 'ARCHIVE_WORKER_AUTH=OIDC_PASS'
 
           CLOUD_ID=b1gi4pr9msenirafh2c7
           FOLDER_ID="$(timeout 45s yc resource-manager folder list --cloud-id "$CLOUD_ID" --format json | jq -r '.[]|select(.name=="marketplaces-mcp-test")|.id'|head -1)"
@@ -181,4 +213,4 @@ jobs:
       - name: Cleanup ephemeral credentials
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-service-account-key.json" "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer"
+        run: rm -f "$RUNNER_TEMP/yc.tgz" "$RUNNER_TEMP/sec.json" "$RUNNER_TEMP/bearer"
