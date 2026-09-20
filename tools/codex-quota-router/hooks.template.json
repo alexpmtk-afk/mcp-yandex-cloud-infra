@@ -1,0 +1,28 @@
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__INSTALL_DIR__/bin/quota-router.js\"",
+            "timeout": 10,
+            "statusMessage": "Quota Router preflight"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"__INSTALL_DIR__/bin/usage-snapshot.js\"",
+            "timeout": 10,
+            "statusMessage": "Saving quota snapshot"
+          }
+        ]
+      }
+    ]
+  }
+}
