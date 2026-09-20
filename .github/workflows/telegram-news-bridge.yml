@@ -12,6 +12,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 concurrency:
   group: telegram-news-reader-serverless-rolling
@@ -52,6 +53,10 @@ jobs:
     runs-on: ubuntu-latest
     environment: test
     timeout-minutes: 15
+    env:
+      DEPLOYER_SERVICE_ACCOUNT_ID: ajecdjjrkdo1t3itpl9k
+      OIDC_AUDIENCE: https://github.com/alexpmtk-afk
+      EXPECTED_OIDC_SUBJECT: repo:alexpmtk-afk@309119594/mcp-yandex-cloud-infra@1349853397:environment:test
     steps:
       - uses: actions/checkout@v4
         with:
@@ -67,19 +72,46 @@ jobs:
           tar -xzf "$RUNNER_TEMP/yc/yc.tgz" -C "$RUNNER_TEMP/yc"
           echo "$RUNNER_TEMP/yc" >> "$GITHUB_PATH"
 
-      - name: Authenticate
+      - name: Authenticate through GitHub environment OIDC
         shell: bash
-        env:
-          YC_SERVICE_ACCOUNT_KEY_JSON: ${{ secrets.YC_SERVICE_ACCOUNT_KEY_JSON }}
         run: |
           set -euo pipefail
-          key="$RUNNER_TEMP/yc-key.json"
-          printf '%s' "$YC_SERVICE_ACCOUNT_KEY_JSON" > "$key"
-          chmod 600 "$key"
-          yc config profile create telegram-news-bridge-serverless || true
-          yc config profile activate telegram-news-bridge-serverless
-          yc config set service-account-key "$key"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_URL:-}"
+          test -n "${ACTIONS_ID_TOKEN_REQUEST_TOKEN:-}"
+          ENCODED_AUDIENCE="$(python -c 'import os,urllib.parse; print(urllib.parse.quote(os.environ["OIDC_AUDIENCE"], safe=""))')"
+          SEP='?'; [[ "$ACTIONS_ID_TOKEN_REQUEST_URL" == *'?'* ]] && SEP='&'
+          OIDC_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -H "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}${SEP}audience=${ENCODED_AUDIENCE}")"
+          OIDC_JWT="$(python -c 'import json,sys; print(json.load(sys.stdin).get("value",""))' <<< "$OIDC_RESPONSE")"
+          test -n "$OIDC_JWT"
+          echo "::add-mask::$OIDC_JWT"
+          python - "$OIDC_JWT" <<'PY'
+          import base64,json,os,sys
+          payload=sys.argv[1].split('.')[1]
+          payload += '=' * (-len(payload) % 4)
+          claims=json.loads(base64.urlsafe_b64decode(payload))
+          assert claims.get('sub') == os.environ['EXPECTED_OIDC_SUBJECT'], claims.get('sub')
+          assert claims.get('aud') == os.environ['OIDC_AUDIENCE'], claims.get('aud')
+          assert claims.get('environment') == 'test', claims.get('environment')
+          assert claims.get('repository') == 'alexpmtk-afk/mcp-yandex-cloud-infra', claims.get('repository')
+          print('TELEGRAM_BRIDGE_OIDC_CLAIMS=PASS')
+          PY
+          TOKEN_RESPONSE="$(curl --proto '=https' --tlsv1.2 --fail --silent --show-error --retry 5 \
+            -X POST 'https://auth.yandex.cloud/oauth/token' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            --data-urlencode 'grant_type=urn:ietf:params:oauth:grant-type:token-exchange' \
+            --data-urlencode 'requested_token_type=urn:ietf:params:oauth:token-type:access_token' \
+            --data-urlencode "audience=${DEPLOYER_SERVICE_ACCOUNT_ID}" \
+            --data-urlencode "subject_token=${OIDC_JWT}" \
+            --data-urlencode 'subject_token_type=urn:ietf:params:oauth:token-type:id_token')"
+          IAM_TOKEN="$(python -c 'import json,sys; print(json.load(sys.stdin).get("access_token",""))' <<< "$TOKEN_RESPONSE")"
+          test -n "$IAM_TOKEN"
+          echo "::add-mask::$IAM_TOKEN"
+          echo "YC_IAM_TOKEN=$IAM_TOKEN" >> "$GITHUB_ENV"
+          export YC_IAM_TOKEN="$IAM_TOKEN"
           yc config set folder-id b1gk4p83brasi8g811jv
+          echo 'TELEGRAM_BRIDGE_AUTH=OIDC_PASS'
 
       - name: Validate private production Reader
         shell: bash
@@ -89,7 +121,7 @@ jobs:
           url="$(yc serverless container get telegram-reader-serverless --folder-id "$folder" --format json | jq -r '.url')"
           url="${url%/}"
           test -n "$url" && test "$url" != null
-          token="$(yc iam create-token)"
+          token="$YC_IAM_TOKEN"
           healthy=0
           for attempt in $(seq 1 12); do
             body="$(curl -sS --max-time 30 -H "Authorization: Bearer $token" "$url/health" || true)"
@@ -110,7 +142,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          token="$(yc iam create-token)"
+          token="$YC_IAM_TOKEN"
           generated_at="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           date_from="$(date -u -d '192 hours ago' '+%Y-%m-%dT%H:%M:%SZ')"
           work="$RUNNER_TEMP/telegram-production-rolling"
@@ -163,7 +195,7 @@ jobs:
           media_url="${media_url%/}"
           media_secret="$(yc lockbox secret list --folder-id b1gk4p83brasi8g811jv --format json | jq -r '.[]|select(.name=="telegram-reader-media-runtime")|.id' | head -1)"
           test -n "$media_secret"
-          cloud_token="$(yc iam create-token)"
+          cloud_token="$YC_IAM_TOKEN"
           curl -fsS -H "Authorization: Bearer $cloud_token" \
             "https://payload.lockbox.api.cloud.yandex.net/lockbox/v1/secrets/$media_secret/payload" \
             -o "$RUNNER_TEMP/media-secret.json"
@@ -230,7 +262,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          token="$(yc iam create-token)"
+          token="$YC_IAM_TOKEN"
           missing=0
           if [ -s "$WORK/missing.tsv" ]; then missing="$(wc -l < "$WORK/missing.tsv" | tr -d ' ')"; fi
           captured=0
@@ -339,4 +371,4 @@ jobs:
       - name: Cleanup
         if: always()
         shell: bash
-        run: rm -f "$RUNNER_TEMP/yc-key.json" "$RUNNER_TEMP/media-secret.json"
+        run: rm -f "$RUNNER_TEMP/media-secret.json" "$RUNNER_TEMP/yc/yc.tgz"
