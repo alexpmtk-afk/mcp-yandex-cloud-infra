@@ -22,7 +22,8 @@ const BRIDGE_CAPABILITIES={
   staged_promotion:true,
   diagnostic_cleanup:true,
   archive_root_id_guard:true,
-  drive_api_preflight:true
+  drive_api_preflight:true,
+  bounded_range_read:true
 };
 
 function setupBridge(){
@@ -91,6 +92,9 @@ function doPost(e){
     if(action==='read_by_id'){
       const file=assertFileInsideArchive_(String(body.file_id||'').trim());
       return json_({ok:true,found:true,file:metadata_(file),content_base64:Utilities.base64Encode(file.getBlob().getBytes())});
+    }
+    if(action==='read_range_by_id'){
+      return json_(readRangeById_(body));
     }
     if(action==='metadata_by_id'){
       const fileId=String(body.file_id||'').trim();
@@ -226,6 +230,56 @@ function startResumableSession_(folder,existingFile,filename,mimeType,totalBytes
   if(!location) throw new Error('drive_resumable_missing_location');
   if(!/^https:\/\/www\.googleapis\.com\/upload\/drive\//.test(location)) throw new Error('drive_resumable_invalid_location');
   return {session_uri:location,file_id:fileId||null};
+}
+
+function readRangeById_(body){
+  const fileId=String(body.file_id||'').trim();
+  if(!fileId) throw new Error('missing_file_id');
+  assertFileInsideArchive_(fileId);
+
+  const offset=Number(body.offset);
+  const length=Number(body.length);
+  const maxChunk=4*1024*1024;
+  if(!Number.isInteger(offset)||offset<0) throw new Error('invalid_read_offset');
+  if(!Number.isInteger(length)||length<1||length>maxChunk) throw new Error('invalid_read_length');
+
+  const meta=driveApiMetadata_(fileId);
+  const total=Number(meta.size);
+  const sha=String(meta.sha256Checksum||'').trim().toLowerCase();
+  if(!Number.isSafeInteger(total)||total<0) throw new Error('drive_size_unavailable');
+  if(!/^[0-9a-f]{64}$/.test(sha)) throw new Error('drive_sha256_unavailable');
+  if(offset>=total) throw new Error('read_offset_out_of_bounds');
+
+  const end=Math.min(total-1,offset+length-1);
+  const url='https://www.googleapis.com/drive/v3/files/'+encodeURIComponent(fileId)+'?alt=media&supportsAllDrives=true';
+  const response=UrlFetchApp.fetch(url,{
+    method:'get',
+    headers:{
+      Authorization:'Bearer '+ScriptApp.getOAuthToken(),
+      Accept:'application/octet-stream',
+      Range:'bytes='+offset+'-'+end
+    },
+    muteHttpExceptions:true,
+    followRedirects:true
+  });
+  const code=response.getResponseCode();
+  if(code!==206) throw new Error('drive_range_read_http_'+code);
+  const bytes=response.getContent();
+  const expected=end-offset+1;
+  if(bytes.length!==expected) throw new Error('drive_range_read_size_mismatch');
+
+  return {
+    ok:true,
+    file_id:fileId,
+    offset:offset,
+    next_offset:offset+bytes.length,
+    total_bytes:total,
+    eof:offset+bytes.length>=total,
+    sha256:sha,
+    mime_type:String(meta.mimeType||''),
+    modified_time:String(meta.modifiedTime||''),
+    content_base64:Utilities.base64Encode(bytes)
+  };
 }
 
 function driveApiMetadata_(fileId){
