@@ -1,0 +1,40 @@
+name: Marketplaces Bridge v3 static check
+
+on:
+  pull_request:
+    paths:
+      - docs/apps_script/marketplaces_drive_bridge_v3.gs
+      - .github/workflows/marketplaces-bridge-v3-static-check.yml
+  push:
+    branches:
+      - main
+    paths:
+      - docs/apps_script/marketplaces_drive_bridge_v3.gs
+      - .github/workflows/marketplaces-bridge-v3-static-check.yml
+
+permissions:
+  contents: read
+
+jobs:
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Parse Apps Script as JavaScript
+        shell: bash
+        run: |
+          set -euo pipefail
+          cp docs/apps_script/marketplaces_drive_bridge_v3.gs /tmp/marketplaces_drive_bridge_v3.js
+          node --check /tmp/marketplaces_drive_bridge_v3.js
+      - name: Verify large-read safety contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          f=docs/apps_script/marketplaces_drive_bridge_v3.gs
+          grep -F "if(action==='read_range_by_id')" "$f"
+          grep -F "assertFileInsideArchive_(fileId);" "$f"
+          grep -F "const maxChunk=4*1024*1024;" "$f"
+          grep -F "if(code!==206)" "$f"
+          grep -F "sha256Checksum" "$f"
+          grep -F "Range:'bytes='" "$f"
+          echo MARKETPLACES_BRIDGE_V3_STATIC=PASS
