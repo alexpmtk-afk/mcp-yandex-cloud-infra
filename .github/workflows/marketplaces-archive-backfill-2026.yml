@@ -13,5 +13,5 @@ jobs:
       - name: Legacy workflow is disabled
         shell: bash
         run: |
-          echo '::error::This legacy all-cabinets backfill workflow is disabled. It uses a pre-refresh-cycle response contract and seller=all. Use current MCP refresh tools or marketplaces-archive-refresh-targeted-acceptance.yml with explicitly selected sellers.'
+          echo '::error::This legacy all-cabinets backfill workflow is disabled. It uses a pre-refresh-cycle response contract and seller=all. Use the current REMOTE MCP refresh tools only after a read-only REMOTE archive-backend audit proves the durable backend.'
           exit 1
