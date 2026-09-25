@@ -27,7 +27,7 @@ collector_enabled = os.getenv("COLLECTOR_ENABLED", "true").strip().lower() not i
 settings, whitelist, reader, storage = build_runtime()
 collector = Collector(reader, storage)
 object_storage = ObjectStorage()
-media_pipeline = MediaPipeline(reader, root=os.getenv("TELEGRAM_MEDIA_PATH", "/tmp/media"))
+media_pipeline = MediaPipeline(reader)
 mcp = build_mcp(whitelist, storage)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
