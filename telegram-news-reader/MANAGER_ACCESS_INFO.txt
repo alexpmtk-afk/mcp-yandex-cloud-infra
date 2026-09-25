@@ -1,4 +1,14 @@
-MANAGER_URL=https://d5dm5tuhajuseiogoj3u.nnekmrav.apigw.yandexcloud.net/manage
-LOCKBOX_SECRET_ID=e6qnt0bt655jltrr5sid
-LOCKBOX_SECRET_NAME=telegram-reader-serverless-runtime
+MANAGER_URL=https://vm-684381.tail76ae70.ts.net/manage
+ACCESS_SCOPE=Tailscale tailnet only
+REMOTE_HOST=vm-684381
+SYSTEMD_SERVICE=mcp-telegram.service
+SERVICE_BIND=127.0.0.1:8081
+RUNTIME_ENV=/opt/mcp/secrets/telegram/runtime.env
 BROWSER_KEY_ENTRY=MANAGE_BROWSER_KEY
+BROWSER_KEY_HASH_ENTRY=MANAGE_TOKEN_SHA256
+WHITELIST_PATH=/opt/mcp/data/telegram/allowed_chats.yaml
+DATABASE_PATH=/opt/mcp/data/telegram/telegram.db
+PROJECT_PATH=/opt/mcp/projects/mcp-yandex-cloud-infra/telegram-news-reader
+RUNNER=/opt/mcp/runtime/telegram/run.sh
+
+Never store actual secret values in GitHub.
