@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 from datetime import datetime, timezone
@@ -67,6 +68,7 @@ class TelegramReader:
         session = StringSession(settings.session_string) if settings.session_string else str(settings.session_path)
         self.client = TelegramClient(session, settings.api_id, settings.api_hash, **kwargs)
         self._runtime_entities: dict[int, object] = {}
+        self._connect_lock = asyncio.Lock()
 
     async def connect(self, *, interactive_login: bool = False) -> None:
         if self.relay is not None:
@@ -89,6 +91,15 @@ class TelegramReader:
         if self.relay is not None:
             await self.relay.stop()
 
+    async def ensure_connected(self) -> None:
+        """Ensure the single production Telethon client is ready for an on-demand read."""
+        if self.client.is_connected():
+            return
+        async with self._connect_lock:
+            if self.client.is_connected():
+                return
+            await self.connect(interactive_login=False)
+
     def is_connected(self) -> bool:
         return bool(self.client.is_connected())
 
@@ -105,6 +116,7 @@ class TelegramReader:
                 await self.disconnect()
 
     async def list_dialogs(self) -> list[DialogRecord]:
+        await self.ensure_connected()
         result: list[DialogRecord] = []
         async for dialog in self.client.iter_dialogs():
             entity = dialog.entity
@@ -120,6 +132,7 @@ class TelegramReader:
         return result
 
     async def get_recent_messages(self, chat_id: int, limit: int = 20) -> list[MessageRecord]:
+        await self.ensure_connected()
         entity = await self._allowed_entity(chat_id)
         records: list[MessageRecord] = []
         try:
@@ -162,6 +175,7 @@ class TelegramReader:
         before_id is an exclusive upper message-id cursor, which makes paging
         lossless even when several Telegram messages share the same timestamp.
         """
+        await self.ensure_connected()
         entity = await self._allowed_entity(chat_id)
         low = _as_utc(datetime_from)
         high = _as_utc(datetime_to)
@@ -194,6 +208,7 @@ class TelegramReader:
         return result
 
     async def get_messages_after_id(self, chat_id: int, last_message_id: int) -> list[MessageRecord]:
+        await self.ensure_connected()
         entity = await self._allowed_entity(chat_id)
         result: list[MessageRecord] = []
         async for message in self.client.iter_messages(entity, min_id=int(last_message_id), reverse=True):
@@ -210,6 +225,7 @@ class TelegramReader:
         limit: int = 100,
         scan_limit: int = 2000,
     ) -> list[MessageRecord]:
+        await self.ensure_connected()
         entity = await self._allowed_entity(chat_id)
         result: list[MessageRecord] = []
         low = _as_utc(date_from) if date_from else None
@@ -228,6 +244,7 @@ class TelegramReader:
         return result
 
     async def get_message(self, chat_id: int, message_id: int) -> MessageRecord | None:
+        await self.ensure_connected()
         entity = await self._allowed_entity(chat_id)
         message = await self.client.get_messages(entity, ids=int(message_id))
         if not message:
