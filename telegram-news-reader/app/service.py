@@ -214,9 +214,12 @@ async def admin_dialogs():
 
 @app.post("/api/admin/whitelist")
 async def admin_whitelist(payload: ManageWhitelistPayload):
+    chosen_ids = list(dict.fromkeys(int(value) for value in payload.chat_ids))
+    if not chosen_ids:
+        raise HTTPException(400, "AT_LEAST_ONE_CHAT_REQUIRED")
     dialogs = {d.chat_id: d for d in await _list_dialogs_resilient()}
     chosen: list[AllowedChat] = []
-    for chat_id in dict.fromkeys(payload.chat_ids):
+    for chat_id in chosen_ids:
         dialog = dialogs.get(int(chat_id))
         if dialog is None:
             raise HTTPException(400, "UNKNOWN_CHAT_ID")
@@ -247,9 +250,12 @@ async def manage_dialogs_legacy(request: Request):
 async def manage_whitelist_legacy(payload: ManageWhitelistPayload, request: Request):
     if not _admin_token_ok(request):
         raise HTTPException(401, "UNAUTHORIZED")
+    chosen_ids = list(dict.fromkeys(int(value) for value in payload.chat_ids))
+    if not chosen_ids:
+        raise HTTPException(400, "AT_LEAST_ONE_CHAT_REQUIRED")
     dialogs = {d.chat_id: d for d in await _list_dialogs_resilient()}
     chosen: list[AllowedChat] = []
-    for chat_id in dict.fromkeys(payload.chat_ids):
+    for chat_id in chosen_ids:
         dialog = dialogs.get(int(chat_id))
         if dialog is None:
             raise HTTPException(400, "UNKNOWN_CHAT_ID")
