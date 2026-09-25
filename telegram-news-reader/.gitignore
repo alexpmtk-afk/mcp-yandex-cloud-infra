@@ -25,3 +25,9 @@ __pycache__/
 .idea/
 .DS_Store
 Thumbs.db
+
+
+# Legacy generated snapshots / requests (REMOTE production uses local SQLite)
+export/*.json
+ondemand/*.json
+requests/ondemand*.json
