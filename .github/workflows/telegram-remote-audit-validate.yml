@@ -1,0 +1,47 @@
+name: Telegram REMOTE Audit Validate
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/telegram-remote-audit-validate.yml'
+      - 'telegram-news-reader/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+          cache: pip
+          cache-dependency-path: |
+            telegram-news-reader/requirements.txt
+            telegram-news-reader/requirements-dev.txt
+            telegram-news-reader/pyproject.toml
+
+      - name: Install
+        working-directory: telegram-news-reader
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-dev.txt
+          python -m pip install -e .
+
+      - name: Dependency check
+        working-directory: telegram-news-reader
+        run: python -m pip check
+
+      - name: Compile
+        working-directory: telegram-news-reader
+        run: python -m compileall -q app scripts
+
+      - name: Tests
+        working-directory: telegram-news-reader
+        run: python -m pytest -q
