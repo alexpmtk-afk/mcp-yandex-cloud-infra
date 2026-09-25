@@ -175,7 +175,7 @@ def _admin_token_ok(request: Request) -> bool:
 
 @app.middleware("http")
 async def bearer_auth(request: Request, call_next):
-    if request.url.path in {"/health", "/media/object"} or request.url.path.startswith("/internal/"):
+    if request.url.path in {"/health", "/media/object"}:
         return await call_next(request)
     if request.url.path == "/manage" or request.url.path.startswith("/api/admin/"):
         if _admin_token_ok(request):
