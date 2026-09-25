@@ -23,12 +23,12 @@ from app.whitelist import AllowedChat
 
 service_settings = load_service_settings()
 manage_token_sha256 = os.getenv("MANAGE_TOKEN_SHA256", "").strip().lower()
-collector_enabled = os.getenv("COLLECTOR_ENABLED", "true").strip().lower() not in {"0", "false", "no", "off"}
+collector_enabled = os.getenv("COLLECTOR_ENABLED", "false").strip().lower() not in {"0", "false", "no", "off"}
 settings, whitelist, reader, storage = build_runtime()
 collector = Collector(reader, storage)
 object_storage = ObjectStorage()
 media_pipeline = MediaPipeline(reader)
-mcp = build_mcp(whitelist, storage)
+mcp = build_mcp(whitelist, reader)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 DIALOGS_TIMEOUT_SECONDS = 25
@@ -292,6 +292,7 @@ async def health():
         "telegram_authorized": authorized,
         "allowed_chats": len(whitelist.list_allowed()),
         "messages": storage.count_messages(),
+        "read_mode": "on_demand",
         "collector_enabled": collector_enabled,
         "collector_last_result": {str(k): v for k, v in collector.last_result.items()},
         "collector_last_errors": {str(k): v for k, v in collector.last_errors.items()},
@@ -418,7 +419,9 @@ async def list_chats():
 @app.get("/api/chats/{chat_id}/recent")
 async def recent(chat_id: int, limit: int = 20):
     whitelist.assert_allowed(chat_id)
-    return storage.get_recent_local(chat_id, min(max(limit, 1), 500))
+    await _ensure_reader_ready()
+    records = await reader.get_recent_messages(chat_id, min(max(limit, 1), 500))
+    return [record.to_dict() for record in records]
 
 
 @app.get("/api/chats/{chat_id}/messages")
@@ -426,18 +429,25 @@ async def messages(
     chat_id: int, date_from: datetime | None = None, date_to: datetime | None = None, limit: int = 200
 ):
     whitelist.assert_allowed(chat_id)
-    return storage.get_messages_local(
-        chat_id, date_from=date_from, date_to=date_to, limit=min(max(limit, 1), 1000)
-    )
+    await _ensure_reader_ready()
+    page_limit = min(max(limit, 1), 1000)
+    if date_from is None and date_to is None:
+        records = await reader.get_recent_messages(chat_id, page_limit)
+    else:
+        low = date_from or datetime(1970, 1, 1, tzinfo=timezone.utc)
+        high = date_to or datetime.now(timezone.utc)
+        records = await reader.get_messages_between(chat_id, low, high, limit=page_limit)
+    return [record.to_dict() for record in records]
 
 
 @app.get("/api/messages/{chat_id}/{message_id}")
 async def message(chat_id: int, message_id: int):
     whitelist.assert_allowed(chat_id)
-    record = storage.get_message_local(chat_id, message_id)
+    await _ensure_reader_ready()
+    record = await reader.get_message(chat_id, message_id)
     if record is None:
         raise HTTPException(404, "NOT_FOUND")
-    return record
+    return record.to_dict()
 
 
 @app.get("/api/search")
@@ -455,13 +465,21 @@ async def search(
     )
     for chat_id in ids:
         whitelist.assert_allowed(chat_id)
-    return storage.search_local(
-        query,
-        chat_ids=ids,
-        date_from=date_from,
-        date_to=date_to,
-        limit=min(max(limit, 1), 1000),
-    )
+    await _ensure_reader_ready()
+    total_limit = min(max(limit, 1), 1000)
+    records = []
+    for chat_id in ids:
+        records.extend(
+            await reader.search_messages(
+                chat_id,
+                query,
+                date_from=date_from,
+                date_to=date_to,
+                limit=total_limit,
+            )
+        )
+    records.sort(key=lambda item: item.datetime, reverse=True)
+    return [record.to_dict() for record in records[:total_limit]]
 
 
 app.mount("/mcp", mcp_app)
