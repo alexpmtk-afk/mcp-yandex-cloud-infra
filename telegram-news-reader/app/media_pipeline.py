@@ -31,7 +31,12 @@ class MediaPipeline:
 
     def __init__(self, reader: TelegramReader, root: str | Path | None = None):
         self.reader = reader
-        self.root = Path(root or os.getenv("TELEGRAM_MEDIA_PATH", "/state/media"))
+        configured_root = str(root or os.getenv("TELEGRAM_MEDIA_PATH", "")).strip()
+        self.root = (
+            Path(configured_root)
+            if configured_root
+            else Path(reader.settings.database_path).parent / "media"
+        )
         self.objects = ObjectStorage()
 
     async def capture(self, records: Iterable[MessageRecord]) -> int:
