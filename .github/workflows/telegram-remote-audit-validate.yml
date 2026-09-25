@@ -38,6 +38,22 @@ jobs:
         working-directory: telegram-news-reader
         run: python -m pip check
 
+      - name: Import active REMOTE modules
+        working-directory: telegram-news-reader
+        env:
+          TELEGRAM_API_ID: '12345'
+          TELEGRAM_API_HASH: dummy
+          READER_API_TOKEN: dummy
+          TELEGRAM_DATABASE_PATH: data/import-check.db
+          TELEGRAM_WHITELIST_PATH: config/allowed_chats.yaml
+        run: python -c "import app.telegram_client, app.media_pipeline, app.mcp_server, app.service; print('ACTIVE_IMPORTS_PASS')"
+
+      - name: Dependency vulnerability audit
+        working-directory: telegram-news-reader
+        run: |
+          python -m pip install pip-audit
+          python -m pip_audit -r requirements.txt
+
       - name: Compile
         working-directory: telegram-news-reader
         run: python -m compileall -q app scripts
