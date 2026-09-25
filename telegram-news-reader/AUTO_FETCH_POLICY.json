@@ -1,8 +1,9 @@
 {
-  "schema": "TELEGRAM_NEWS_REMOTE_POLICY_V1",
+  "schema": "TELEGRAM_NEWS_ON_DEMAND_POLICY_V2",
   "runtime": "REMOTE systemd service mcp-telegram.service",
-  "storage": "/opt/mcp/data/telegram/telegram.db",
+  "read_mode": "on_demand_direct_telegram",
   "whitelist": "/opt/mcp/data/telegram/allowed_chats.yaml",
+  "legacy_cache": "/opt/mcp/data/telegram/telegram.db",
   "mcp_tools": [
     "telegram_list_allowed_chats",
     "telegram_get_recent",
@@ -11,10 +12,13 @@
     "telegram_get_message"
   ],
   "rules": {
-    "allowed_only": "Every MCP read must pass the current server whitelist.",
-    "source_of_truth": "MCP tools read the REMOTE SQLite database populated by the running Telegram collector.",
-    "freshness": "Do not claim real-time freshness from a historical GitHub snapshot. Use the current REMOTE database and report uncertainty if collector health is not verified.",
-    "mode_selection": "The user should not need to choose a technical retrieval mode.",
-    "legacy": "Yandex Serverless rolling/on-demand GitHub workflows are retired and are not the current production path."
+    "allowed_only": "Every Telegram read must pass the current server whitelist.",
+    "source_of_truth": "Current MCP and HTTP answers are read directly from Telegram at request time.",
+    "background_collection": "Periodic background collection is disabled in production.",
+    "sqlite_role": "The existing SQLite database is retained as legacy cache/history and is not the source of truth for new answers.",
+    "freshness": "Freshness is determined by the live Telegram read performed for the current request.",
+    "search": "Search is performed on demand across the requested allowed chats and results are merged newest-first.",
+    "user_interaction": "The user does not choose a technical retrieval mode.",
+    "legacy": "Yandex Serverless rolling/on-demand GitHub workflows and scheduled snapshot refreshes are retired."
   }
 }
