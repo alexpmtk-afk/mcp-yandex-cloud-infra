@@ -1,1 +1,7 @@
-https://d5dm5tuhajuseiogoj3u.nnekmrav.apigw.yandexcloud.net/manage
+Telegram Reader manager (TAILNET ONLY)
+https://vm-684381.tail76ae70.ts.net/manage
+
+Access path:
+browser -> Tailscale -> vm-684381 -> Tailscale Serve -> http://127.0.0.1:8081/manage
+
+This URL is not public Internet access. Do not enable Tailscale Funnel for this service.
