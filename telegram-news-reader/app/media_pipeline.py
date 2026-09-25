@@ -128,8 +128,8 @@ class MediaPipeline:
             if preview_info:
                 preview_object_key = preview_candidate
 
-        # Serverless invocations are stateless. Reuse deterministic objects from
-        # Object Storage and avoid downloading the same Telegram media repeatedly.
+        # Reuse deterministic objects from optional Object Storage and avoid
+        # downloading the same Telegram media repeatedly.
         if object_key and preview_object_key:
             metadata = {
                 "chat_id": ref.chat_id,
