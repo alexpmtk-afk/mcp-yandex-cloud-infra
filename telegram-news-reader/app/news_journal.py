@@ -385,6 +385,62 @@ class NewsJournal:
             )
             return self._load_batch(conn, batch_id)
 
+    def list_profiles(self) -> list[dict]:
+        """List journal profiles so a fresh ChatGPT conversation can discover them."""
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                WITH profile_names AS (
+                    SELECT profile FROM news_cursors
+                    UNION
+                    SELECT profile FROM news_checks
+                    UNION
+                    SELECT profile FROM news_batches
+                ),
+                activity AS (
+                    SELECT profile, MAX(moment) AS last_activity
+                    FROM (
+                        SELECT profile, confirmed_at AS moment
+                        FROM news_cursors
+                        UNION ALL
+                        SELECT profile, last_checked_at AS moment
+                        FROM news_checks
+                        UNION ALL
+                        SELECT profile, COALESCE(confirmed_at, created_at) AS moment
+                        FROM news_batches
+                    )
+                    WHERE moment IS NOT NULL
+                    GROUP BY profile
+                )
+                SELECT p.profile,
+                       a.last_activity,
+                       (
+                           SELECT COUNT(DISTINCT chat_id)
+                           FROM news_checks c
+                           WHERE c.profile = p.profile
+                       ) AS checked_chat_count,
+                       (
+                           SELECT COUNT(DISTINCT chat_id)
+                           FROM news_cursors c
+                           WHERE c.profile = p.profile
+                       ) AS confirmed_chat_count,
+                       EXISTS(
+                           SELECT 1 FROM news_batches b
+                           WHERE b.profile = p.profile AND b.status = 'prepared'
+                       ) AS has_prepared_batch
+                FROM profile_names p
+                LEFT JOIN activity a ON a.profile = p.profile
+                ORDER BY a.last_activity DESC, p.profile COLLATE NOCASE
+                """
+            ).fetchall()
+            return [
+                {
+                    **dict(row),
+                    "has_prepared_batch": bool(row["has_prepared_batch"]),
+                }
+                for row in rows
+            ]
+
     def status(self, profile: str) -> dict:
         profile = _clean_profile(profile)
         with self._connect() as conn:
