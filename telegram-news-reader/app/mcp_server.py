@@ -174,17 +174,48 @@ def build_mcp(whitelist: Whitelist, reader: TelegramReader, news_journal: NewsJo
                     else cursor.get("confirmed_message_datetime")
                 )
             else:
-                # Fetch a broad first-use window, then keep the oldest page in that
-                # window so subsequent blocks can progress forward without gaps.
-                bootstrap_limit = min(max(per_chat_limit * 10, 500), 2000)
-                fetched = await reader.get_messages_between(
-                    chat_id,
-                    cutoff,
-                    now,
-                    limit=bootstrap_limit,
-                )
-                fetched = sorted(fetched, key=lambda item: item.message_id)
-                initial_truncated = len(fetched) >= bootstrap_limit
+                # First use has no cursor. Walk the requested lookback window all
+                # the way backwards before choosing the oldest page. This prevents
+                # high-volume channels from silently skipping older messages.
+                page_size = min(max(per_chat_limit * 5, 250), 500)
+                max_initial_scan = 10000
+                fetched = []
+                before_id: int | None = None
+                while True:
+                    remaining = max_initial_scan - len(fetched)
+                    if remaining <= 0:
+                        probe = await reader.get_messages_between(
+                            chat_id,
+                            cutoff,
+                            now,
+                            limit=1,
+                            before_id=before_id,
+                        )
+                        if probe:
+                            raise RuntimeError(
+                                "INITIAL_LOOKBACK_TOO_LARGE: reduce initial_lookback_hours"
+                            )
+                        break
+                    current_limit = min(page_size, remaining)
+                    page = await reader.get_messages_between(
+                        chat_id,
+                        cutoff,
+                        now,
+                        limit=current_limit,
+                        before_id=before_id,
+                    )
+                    if not page:
+                        break
+                    fetched.extend(page)
+                    oldest_id = min(int(item.message_id) for item in page)
+                    if before_id is not None and oldest_id >= before_id:
+                        raise RuntimeError("INITIAL_LOOKBACK_CURSOR_STALLED")
+                    before_id = oldest_id
+                    if len(page) < current_limit:
+                        break
+
+                by_id = {int(item.message_id): item for item in fetched}
+                fetched = sorted(by_id.values(), key=lambda item: item.message_id)
                 selected = fetched[:per_chat_limit]
                 more_pending = len(fetched) > per_chat_limit
                 latest_record = fetched[-1] if fetched else None
@@ -264,6 +295,15 @@ def build_mcp(whitelist: Whitelist, reader: TelegramReader, news_journal: NewsJo
         if result is not None:
             result["journal_action"] = "repeated_prepared"
         return result
+
+    @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False})
+    def telegram_news_profiles() -> list[dict]:
+        """List existing news-journal profiles and their last activity.
+
+        A fresh ChatGPT conversation should use this to discover and reuse the same
+        profile instead of inventing a new cursor namespace for an existing news feed.
+        """
+        return news_journal.list_profiles()
 
     @mcp.tool(annotations={"readOnlyHint": True, "destructiveHint": False})
     def telegram_news_status(profile: str = "default") -> dict:
