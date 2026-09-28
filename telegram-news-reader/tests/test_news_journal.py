@@ -121,6 +121,9 @@ def test_check_time_is_recorded_even_without_confirmed_cursor(tmp_path: Path):
     assert status["cursors"] == []
     assert status["checked_without_cursor"][0]["chat_id"] == -1002
     assert status["checked_without_cursor"][0]["last_checked_at"]
+    profiles = journal.list_profiles()
+    assert profiles[0]["profile"] == "main-news"
+    assert profiles[0]["checked_chat_count"] == 1
 
 
 def test_mcp_contract_exposes_journal_without_changing_telegram_read_only_policy():
@@ -132,6 +135,7 @@ def test_mcp_contract_exposes_journal_without_changing_telegram_read_only_policy
     assert "telegram_news_mark_used" in source
     assert "telegram_news_repeat" in source
     assert "telegram_news_status" in source
+    assert "telegram_news_profiles" in source
     assert "confirm_previous" in source
     assert "news_journal.sqlite3" in service
     assert '"news_journal": "enabled"' in service
