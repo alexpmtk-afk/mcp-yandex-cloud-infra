@@ -1,0 +1,31 @@
+name: Telegram news journal CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'telegram-news-reader/app/news_journal.py'
+      - 'telegram-news-reader/app/mcp_server.py'
+      - 'telegram-news-reader/app/service.py'
+      - 'telegram-news-reader/app/telegram_client.py'
+      - 'telegram-news-reader/tests/test_news_journal.py'
+      - 'telegram-news-reader/tests/test_on_demand_contract.py'
+      - '.github/workflows/telegram-news-journal-ci.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Run journal tests
+        working-directory: telegram-news-reader
+        run: |
+          python -m pip install --disable-pip-version-check pytest
+          python -m pytest -q tests/test_news_journal.py tests/test_on_demand_contract.py
