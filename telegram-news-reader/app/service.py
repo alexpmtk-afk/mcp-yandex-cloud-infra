@@ -16,6 +16,7 @@ from app.collector import Collector
 from app.errors import AccessDenied, AuthorizationRequired
 from app.mcp_server import build_mcp
 from app.media_pipeline import MediaPipeline
+from app.news_journal import NewsJournal
 from app.object_storage import ObjectStorage
 from app.runtime import build_runtime
 from app.service_config import load_service_settings
@@ -28,7 +29,8 @@ settings, whitelist, reader, storage = build_runtime()
 collector = Collector(reader, storage)
 object_storage = ObjectStorage()
 media_pipeline = MediaPipeline(reader)
-mcp = build_mcp(whitelist, reader)
+news_journal = NewsJournal(settings.database_path.with_name("news_journal.sqlite3"))
+mcp = build_mcp(whitelist, reader, news_journal)
 mcp_app = mcp.http_app(path="/", stateless_http=True)
 
 DIALOGS_TIMEOUT_SECONDS = 25
@@ -299,6 +301,8 @@ async def health():
         "collector_last_result": {str(k): v for k, v in collector.last_result.items()},
         "collector_last_errors": {str(k): v for k, v in collector.last_errors.items()},
         "media_storage": "enabled" if object_storage.enabled else "disabled",
+        "news_journal": "enabled",
+        "news_journal_path": str(news_journal.path),
     }
 
 
