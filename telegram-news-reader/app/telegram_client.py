@@ -207,11 +207,28 @@ class TelegramReader:
             raise MessageFetchError() from exc
         return result
 
-    async def get_messages_after_id(self, chat_id: int, last_message_id: int) -> list[MessageRecord]:
+    async def get_messages_after_id(
+        self,
+        chat_id: int,
+        last_message_id: int,
+        *,
+        limit: int = 1000,
+    ) -> list[MessageRecord]:
+        """Read the next page strictly after a Telegram message ID, oldest first.
+
+        A bounded page prevents one long-unchecked channel from producing an
+        unbounded MCP response. If more messages remain, the next confirmed
+        news block continues after the last returned message without gaps.
+        """
         await self.ensure_connected()
         entity = await self._allowed_entity(chat_id)
         result: list[MessageRecord] = []
-        async for message in self.client.iter_messages(entity, min_id=int(last_message_id), reverse=True):
+        async for message in self.client.iter_messages(
+            entity,
+            min_id=int(last_message_id),
+            reverse=True,
+            limit=max(1, min(int(limit), 2000)),
+        ):
             result.append(self._message_record(chat_id, entity, message))
         return result
 
